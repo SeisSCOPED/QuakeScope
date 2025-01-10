@@ -149,11 +149,6 @@ def main() -> None:
         logger.debug(f"Delaying this job for {delay} sec.")
         time.sleep(delay)
         picker.run_picking()
-    elif args.command == "station_list":
-        logger.warning(
-            f"This operation could be very expensive. It is recommended to use metadata service instead."
-        )
-        picker.run_station_listing()
     elif args.command == "associate":
         picker.run_association(args.start, args.end)
     else:
@@ -256,99 +251,6 @@ class S3DataSource:
                     yield stream
                 else:
                     logger.debug(f"Empty stream {station}@{dc} - {day}")
-
-    def get_available_stations(self) -> pd.DataFrame:
-        """
-        List all stations available in the S3 bucket by scanning the StationXML files.
-        Returns station list as a dataframe.
-        """
-        station_uris = []
-        for s3 in self.s3helper.s3:
-            if s3 == "earthscope":
-                continue
-            fs = self.s3helper.fs[s3]
-            logger.debug(f"Listing StationXML URIs from {s3}.")
-            networks = fs.ls(f"{s3}/FDSNstationXML/")
-            for net in networks:
-                # SCEDC also holds "unauthoritative-XML" for other stations
-                if len(net.split("/")[-1]) == 2:
-                    station_uris += fs.ls(net)[1:]
-
-        stations = []
-        for uri in tqdm(station_uris, total=len(station_uris)):
-            # TODO this needs to be updated for s3helper
-            with self.fs.open(uri) as f:
-                inv = obspy.read_inventory(f)
-
-            for net in inv:
-                for sta in net:
-                    start_date = sta.start_date.strftime("%Y.%j")
-                    try:
-                        # some stations may have no end date defined
-                        end_date = sta.end_date.strftime("%Y.%j")
-                    except AttributeError:
-                        end_date = "3000.001"
-
-                    locs = {cha.location_code for cha in sta}
-                    for loc in locs:
-                        channels = ",".join(
-                            sorted(
-                                {
-                                    cha.code
-                                    for cha in sta.select(location=loc)
-                                    if self._check_channel(cha.code)
-                                }
-                            )
-                        )
-                        if channels == "":
-                            continue
-
-                        stations.append(
-                            {
-                                "network_code": net.code,
-                                "station_code": sta.code,
-                                "location_code": loc,
-                                "channels": channels,
-                                "id": f"{net.code}.{sta.code}.{loc}",
-                                "latitude": sta.latitude,
-                                "longitude": sta.longitude,
-                                "elevation": sta.elevation,
-                                "start_date": start_date,
-                                "end_date": end_date,
-                            }
-                        )
-
-        stations = pd.DataFrame(stations)
-
-        def unify_channel_names(x):
-            """
-            Combines channel names into a string
-            """
-            channels = itertools.chain.from_iterable(
-                channels.split(",") for channels in x["channels"]
-            )
-            channels = ",".join(sorted(list(set(channels))))
-            out = x.iloc[0].copy()
-            out["channels"] = channels
-            return out
-
-        stations = (
-            stations.groupby("id")
-            .apply(unify_channel_names, include_groups=False)
-            .reset_index()
-        )
-
-        return stations
-
-    def _check_channel(self, channel: str) -> bool:
-        """
-        Check whether a channel matches the channel patterns defined in `self.channels`
-        """
-        for pattern in self.channels:
-            pattern = pattern.replace("?", ".?").replace("*", ".*")
-            if re.fullmatch(pattern, channel):
-                return True
-        return False
 
     @staticmethod
     def _read_waveform_from_s3(fs, uri) -> obspy.Stream:
@@ -489,13 +391,6 @@ class S3MongoSBBridge:
         model.default_args["P_threshold"] = p_threshold
         model.default_args["S_threshold"] = s_threshold
         return model
-
-    def run_station_listing(self):
-        """
-        Lists all available stations and writes them to the database.
-        """
-        stations = self.s3.get_available_stations()
-        self._write_stations_to_db(stations)
 
     def _write_stations_to_db(self, stations):
         logger.debug("Writing station information to MongoDB")

@@ -9,7 +9,7 @@ WORKDIR /code
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # SeisBench
-RUN pip install seisbench pyocto ipython s3fs pymongo boto3 tqdm
+RUN pip install seisbench pyocto ipython s3fs pymongo boto3 tqdm earthscope_sdk
 
 # get AWS DocumentDB public key
 RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
