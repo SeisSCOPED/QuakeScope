@@ -3,7 +3,6 @@ import asyncio
 import datetime
 import functools
 import io
-import itertools
 import logging
 import os
 import re

@@ -7,7 +7,7 @@ import boto3
 import numpy as np
 from botocore.config import Config
 
-from .parameters import JOB_DEFINITION_ASSOCIATION, JOB_DEFINITION_PICKING, JOB_QUEUE
+from .parameters import *
 from .utils import SeisBenchDatabase, filter_station_by_start_end_date
 
 logger = logging.getLogger("sb_picker")
@@ -78,7 +78,6 @@ class SubmitHelper:
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
-        logger.debug(f"Submitting jobs with shared variables: {self.shared_parameters}")
 
         i = 0
         while i < len(stations) - 1:
@@ -118,6 +117,8 @@ class SubmitHelper:
 
                 j += self.day_group_size
             i += self.station_group_size
+            
+        logger.info(f"{len(pick_jobs)} jobs submitted in total.")
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
@@ -183,9 +184,6 @@ def main():
         help="Network to pick. Comma separated if multiple submitted.",
     )
     parser.add_argument(
-        "--db_uri", type=str, required=True, help="URI of the MongoDB cluster."
-    )
-    parser.add_argument(
         "--database", type=str, default="tutorial", help="MongoDB database name."
     )
     parser.add_argument(
@@ -193,9 +191,6 @@ def main():
     )
     parser.add_argument(
         "--credential", default="", type=str, help="Path to AWS credential"
-    )
-    parser.add_argument(
-        "--access_point", default="", type=str, help="EarthScope S3 access point"
     )
     args = parser.parse_args()
 
@@ -212,11 +207,11 @@ def main():
             cred = json.load(f)
             logger.warning(f"Token expires at UTC {cred['expiration']}")
             credential = {"earthscope_" + k: v for k, v in cred.items()}
-            credential["EARTHSCOPE_S3_ACCESS_POINT"] = args.access_point
+            credential["EARTHSCOPE_S3_ACCESS_POINT"] = EARTHSCOPE_S3_ACCESS_POINT
     else:
         credential = {}
 
-    db = SeisBenchDatabase(args.db_uri, args.database)
+    db = SeisBenchDatabase(DOCDB_ENDPOINT_URI, args.database)
     helper = SubmitHelper(
         start=args.start,
         end=args.end,

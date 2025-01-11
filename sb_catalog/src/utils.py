@@ -89,7 +89,7 @@ class SeisBenchDatabase(pymongo.MongoClient):
 
 def filter_station_by_start_end_date(
     stations: pd.DataFrame, start: datetime.date, end: datetime.date
-):
+) -> pd.DataFrame:
     match = []
     for i, sta in stations.iterrows():
         sta_start = parse_year_day(str(sta["start_date"]))
