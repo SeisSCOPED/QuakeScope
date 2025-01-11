@@ -78,7 +78,8 @@ class SubmitHelper:
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
-
+        
+        njobs = 0
         i = 0
         while i < len(stations) - 1:
             sub_stations = ",".join(
@@ -117,8 +118,9 @@ class SubmitHelper:
 
                 j += self.day_group_size
             i += self.station_group_size
+            njobs += len(pick_jobs)
             
-        logger.info(f"{len(pick_jobs)} jobs submitted in total.")
+        logger.info(f"{njobs} jobs submitted in total.")
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
