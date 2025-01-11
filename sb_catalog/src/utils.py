@@ -40,18 +40,23 @@ class SeisBenchDatabase(pymongo.MongoClient):
         if "station_idx" not in station_coll.index_information():
             station_coll.create_index(["id"], unique=True, name="station_idx")
 
-    def get_stations(self, extent: tuple[float, float, float, float]) -> pd.DataFrame:
+    def get_stations(
+        self, extent: tuple[float, float, float, float] = None, network: str = None
+    ) -> pd.DataFrame:
         """
-        Returns a DataFrame with all stations within the given range.
+        Returns a DataFrame with all stations by a certain filter
         """
-        minlat, maxlat, minlon, maxlon = extent
+        filt = {}
+        if extent:
+            minlat, maxlat, minlon, maxlon = extent
+            filt["latitude"] = {"$gt": minlat, "$lt": maxlat}
+            filt["longitude"] = {"$gt": minlon, "$lt": maxlon}
 
-        cursor = self.database["stations"].find(
-            {
-                "latitude": {"$gt": minlat, "$lt": maxlat},
-                "longitude": {"$gt": minlon, "$lt": maxlon},
-            }
-        )
+        if network:
+            nets = network.split(",")
+            filt["network_code"] = {"$in": nets}
+
+        cursor = self.database["stations"].find(filt)
 
         return pd.DataFrame(list(cursor))
 

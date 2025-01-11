@@ -19,7 +19,6 @@ import seisbench.models as sbm
 import seisbench.util as sbu
 from botocore.exceptions import ClientError
 from bson import ObjectId
-from tqdm import tqdm
 
 from .s3_helper import CompositeS3ObjectHelper
 from .utils import SeisBenchDatabase, parse_year_day

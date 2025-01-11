@@ -37,6 +37,7 @@ class SubmitHelper:
         start: datetime.datetime,
         end: datetime.datetime,
         extent: tuple[float, float, float, float],
+        network: str,
         db: SeisBenchDatabase,
         region: str,
         credential: dict = {},
@@ -46,6 +47,7 @@ class SubmitHelper:
         self.start = start
         self.end = end
         self.extent = extent
+        self.network = network
         self.db = db
         self.region = region
         self.credential = credential
@@ -67,11 +69,13 @@ class SubmitHelper:
             raise ValueError(f"Unknown command '{command}'")
 
     def submit_pick_jobs(self) -> None:
-        stations = filter_station_by_start_end_date(
-            self.db.get_stations(self.extent), self.start, self.end
-        )
+        # get stations based on extent and/or network code
+        # ... and operation time
+        stations = self.db.get_stations(extent=self.extent, network=self.network)
+        stations = filter_station_by_start_end_date(stations, self.start, self.end)
+
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
-        logger.debug(
+        logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
         logger.debug(f"Submitting jobs with shared variables: {self.shared_parameters}")
@@ -93,7 +97,7 @@ class SubmitHelper:
                 )
                 parameters = {"start": day0, "end": day1, "stations": sub_stations}
 
-                logger.debug(f"Submitting picking job: {parameters}")
+                logger.info(f"Submitting picking job: {parameters}")
                 pick_jobs.append(
                     self.client.submit_job(
                         jobName=f"picking_{i}_{j}",
@@ -169,9 +173,14 @@ def main():
         help="Format: YYYY.DDD (not included)",
     )
     parser.add_argument(
-        "extent",
+        "--extent",
         type=str,
         help="Comma separated: minlat, maxlat, minlon, maxlon",
+    )
+    parser.add_argument(
+        "--network",
+        type=str,
+        help="Network to pick. Comma separated if multiple submitted.",
     )
     parser.add_argument(
         "--db_uri", type=str, required=True, help="URI of the MongoDB cluster."
@@ -190,8 +199,13 @@ def main():
     )
     args = parser.parse_args()
 
-    extent = tuple([float(x) for x in args.extent.split(",")])
-    assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
+    assert args.extent or args.network, "Either extent or network needs to be set"
+
+    if args.extent:
+        extent = tuple([float(x) for x in extent.split(",")])
+        assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
+    else:
+        extent = None
 
     if args.credential:
         with open(args.credential, "r") as f:
@@ -207,6 +221,7 @@ def main():
         start=args.start,
         end=args.end,
         extent=extent,
+        network=args.network,
         db=db,
         region=args.region,
         credential=credential,
