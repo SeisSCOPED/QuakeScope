@@ -202,7 +202,7 @@ def main():
     assert args.extent or args.network, "Either extent or network needs to be set"
 
     if args.extent:
-        extent = tuple([float(x) for x in extent.split(",")])
+        extent = tuple([float(x) for x in args.extent.split(",")])
         assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
     else:
         extent = None
