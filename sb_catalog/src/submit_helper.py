@@ -40,7 +40,7 @@ class SubmitHelper:
         network: str,
         db: SeisBenchDatabase,
         region: str,
-        credential: dict = {},
+        token: dict = {},
         station_group_size: int = 40,
         day_group_size: int = 10,
     ):
@@ -49,16 +49,17 @@ class SubmitHelper:
         self.extent = extent
         self.network = network
         self.db = db
+        self.token = token
         self.region = region
-        self.credential = credential
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
-
         self.client = boto3.client("batch", config=Config(region_name=region))
         self.shared_parameters = {
             "db_uri": self.db.db_uri,
             "database": self.db.database.name,
         }
+
+        self._token_env = [{"name": k, "value": v} for k, v in self.token.items()]
 
     def submit_jobs(self, command: str) -> None:
         if command == "pick":
@@ -78,7 +79,8 @@ class SubmitHelper:
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
-        
+        logger.info(f"Submitting jobs with shared variables: {self.shared_parameters}")
+
         njobs = 0
         i = 0
         while i < len(stations) - 1:
@@ -107,19 +109,14 @@ class SubmitHelper:
                             **parameters,
                             **self.shared_parameters,
                         },
-                        containerOverrides={
-                            "environment": [
-                                {"name": k, "value": v}
-                                for k, v in self.credential.items()
-                            ]
-                        },
+                        containerOverrides={"environment": self._token_env},
                     )
                 )
 
                 j += self.day_group_size
             i += self.station_group_size
             njobs += len(pick_jobs)
-            
+
         logger.info(f"{njobs} jobs submitted in total.")
 
     def submit_association_jobs(self) -> None:
@@ -191,9 +188,6 @@ def main():
     parser.add_argument(
         "--region", type=str, default="us-east-2", help="Working region on AWS."
     )
-    parser.add_argument(
-        "--credential", default="", type=str, help="Path to AWS credential"
-    )
     args = parser.parse_args()
 
     assert args.extent or args.network, "Either extent or network needs to be set"
@@ -204,14 +198,12 @@ def main():
     else:
         extent = None
 
-    if args.credential:
-        with open(args.credential, "r") as f:
-            cred = json.load(f)
-            logger.warning(f"Token expires at UTC {cred['expiration']}")
-            credential = {"earthscope_" + k: v for k, v in cred.items()}
-            credential["EARTHSCOPE_S3_ACCESS_POINT"] = EARTHSCOPE_S3_ACCESS_POINT
+    if ES_OAUTH2__REFRESH_TOKEN:
+        token = {"ES_OAUTH2__REFRESH_TOKEN": ES_OAUTH2__REFRESH_TOKEN}
+        logger.info(f"EarthScope refresh token applied: {ES_OAUTH2__REFRESH_TOKEN}")
     else:
-        credential = {}
+        token = {}
+        logger.info(f"EarthScope refresh token empty.")
 
     db = SeisBenchDatabase(DOCDB_ENDPOINT_URI, args.database)
     helper = SubmitHelper(
@@ -221,7 +213,7 @@ def main():
         network=args.network,
         db=db,
         region=args.region,
-        credential=credential,
+        token=token,
     )
     helper.submit_jobs(args.command)
 
