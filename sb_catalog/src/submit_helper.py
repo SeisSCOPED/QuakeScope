@@ -40,7 +40,7 @@ class SubmitHelper:
         network: str,
         db: SeisBenchDatabase,
         region: str,
-        token: dict = {},
+        environ: dict = {},
         station_group_size: int = 40,
         day_group_size: int = 10,
     ):
@@ -49,7 +49,7 @@ class SubmitHelper:
         self.extent = extent
         self.network = network
         self.db = db
-        self.token = token
+        self.environ = environ
         self.region = region
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
@@ -59,7 +59,7 @@ class SubmitHelper:
             "database": self.db.database.name,
         }
 
-        self._token_env = [{"name": k, "value": v} for k, v in self.token.items()]
+        self._environ_kv = [{"name": k, "value": v} for k, v in self.environ.items()]
 
     def submit_jobs(self, command: str) -> None:
         if command == "pick":
@@ -109,7 +109,7 @@ class SubmitHelper:
                             **parameters,
                             **self.shared_parameters,
                         },
-                        containerOverrides={"environment": self._token_env},
+                        containerOverrides={"environment": self._environ_kv},
                     )
                 )
 
@@ -199,11 +199,13 @@ def main():
         extent = None
 
     if ES_OAUTH2__REFRESH_TOKEN:
-        token = {"ES_OAUTH2__REFRESH_TOKEN": ES_OAUTH2__REFRESH_TOKEN}
+        environ = {"ES_OAUTH2__REFRESH_TOKEN": ES_OAUTH2__REFRESH_TOKEN}
         logger.info(f"EarthScope refresh token applied: {ES_OAUTH2__REFRESH_TOKEN}")
     else:
-        token = {}
+        environ = {}
         logger.info(f"EarthScope refresh token empty.")
+
+    environ["EARTHSCOPE_S3_ACCESS_POINT"] = EARTHSCOPE_S3_ACCESS_POINT
 
     db = SeisBenchDatabase(DOCDB_ENDPOINT_URI, args.database)
     helper = SubmitHelper(
@@ -213,7 +215,7 @@ def main():
         network=args.network,
         db=db,
         region=args.region,
-        token=token,
+        environ=environ,
     )
     helper.submit_jobs(args.command)
 

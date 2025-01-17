@@ -176,8 +176,7 @@ class S3DataSource:
             self.stations = stations.split(",")
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.channels = channels.split(",")
-        self.credential = self.get_credential()
-        self.s3helper = CompositeS3ObjectHelper(self.credential)
+        self.s3helper = CompositeS3ObjectHelper()
         logger.debug(f"Initializing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
     async def load_waveforms(self) -> AsyncIterator[obspy.Stream]:
@@ -200,6 +199,8 @@ class S3DataSource:
             for net in self.networks:
                 avail_uri[net] = []
                 # use the corresponding fs for the network
+                if self.s3helper.get_data_center(net) == "earthscope":
+                    self.s3helper.update_es_filesystem()
                 fs = self.s3helper.get_filesystem(net)
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
@@ -215,7 +216,6 @@ class S3DataSource:
 
             for station in self.stations:
                 net, sta, loc = station.split(".")
-                fs = self.s3helper.get_filesystem(net)
                 dc = self.s3helper.get_data_center(net)
                 logger.debug(f"Loading {station}@{dc} - {day.strftime('%Y.%j')}")
                 stream = obspy.Stream()
@@ -227,7 +227,7 @@ class S3DataSource:
                         ):
                             if uri in avail_uri[net]:
                                 stream += await asyncio.to_thread(
-                                    self._read_waveform_from_s3, fs, uri
+                                    self._read_waveform_from_s3, uri, net
                                 )
                         if len(stream) > 0:
                             break
@@ -238,7 +238,7 @@ class S3DataSource:
                     uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
                     if len(uri) > 0:
                         s = await asyncio.to_thread(
-                            self._read_waveform_from_s3, fs, uri[0]
+                            self._read_waveform_from_s3, uri[0], net
                         )
                         for channel in self.channels:
                             stream += s.select(channel=channel)
@@ -250,31 +250,32 @@ class S3DataSource:
                 else:
                     logger.debug(f"Empty stream {station}@{dc} - {day}")
 
-    @staticmethod
-    def _read_waveform_from_s3(fs, uri) -> obspy.Stream:
+    def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
 
-        OSError#5: accessing non-authorized earthscope data. return empty stream.
-        PermissionError: EarthScope token expired. Raise error as all following jobs will fail.
+        OSError#5: accessing non-authorized earthscope data. Return empty stream.
+        PermissionError: EarthScope temporary credential expired. Refresh the credential and retry.
         ClientError: S3 overloaded, the job will sleep for 5 seconds and retry until return.
         FileNotFoundError: file not exist.
         ValueError: certain types of corrupt files
 
         """
         while True:
+            fs = self.s3helper.get_filesystem(net)
             try:
                 buff = io.BytesIO(fs.read_bytes(uri))
                 return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
-                    logger.debug(f"Not authorized to access this resource.")
+                    logger.warning(f"Not authorized to access this resource.")
                     return obspy.Stream()
             except PermissionError as e:
                 logger.debug(e.args[0])
-                raise e
+                self.s3helper.update_es_filesystem()
+                logger.warning("Credential refreshed.")
             except ClientError:
-                logger.debug(f"S3 might be busy. Sleep for 5 seconds and retry.")
+                logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
                 time.sleep(5)
             except FileNotFoundError:
                 return obspy.Stream()
@@ -295,25 +296,6 @@ class S3DataSource:
             uris.append(self.s3helper.get_s3_path(net, sta, loc, cha, year, day, c))
 
         return uris
-
-    def get_credential(self) -> dict:
-        """
-        Get credentials from environment variables. Set during job submission.
-        """
-        cred = {}
-        try:
-            cred["earthscope_aws_access_key_id"] = os.environ[
-                "earthscope_aws_access_key_id"
-            ]
-            cred["earthscope_aws_secret_access_key"] = os.environ[
-                "earthscope_aws_secret_access_key"
-            ]
-            cred["earthscope_aws_session_token"] = os.environ[
-                "earthscope_aws_session_token"
-            ]
-        except KeyError:
-            pass
-        return cred
 
 
 class S3MongoSBBridge:
