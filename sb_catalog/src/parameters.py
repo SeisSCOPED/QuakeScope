@@ -13,3 +13,4 @@ DOCDB_ENDPOINT_URI = ""
 
 # Required by EarthScope S3 access
 EARTHSCOPE_S3_ACCESS_POINT = ""
+ES_OAUTH2__REFRESH_TOKEN = ""

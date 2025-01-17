@@ -7,7 +7,7 @@ import boto3
 import numpy as np
 from botocore.config import Config
 
-from .parameters import JOB_DEFINITION_ASSOCIATION, JOB_DEFINITION_PICKING, JOB_QUEUE
+from .parameters import *
 from .utils import SeisBenchDatabase, filter_station_by_start_end_date
 
 logger = logging.getLogger("sb_picker")
@@ -37,26 +37,29 @@ class SubmitHelper:
         start: datetime.datetime,
         end: datetime.datetime,
         extent: tuple[float, float, float, float],
+        network: str,
         db: SeisBenchDatabase,
         region: str,
-        credential: dict = {},
+        environ: dict = {},
         station_group_size: int = 40,
         day_group_size: int = 10,
     ):
         self.start = start
         self.end = end
         self.extent = extent
+        self.network = network
         self.db = db
+        self.environ = environ
         self.region = region
-        self.credential = credential
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
-
         self.client = boto3.client("batch", config=Config(region_name=region))
         self.shared_parameters = {
             "db_uri": self.db.db_uri,
             "database": self.db.database.name,
         }
+
+        self._environ_kv = [{"name": k, "value": v} for k, v in self.environ.items()]
 
     def submit_jobs(self, command: str) -> None:
         if command == "pick":
@@ -67,15 +70,18 @@ class SubmitHelper:
             raise ValueError(f"Unknown command '{command}'")
 
     def submit_pick_jobs(self) -> None:
-        stations = filter_station_by_start_end_date(
-            self.db.get_stations(self.extent), self.start, self.end
-        )
+        # get stations based on extent and/or network code
+        # ... and operation time
+        stations = self.db.get_stations(extent=self.extent, network=self.network)
+        stations = filter_station_by_start_end_date(stations, self.start, self.end)
+
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
-        logger.debug(
+        logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
-        logger.debug(f"Submitting jobs with shared variables: {self.shared_parameters}")
+        logger.info(f"Submitting jobs with shared variables: {self.shared_parameters}")
 
+        njobs = 0
         i = 0
         while i < len(stations) - 1:
             sub_stations = ",".join(
@@ -93,7 +99,7 @@ class SubmitHelper:
                 )
                 parameters = {"start": day0, "end": day1, "stations": sub_stations}
 
-                logger.debug(f"Submitting picking job: {parameters}")
+                logger.info(f"Submitting picking job: {parameters}")
                 pick_jobs.append(
                     self.client.submit_job(
                         jobName=f"picking_{i}_{j}",
@@ -103,17 +109,15 @@ class SubmitHelper:
                             **parameters,
                             **self.shared_parameters,
                         },
-                        containerOverrides={
-                            "environment": [
-                                {"name": k, "value": v}
-                                for k, v in self.credential.items()
-                            ]
-                        },
+                        containerOverrides={"environment": self._environ_kv},
                     )
                 )
 
                 j += self.day_group_size
             i += self.station_group_size
+            njobs += len(pick_jobs)
+
+        logger.info(f"{njobs} jobs submitted in total.")
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
@@ -169,12 +173,14 @@ def main():
         help="Format: YYYY.DDD (not included)",
     )
     parser.add_argument(
-        "extent",
+        "--extent",
         type=str,
         help="Comma separated: minlat, maxlat, minlon, maxlon",
     )
     parser.add_argument(
-        "--db_uri", type=str, required=True, help="URI of the MongoDB cluster."
+        "--network",
+        type=str,
+        help="Network to pick. Comma separated if multiple submitted.",
     )
     parser.add_argument(
         "--database", type=str, default="tutorial", help="MongoDB database name."
@@ -182,34 +188,34 @@ def main():
     parser.add_argument(
         "--region", type=str, default="us-east-2", help="Working region on AWS."
     )
-    parser.add_argument(
-        "--credential", default="", type=str, help="Path to AWS credential"
-    )
-    parser.add_argument(
-        "--access_point", default="", type=str, help="EarthScope S3 access point"
-    )
     args = parser.parse_args()
 
-    extent = tuple([float(x) for x in args.extent.split(",")])
-    assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
+    assert args.extent or args.network, "Either extent or network needs to be set"
 
-    if args.credential:
-        with open(args.credential, "r") as f:
-            cred = json.load(f)
-            logger.warning(f"Token expires at UTC {cred['expiration']}")
-            credential = {"earthscope_" + k: v for k, v in cred.items()}
-            credential["EARTHSCOPE_S3_ACCESS_POINT"] = args.access_point
+    if args.extent:
+        extent = tuple([float(x) for x in args.extent.split(",")])
+        assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
     else:
-        credential = {}
+        extent = None
 
-    db = SeisBenchDatabase(args.db_uri, args.database)
+    if ES_OAUTH2__REFRESH_TOKEN:
+        environ = {"ES_OAUTH2__REFRESH_TOKEN": ES_OAUTH2__REFRESH_TOKEN}
+        logger.info(f"EarthScope refresh token applied: {ES_OAUTH2__REFRESH_TOKEN}")
+    else:
+        environ = {}
+        logger.info(f"EarthScope refresh token empty.")
+
+    environ["EARTHSCOPE_S3_ACCESS_POINT"] = EARTHSCOPE_S3_ACCESS_POINT
+
+    db = SeisBenchDatabase(DOCDB_ENDPOINT_URI, args.database)
     helper = SubmitHelper(
         start=args.start,
         end=args.end,
         extent=extent,
+        network=args.network,
         db=db,
         region=args.region,
-        credential=credential,
+        environ=environ,
     )
     helper.submit_jobs(args.command)
 
