@@ -215,7 +215,9 @@ class S3DataSource:
             for station in self.stations:
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
-                logger.debug(f"Loading {station}@{dc} - {day.strftime('%Y.%j')}")
+                logger.debug(
+                    f"Load stream \t{station.ljust(11)}\t{day.strftime('%Y.%j')} @ {dc}"
+                )
                 stream = obspy.Stream()
 
                 if dc in ["scedc", "ncedc"]:
@@ -246,7 +248,9 @@ class S3DataSource:
                 if len(stream) > 0:
                     yield stream
                 else:
-                    logger.debug(f"Empty stream {station}@{dc} - {day}")
+                    logger.debug(
+                        f"Empty stream \t{station.ljust(11)}\t{day.strftime('%Y.%j')} @ {dc}"
+                    )
 
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
         """
@@ -266,7 +270,7 @@ class S3DataSource:
                 return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
-                    logger.warning(f"Not authorized to access this resource.")
+                    logger.warning(f"Not authorized to access this resource: {uri}")
                     return obspy.Stream()
             except PermissionError as e:
                 logger.debug(e.args[0])
@@ -518,7 +522,7 @@ class S3MongoSBBridge:
                 station, day = self._parse_stream(stream)
                 if self._find_pick_records_from_db(station, day) is not None:
                     logger.debug(
-                        f"Found picks for {station} - {day.strftime('%Y.%j')}. Skipping."
+                        f"Found picks \t{station.ljust(11)}\t{day.strftime('%Y.%j')} > Skipping."
                     )
                     continue
 
