@@ -1,6 +1,6 @@
 import os
 from abc import abstractmethod
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from earthscope_sdk import EarthScopeClient
 from s3fs import S3FileSystem
@@ -70,18 +70,13 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             "earthscope": EARTHSCOPE_S3_ACCESS_POINT,
         }
 
-        self.es_client = EarthScopeClient()
-        self.credential = self.es_client.user.get_aws_credentials()
-
+        self.ttl_threshold = timedelta(minutes=5)
+        self.credential = self.get_es_credential()
         self.fs = {
             "scedc": S3FileSystem(anon=True),
             "ncedc": S3FileSystem(anon=True),
         }
-        self.fs["earthscope"] = S3FileSystem(
-            key=self.credential.aws_access_key_id,
-            secret=self.credential.aws_secret_access_key,
-            token=self.credential.aws_session_token,
-        )
+        self.set_es_filesystem()
 
     def get_prefix(self, net, year, day) -> str:
         return self.helpers[self.get_data_center(net)].get_prefix(net, year, day)
@@ -92,21 +87,31 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         )
 
     def get_filesystem(self, net):
-        return self.fs[self.get_data_center(net)]
+        dc = self.get_data_center(net)
+        if dc == "earthscope":
+            self.update_es_filesystem()
+        return self.fs[dc]
 
     def get_es_credential(self):
         """
         Set 5 minutes buffer time to update credential
         """
-        return self.es_client.user.get_aws_credentials(
-            ttl_threshold=timedelta(minutes=5, seconds=0)
+        with EarthScopeClient() as client:
+            return client.user.get_aws_credentials(ttl_threshold=self.ttl_threshold)
+
+    def set_es_filesystem(self):
+        self.fs["earthscope"] = S3FileSystem(
+            key=self.credential.aws_access_key_id,
+            secret=self.credential.aws_secret_access_key,
+            token=self.credential.aws_session_token,
         )
 
     def update_es_filesystem(self):
-        _credential = self.get_es_credential()
-        if _credential.aws_access_key_id != self.credential.aws_access_key_id:
-            # credential was updated
-            self.credential = _credential
+        if (
+            self.credential.expiration - datetime.now(tz=timezone.utc)
+        ) < self.ttl_threshold:
+            # credential should be updated
+            self.credential = self.get_es_credential()
             self.set_es_filesystem()
         else:
             pass

@@ -199,8 +199,6 @@ class S3DataSource:
             for net in self.networks:
                 avail_uri[net] = []
                 # use the corresponding fs for the network
-                if self.s3helper.get_data_center(net) == "earthscope":
-                    self.s3helper.update_es_filesystem()
                 fs = self.s3helper.get_filesystem(net)
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
