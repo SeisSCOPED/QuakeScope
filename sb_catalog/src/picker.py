@@ -4,7 +4,6 @@ import datetime
 import functools
 import io
 import logging
-import os
 import re
 import time
 from typing import Any, AsyncIterator, Optional
@@ -216,7 +215,7 @@ class S3DataSource:
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
                 logger.debug(
-                    f"Load stream \t{station.ljust(11)}\t{day.strftime('%Y.%j')} @ {dc}"
+                    f"Loading  {station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
                 )
                 stream = obspy.Stream()
 
@@ -229,8 +228,6 @@ class S3DataSource:
                                 stream += await asyncio.to_thread(
                                     self._read_waveform_from_s3, uri, net
                                 )
-                        if len(stream) > 0:
-                            break
                 elif dc == "earthscope":
                     # use the first one: they should be all same
                     r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
@@ -246,10 +243,11 @@ class S3DataSource:
                     raise NotImplemented
 
                 if len(stream) > 0:
+                    # yield stream with all candidate channels for one station, day long stream
                     yield stream
                 else:
                     logger.debug(
-                        f"Empty stream \t{station.ljust(11)}\t{day.strftime('%Y.%j')} @ {dc}"
+                        f"Empty \t{station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
                     )
 
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
@@ -512,77 +510,92 @@ class S3MongoSBBridge:
 
     async def _load_data(
         self,
-        data: asyncio.Queue[obspy.Stream | None],
+        data: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function getting data from the S3 sources and putting it into a queue.
         """
         async for stream in self.s3.load_waveforms():
             if len(stream) > 0:
-                station, day = self._parse_stream(stream)
-                if self._find_pick_records_from_db(station, day) is not None:
-                    logger.debug(
-                        f"Found picks \t{station.ljust(11)}\t{day.strftime('%Y.%j')} > Skipping."
-                    )
-                    continue
+                for channel in list(set([t.stats.channel[:2] for t in stream])):
+                    stream_c = stream.select(channel=f"{channel}?")
+                    station, day = self._parse_stream(stream_c)
+                    if (
+                        self._find_picks_record_from_db(station, day, channel)
+                        is not None
+                    ):
+                        logger.debug(
+                            f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found"
+                        )
+                        continue
 
-            await data.put(stream)
+                    # put stream with one channel type
+                    await data.put([stream_c, channel])
+            else:
+                # put empty stream
+                await data.put([stream, None])
 
+        # put None marking the end of the data queue
         await data.put(None)
 
     async def _pick_data(
         self,
-        data: asyncio.Queue[obspy.Stream | None],
-        picks: asyncio.Queue[sbu.PickList | None],
+        data: asyncio.Queue[list | None],
+        picks: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function taking data from a queue, picking it and returning the results to an output queue.
         """
         while True:
-            stream = await data.get()
-            if stream is None:
+            stream_channel = await data.get()
+            if stream_channel is None:
                 await picks.put(None)
                 break
 
+            stream, channel = stream_channel
             if len(stream) == 0:
                 continue
 
-            logger.debug(f"Picking {stream[0].id} - {stream[0].stats.starttime}")
+            logger.debug(
+                f"Picking  {stream[0].id[:-1].ljust(11)} {stream[0].stats.starttime.strftime('%Y.%j')}"
+            )
 
             stream_annotations = await asyncio.to_thread(self.model.classify, stream)
-            await picks.put(stream_annotations.picks)
+            await picks.put([stream_annotations.picks, channel])
 
-    async def _write_picks_to_db(
-        self, picks: asyncio.Queue[sbu.PickList | None]
-    ) -> None:
+    async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
         """
         An async function reading picks from a queue and putting them into the MongoDB.
         """
         while True:
-            stream_picks = await picks.get()
-            if stream_picks is None:
+            stream_picks_cha = await picks.get()
+            if stream_picks_cha is None:
                 break
 
+            stream_picks, channel = stream_picks_cha
             if len(stream_picks) == 0:
                 continue
 
+            id = f"{stream_picks[0].trace_id}.{channel}"
             logger.debug(
-                f"Putting {len(stream_picks)} picks including {stream_picks[0]}"
+                f"Putting  {id.ljust(11)} {stream_picks[0].peak_time.datetime.strftime('%Y.%j')}"
+                f" > {(str(len(stream_picks))).ljust(3)} picks"
+            )
+            await asyncio.to_thread(
+                self._write_single_picklist_to_db, stream_picks, channel
             )
 
-            await asyncio.to_thread(self._write_single_picklist_to_db, stream_picks)
-
-            await asyncio.to_thread(self._record_single_picklist_to_db, stream_picks)
-
-    def _write_single_picklist_to_db(self, picks: sbu.PickList) -> None:
+    def _write_single_picklist_to_db(self, picks: sbu.PickList, channel: str) -> None:
         """
         Converts picks into records that can be submitted to MongoDB and writes them.
+        Populates the `picks` and `picks_record` collection.
         """
         self.db.insert_many_ignore_duplicates(
             "picks",
             [
                 {
                     "trace_id": pick.trace_id,
+                    "channel": channel,
                     "time": pick.peak_time.datetime,
                     "confidence": float(pick.peak_value),
                     "phase": pick.phase,
@@ -592,15 +605,12 @@ class S3MongoSBBridge:
             ],
         )
 
-    def _record_single_picklist_to_db(self, picks: sbu.PickList) -> None:
-        """
-        Converts picks into records that can be submitted to MongoDB and writes them.
-        """
         self.db.insert_many_ignore_duplicates(
-            "pick_records",
+            "picks_record",
             [
                 {
                     "trace_id": picks[0].trace_id,
+                    "channel": channel,
                     "year": picks[0].peak_time.datetime.year,
                     "doy": int(picks[0].peak_time.datetime.strftime("%-j")),
                     "picks_number": len(picks),
@@ -620,10 +630,13 @@ class S3MongoSBBridge:
         station = ".".join([net, sta, loc])
         return station, day
 
-    def _find_pick_records_from_db(self, station, day):
-        return self.db.database["pick_records"].find_one(
-            {"trace_id": station, "year": day.year, "doy": int(day.strftime("%-j"))}
-        )
+    def _find_picks_record_from_db(
+        self, station: str, day: datetime.date, channel: str = None
+    ):
+        filt = {"trace_id": station, "year": day.year, "doy": int(day.strftime("%-j"))}
+        if channel:
+            filt["channel"] = channel
+        return self.db.database["picks_record"].find_one(filt)
 
 
 if __name__ == "__main__":
