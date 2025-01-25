@@ -6,11 +6,10 @@ import io
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 
 import numpy as np
 import obspy
-import pandas as pd
 import pyocto
 import seisbench
 import seisbench.models as sbm
@@ -163,7 +162,7 @@ class S3DataSource:
         end: Optional[datetime.date] = None,
         stations: Optional[str] = None,
         components: str = "ZNE12",
-        channels: str = "HH?,BH?,EH?,HN?,BN?,EN?,HL?,BL?,EL?",
+        db: SeisBenchDatabase = None,
     ):
         self.start = start
         self.end = end
@@ -174,11 +173,11 @@ class S3DataSource:
         else:
             self.stations = stations.split(",")
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
-        self.channels = channels.split(",")
+        self.db = db
         self.s3helper = CompositeS3ObjectHelper()
         logger.debug(f"Initializing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
-    async def load_waveforms(self) -> AsyncIterator[obspy.Stream]:
+    async def load_waveforms(self) -> AsyncIterator[list]:
         """
         Load the waveforms. This function is async to allow loading data in parallel with processing.
         The function releases the GIL when reading from the S3 bucket.
@@ -212,6 +211,19 @@ class S3DataSource:
                     raise e
 
             for station in self.stations:
+                meta = self.db.database["stations"].find_one({"id": station})
+                all_channels = meta["channels"].split(",")
+                check = {
+                    cha: self.db.get_picks_record(station, day, cha)
+                    for cha in all_channels
+                }
+                # if all channel got results
+                if all(check.values()):
+                    logger.debug(
+                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at all {meta['channels']} channel"
+                    )
+                    continue
+
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
                 logger.debug(
@@ -220,9 +232,14 @@ class S3DataSource:
                 stream = obspy.Stream()
 
                 if dc in ["scedc", "ncedc"]:
-                    for channel in self.channels:
+                    for channel in all_channels:
+                        if check[channel]:
+                            logger.debug(
+                                f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                            )
+                            continue
                         for uri in self._generate_waveform_uris(
-                            net, sta, loc, channel[:2], day
+                            net, sta, loc, channel, day
                         ):
                             if uri in avail_uri[net]:
                                 stream += await asyncio.to_thread(
@@ -237,14 +254,19 @@ class S3DataSource:
                         s = await asyncio.to_thread(
                             self._read_waveform_from_s3, uri[0], net
                         )
-                        for channel in self.channels:
-                            stream += s.select(channel=channel)
+                        for channel in all_channels:
+                            if check[channel]:
+                                logger.debug(
+                                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                )
+                                continue
+                            stream += s.select(channel=f"{channel}?")
                 else:
-                    raise NotImplemented
+                    raise NotImplemented(f"Data center not supported: {dc}")
 
                 if len(stream) > 0:
-                    # yield stream with all candidate channels for one station, day long stream
-                    yield stream
+                    # yield stream with all candidate channels for one station, day long stream, with metadata
+                    yield [stream, station, day]
                 else:
                     logger.debug(
                         f"Empty \t{station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
@@ -345,7 +367,7 @@ class S3MongoSBBridge:
         A unique run_id that is saved in the database along with the configuration for reproducibility.
         """
         if self._run_id is None:
-            self._run_id = self._put_run_data(
+            self._run_id = self.db.write_run_data(
                 model=self.model_name,
                 weight=self.weight,
                 p_threshold=self.p_threshold,
@@ -355,10 +377,6 @@ class S3MongoSBBridge:
                 weight_version=self.model.weights_version,
             )
         return self._run_id
-
-    def _put_run_data(self, **kwargs: Any) -> ObjectId:
-        kwargs["timestamp"] = datetime.datetime.now(datetime.timezone.utc)
-        return self.db.database["sb_runs"].insert_one(kwargs).inserted_id
 
     @staticmethod
     def create_model(
@@ -372,10 +390,6 @@ class S3MongoSBBridge:
         model.default_args["S_threshold"] = s_threshold
         return model
 
-    def _write_stations_to_db(self, stations):
-        logger.debug("Writing station information to MongoDB")
-        self.db.insert_many_ignore_duplicates("stations", stations.to_dict("records"))
-
     def run_association(self, t0: datetime.datetime, t1: datetime.datetime):
         """
         Runs the phase association for the provided time range and the extent defined in self.extent.
@@ -387,7 +401,7 @@ class S3MongoSBBridge:
             f"Associating {len(stations)} stations: " + ",".join(stations["id"].values)
         )
 
-        picks = self._load_picks(list(stations["id"].values), t0, t1)
+        picks = self.db.get_picks(list(stations["id"].values), t0, t1)
         picks.rename(columns={"trace_id": "station"}, inplace=True)
         picks["time"] = picks["time"].apply(lambda x: x.timestamp())
         logger.debug(f"Associating {len(picks)} picks")
@@ -425,65 +439,7 @@ class S3MongoSBBridge:
             events = associator.transform_events(events)
             events["time"] = events["time"].apply(utc_from_timestamp)
 
-        self._write_events_to_db(events, assignments, picks)
-
-    @staticmethod
-    def _date_to_datetime(t: datetime.date | datetime.datetime) -> datetime.datetime:
-        """
-        Helper function to homogenize time formats
-        """
-        if isinstance(t, datetime.date):
-            return datetime.datetime.combine(t, datetime.datetime.min.time())
-        return t
-
-    def _write_events_to_db(
-        self, events: pd.DataFrame, assignments: pd.DataFrame, picks: pd.DataFrame
-    ) -> None:
-        """
-        Writes events and the associated picks into the MongoDB. Ensures that the pick and event ids are consistent
-        with the ones used in the database.
-        """
-        # Put events and get mongodb ids, replace event and pick ids with their mongodb counterparts,
-        # write assignments to database
-        event_result = self.db.insert_many_ignore_duplicates(
-            "events", events.to_dict("records")
-        )
-
-        event_key = pd.DataFrame(
-            {
-                "event_id": event_result.inserted_ids,
-                "event_idx": events["idx"].values,
-            }
-        )
-        pick_key = pd.DataFrame(
-            {
-                "pick_id": picks["_id"],
-                "pick_idx": np.arange(len(picks)),
-            }
-        )
-
-        merged = pd.merge(event_key, assignments, on="event_idx")
-        merged = pd.merge(merged, pick_key, on="pick_idx")
-
-        merged = merged[["event_id", "pick_id"]]
-
-        self.db.database["assignments"].insert_many(merged.to_dict("records"))
-
-    def _load_picks(
-        self, station_ids: list[str], t0: datetime.datetime, t1: datetime.datetime
-    ) -> pd.DataFrame:
-        """
-        Loads picks for a list of stations during a given time range from the database.
-        The database has already been configured with indices that speed up this query.
-        """
-        cursor = self.db.database["picks"].find(
-            {
-                "time": {"$gt": t0, "$lt": t1},
-                "trace_id": {"$in": station_ids},
-            }
-        )
-
-        return pd.DataFrame(cursor)
+        self.db.write_events(events, assignments, picks)
 
     def run_picking(self) -> None:
         """
@@ -515,25 +471,21 @@ class S3MongoSBBridge:
         """
         An async function getting data from the S3 sources and putting it into a queue.
         """
-        async for stream in self.s3.load_waveforms():
+        async for stream, station, day in self.s3.load_waveforms():
             if len(stream) > 0:
                 for channel in list(set([t.stats.channel[:2] for t in stream])):
                     stream_c = stream.select(channel=f"{channel}?")
-                    station, day = self._parse_stream(stream_c)
-                    if (
-                        self._find_picks_record_from_db(station, day, channel)
-                        is not None
-                    ):
+                    if self.db.get_picks_record(station, day, channel) is not None:
                         logger.debug(
                             f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found"
                         )
                         continue
 
                     # put stream with one channel type
-                    await data.put([stream_c, channel])
+                    await data.put([stream_c, station, day, channel])
             else:
                 # put empty stream
-                await data.put([stream, None])
+                await data.put([stream, station, day, None])
 
         # put None marking the end of the data queue
         await data.put(None)
@@ -547,38 +499,36 @@ class S3MongoSBBridge:
         An async function taking data from a queue, picking it and returning the results to an output queue.
         """
         while True:
-            stream_channel = await data.get()
-            if stream_channel is None:
+            _st_sta_day_cha = await data.get()
+            if _st_sta_day_cha is None:
                 await picks.put(None)
                 break
 
-            stream, channel = stream_channel
+            stream, station, day, channel = _st_sta_day_cha
             if len(stream) == 0:
                 continue
 
-            logger.debug(
-                f"Picking  {stream[0].id[:-1].ljust(11)} {stream[0].stats.starttime.strftime('%Y.%j')}"
-            )
+            logger.debug(f"Picking  {station.ljust(11)} {day.strftime('%Y.%j')}")
 
             stream_annotations = await asyncio.to_thread(self.model.classify, stream)
-            await picks.put([stream_annotations.picks, channel])
+            await picks.put([stream_annotations.picks, station, day, channel])
 
     async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
         """
         An async function reading picks from a queue and putting them into the MongoDB.
         """
         while True:
-            stream_picks_cha = await picks.get()
-            if stream_picks_cha is None:
+            _pk_sta_day_cha = await picks.get()
+            if _pk_sta_day_cha is None:
                 break
 
-            stream_picks, channel = stream_picks_cha
+            stream_picks, station, day, channel = _pk_sta_day_cha
             if len(stream_picks) == 0:
                 continue
 
-            id = f"{stream_picks[0].trace_id}.{channel}"
+            id = f"{station}.{channel}"
             logger.debug(
-                f"Putting  {id.ljust(11)} {stream_picks[0].peak_time.datetime.strftime('%Y.%j')}"
+                f"Putting  {id.ljust(11)} {day.strftime('%Y.%j')}"
                 f" > {(str(len(stream_picks))).ljust(3)} picks"
             )
             await asyncio.to_thread(
@@ -619,24 +569,14 @@ class S3MongoSBBridge:
             ],
         )
 
-    def _parse_stream(self, s: obspy.Stream):
+    @staticmethod
+    def _date_to_datetime(t: datetime.date | datetime.datetime) -> datetime.datetime:
         """
-        Get a rough staiton code and day time based on the given stream
+        Helper function to homogenize time formats
         """
-        net = s[0].stats.network
-        sta = s[0].stats.station
-        loc = s[0].stats.location
-        day = s[0].stats.starttime
-        station = ".".join([net, sta, loc])
-        return station, day
-
-    def _find_picks_record_from_db(
-        self, station: str, day: datetime.date, channel: str = None
-    ):
-        filt = {"trace_id": station, "year": day.year, "doy": int(day.strftime("%-j"))}
-        if channel:
-            filt["channel"] = channel
-        return self.db.database["picks_record"].find_one(filt)
+        if isinstance(t, datetime.date):
+            return datetime.datetime.combine(t, datetime.datetime.min.time())
+        return t
 
 
 if __name__ == "__main__":
