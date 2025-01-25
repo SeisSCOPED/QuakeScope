@@ -120,6 +120,7 @@ def main() -> None:
         start=args.start,
         end=args.end,
         components=args.components,
+        db=db,
     )
     if args.extent is None:
         extent = None
