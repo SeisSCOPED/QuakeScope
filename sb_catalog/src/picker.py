@@ -270,7 +270,7 @@ class S3DataSource:
                     yield [stream, station, day]
                 else:
                     logger.debug(
-                        f"Empty \t{station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
+                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
                     )
 
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
