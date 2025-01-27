@@ -281,7 +281,8 @@ class S3DataSource:
         PermissionError: EarthScope temporary credential expired. Refresh the credential and retry.
         ClientError: S3 overloaded, the job will sleep for 5 seconds and retry until return.
         FileNotFoundError: file not exist.
-        ValueError: certain types of corrupt files
+        ValueError: certain types of corrupt files.
+        TypeError: certain types of empty mSEED files, i.e. in NCEDC
 
         """
         while True:
@@ -303,6 +304,8 @@ class S3DataSource:
             except FileNotFoundError:
                 return obspy.Stream()
             except ValueError:
+                return obspy.Stream()
+            except TypeError:
                 return obspy.Stream()
 
     def _generate_waveform_uris(
