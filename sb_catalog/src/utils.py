@@ -50,14 +50,16 @@ class SeisBenchDatabase(pymongo.MongoClient):
                 name="picks_record_idx",
             )
 
-    def get_picks_record(self, station: str, day: datetime.date, channel: str) -> dict:
+    def get_picks_record(
+        self, station: str, day: datetime.date, channel: str, key: dict = {}
+    ) -> dict:
         filt = {
             "trace_id": station,
             "year": day.year,
             "doy": int(day.strftime("%-j")),
             "channel": channel,
         }
-        return self.database["picks_record"].find_one(filt)
+        return self.database["picks_record"].find_one(filt, key)
 
     def get_stations(
         self, extent: tuple[float, float, float, float] = None, network: str = None

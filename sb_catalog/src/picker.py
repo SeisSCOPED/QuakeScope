@@ -10,6 +10,7 @@ from typing import AsyncIterator, Optional
 
 import numpy as np
 import obspy
+import pandas as pd
 import pyocto
 import seisbench
 import seisbench.models as sbm
@@ -188,9 +189,17 @@ class S3DataSource:
         """
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
 
+        meta = pd.DataFrame(
+            list(
+                self.db.database["stations"].find(
+                    {"id": {"$in": self.stations}}, {"_id": 0, "id": 1, "channels": 1}
+                )
+            )
+        )
+        meta = meta.set_index("id")
+
         for day in days:
             day = day.astype(datetime.datetime)
-
             # get a list of exist URIs
             # ls can be slow, but it merges many small open request
             # and effectively reduced the total number of requests
@@ -212,16 +221,17 @@ class S3DataSource:
                     raise e
 
             for station in self.stations:
-                meta = self.db.database["stations"].find_one({"id": station})
-                all_channels = meta["channels"].split(",")
+                all_channels = meta.loc[station, "channels"].split(",")
                 check = {
-                    cha: self.db.get_picks_record(station, day, cha)
+                    cha: self.db.get_picks_record(
+                        station, day, cha, {"_id": 1}
+                    )  # return _id would be sufficient
                     for cha in all_channels
                 }
                 # if all channel got results
                 if all(check.values()):
                     logger.debug(
-                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at all {meta['channels']} channel"
+                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at all {meta.loc[station, 'channels']} channel"
                     )
                     continue
 
@@ -481,6 +491,8 @@ class S3MongoSBBridge:
                     stream_c = stream.select(channel=f"{channel}?")
 
                     # put stream with one channel type
+                    id = f"{station}.{channel}"
+                    logger.debug(f"Sending  {id.ljust(11)} {day.strftime('%Y.%j')}")
                     await data.put([stream_c, station, day, channel])
             else:
                 # put empty stream
