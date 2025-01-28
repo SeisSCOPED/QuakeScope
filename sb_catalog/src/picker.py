@@ -519,7 +519,8 @@ class S3MongoSBBridge:
             if len(stream) == 0:
                 continue
 
-            logger.debug(f"Picking  {station.ljust(11)} {day.strftime('%Y.%j')}")
+            id = f"{station}.{channel}"
+            logger.debug(f"Picking  {id.ljust(11)} {day.strftime('%Y.%j')}")
 
             stream_annotations = await asyncio.to_thread(self.model.classify, stream)
             await picks.put([stream_annotations.picks, station, day, channel])
