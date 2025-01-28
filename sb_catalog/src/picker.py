@@ -492,7 +492,16 @@ class S3MongoSBBridge:
 
                     # put stream with one channel type
                     id = f"{station}.{channel}"
-                    logger.debug(f"Sending  {id.ljust(11)} {day.strftime('%Y.%j')}")
+                    if (
+                        len(stream_c) > 150
+                    ):  # maximum number of data gap (3*50 per component)
+                        logger.debug(
+                            f"Skipping {id.ljust(11)} {day.strftime('%Y.%j')} < too many gaps"
+                        )
+                        stream_c = obspy.Stream()
+                    else:
+                        logger.debug(f"Sending  {id.ljust(11)} {day.strftime('%Y.%j')}")
+
                     await data.put([stream_c, station, day, channel])
             else:
                 # put empty stream
@@ -516,14 +525,18 @@ class S3MongoSBBridge:
                 break
 
             stream, station, day, channel = _st_sta_day_cha
-            if len(stream) == 0:
-                continue
-
             id = f"{station}.{channel}"
             logger.debug(f"Picking  {id.ljust(11)} {day.strftime('%Y.%j')}")
-
-            stream_annotations = await asyncio.to_thread(self.model.classify, stream)
-            await picks.put([stream_annotations.picks, station, day, channel])
+            if len(stream) == 0:
+                logger.debug(
+                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
+                )
+                await picks.put([sbu.PickList(), station, day, channel])
+            else:
+                stream_annotations = await asyncio.to_thread(
+                    self.model.classify, stream
+                )
+                await picks.put([stream_annotations.picks, station, day, channel])
 
     async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
         """
@@ -535,8 +548,6 @@ class S3MongoSBBridge:
                 break
 
             stream_picks, station, day, channel = _pk_sta_day_cha
-            if len(stream_picks) == 0:
-                continue
 
             id = f"{station}.{channel}"
             logger.debug(
@@ -544,37 +555,40 @@ class S3MongoSBBridge:
                 f" > {(str(len(stream_picks))).ljust(3)} picks"
             )
             await asyncio.to_thread(
-                self._write_single_picklist_to_db, stream_picks, channel
+                self._write_single_picklist_to_db, stream_picks, station, day, channel
             )
 
-    def _write_single_picklist_to_db(self, picks: sbu.PickList, channel: str) -> None:
+    def _write_single_picklist_to_db(
+        self, picks: sbu.PickList, station: str, day: datetime.datetime, channel: str
+    ) -> None:
         """
         Converts picks into records that can be submitted to MongoDB and writes them.
         Populates the `picks` and `picks_record` collection.
         """
-        self.db.insert_many_ignore_duplicates(
-            "picks",
-            [
-                {
-                    "trace_id": pick.trace_id,
-                    "channel": channel,
-                    "time": pick.peak_time.datetime,
-                    "confidence": float(pick.peak_value),
-                    "phase": pick.phase,
-                    "run_id": self.run_id,
-                }
-                for pick in picks
-            ],
-        )
+        if len(picks) > 0:
+            self.db.insert_many_ignore_duplicates(
+                "picks",
+                [
+                    {
+                        "trace_id": pick.trace_id,
+                        "channel": channel,
+                        "time": pick.peak_time.datetime,
+                        "confidence": float(pick.peak_value),
+                        "phase": pick.phase,
+                        "run_id": self.run_id,
+                    }
+                    for pick in picks
+                ],
+            )
 
         self.db.insert_many_ignore_duplicates(
             "picks_record",
             [
                 {
-                    "trace_id": picks[0].trace_id,
+                    "trace_id": station,
                     "channel": channel,
-                    "year": picks[0].peak_time.datetime.year,
-                    "doy": int(picks[0].peak_time.datetime.strftime("%-j")),
+                    "year": day.year,
+                    "doy": int(day.strftime("%-j")),
                     "picks_number": len(picks),
                     "run_id": self.run_id,
                 }
