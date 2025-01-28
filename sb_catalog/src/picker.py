@@ -479,11 +479,6 @@ class S3MongoSBBridge:
             if len(stream) > 0:
                 for channel in list(set([t.stats.channel[:2] for t in stream])):
                     stream_c = stream.select(channel=f"{channel}?")
-                    if self.db.get_picks_record(station, day, channel) is not None:
-                        logger.debug(
-                            f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found"
-                        )
-                        continue
 
                     # put stream with one channel type
                     await data.put([stream_c, station, day, channel])
@@ -584,4 +579,6 @@ class S3MongoSBBridge:
 
 
 if __name__ == "__main__":
+    logger.info(f"Start job at {datetime.datetime.now()}")
     main()
+    logger.info(f"Finish job at {datetime.datetime.now()}")
