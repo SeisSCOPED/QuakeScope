@@ -35,7 +35,7 @@ class SeisBenchDatabase(pymongo.MongoClient):
         pick_coll = self.database["picks"]
         if "pick_idx" not in pick_coll.index_information():
             pick_coll.create_index(
-                ["trace_id", "channel", "phase", "time"], unique=True, name="pick_idx"
+                ["tid", "cha", "pha", "peak"], unique=True, name="pick_idx"
             )
 
         station_coll = self.database["stations"]
@@ -45,7 +45,7 @@ class SeisBenchDatabase(pymongo.MongoClient):
         picks_record_coll = self.database["picks_record"]
         if "picks_record_idx" not in picks_record_coll.index_information():
             picks_record_coll.create_index(
-                ["trace_id", "channel", "year", "doy"],
+                ["tid", "cha", "yr", "doy"],
                 unique=True,
                 name="picks_record_idx",
             )
@@ -54,10 +54,10 @@ class SeisBenchDatabase(pymongo.MongoClient):
         self, station: str, day: datetime.date, channel: str, key: dict = {}
     ) -> dict:
         filt = {
-            "trace_id": station,
-            "year": day.year,
+            "tid": station,
+            "yr": day.year,
             "doy": int(day.strftime("%-j")),
-            "channel": channel,
+            "cha": channel,
         }
         return self.database["picks_record"].find_one(filt, key)
 
@@ -81,6 +81,10 @@ class SeisBenchDatabase(pymongo.MongoClient):
 
         return pd.DataFrame(list(cursor))
 
+    def get_station_metadata(self, stations: list[str], key: dict = {}):
+        cursor = self.database["stations"].find({"id": {"$in": stations}}, key)
+        return pd.DataFrame(list(cursor))
+
     def get_picks(
         self, station_ids: list[str], t0: datetime.datetime, t1: datetime.datetime
     ) -> pd.DataFrame:
@@ -90,8 +94,8 @@ class SeisBenchDatabase(pymongo.MongoClient):
         """
         cursor = self.database["picks"].find(
             {
-                "time": {"$gt": t0, "$lt": t1},
-                "trace_id": {"$in": station_ids},
+                "peak": {"$gt": t0, "$lt": t1},
+                "tid": {"$in": station_ids},
             }
         )
 

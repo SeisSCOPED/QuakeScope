@@ -18,6 +18,7 @@ import seisbench.util as sbu
 from botocore.exceptions import ClientError
 from bson import ObjectId
 
+from .amplitude_extractor import AmplitudeExtractor
 from .s3_helper import CompositeS3ObjectHelper
 from .utils import SeisBenchDatabase, parse_year_day
 
@@ -114,6 +115,11 @@ def main() -> None:
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 
+    # Idle the job to scatter requests
+    delay = np.random.randint(args.delay)
+    logger.debug(f"Delaying this job for {delay} sec.")
+    time.sleep(delay)
+
     # Set up data base for results and data source
     db = SeisBenchDatabase(args.db_uri, args.database)
     s3 = S3DataSource(
@@ -143,9 +149,6 @@ def main() -> None:
     )
 
     if args.command == "pick":
-        delay = np.random.randint(args.delay)
-        logger.debug(f"Delaying this job for {delay} sec.")
-        time.sleep(delay)
         picker.run_picking()
     elif args.command == "associate":
         picker.run_association(args.start, args.end)
@@ -177,7 +180,17 @@ class S3DataSource:
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.db = db
         self.s3helper = CompositeS3ObjectHelper()
-        logger.debug(f"Initializing s3 access to {', '.join(self.s3helper.fs.keys())}")
+        logger.debug(
+            f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}"
+        )
+
+        self.meta = self.db.get_station_metadata(
+            self.stations, {"_id": 0, "id": 1, "channels": 1}
+        ).set_index("id")
+        logger.debug(f"Done preparing metadata for the assigned stations")
+
+        self.inventory = self._get_inventory()
+        logger.debug(f"Done preparing inventory for the assigned stations")
 
     async def load_waveforms(self) -> AsyncIterator[list]:
         """
@@ -188,15 +201,6 @@ class S3DataSource:
         This matches the typical access pattern required for single-station phase pickers.
         """
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
-
-        meta = pd.DataFrame(
-            list(
-                self.db.database["stations"].find(
-                    {"id": {"$in": self.stations}}, {"_id": 0, "id": 1, "channels": 1}
-                )
-            )
-        )
-        meta = meta.set_index("id")
 
         for day in days:
             day = day.astype(datetime.datetime)
@@ -221,7 +225,7 @@ class S3DataSource:
                     raise e
 
             for station in self.stations:
-                all_channels = meta.loc[station, "channels"].split(",")
+                all_channels = self.meta.loc[station, "channels"].split(",")
                 check = {
                     cha: self.db.get_picks_record(
                         station, day, cha, {"_id": 1}
@@ -231,14 +235,14 @@ class S3DataSource:
                 # if all channel got results
                 if all(check.values()):
                     logger.debug(
-                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at all {meta.loc[station, 'channels']} channel"
+                        f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
                     )
                     continue
 
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
                 logger.debug(
-                    f"Loading  {station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
+                    f"Load {station.ljust(11)}   {day.strftime('%Y.%j')} @ {dc}"
                 )
                 stream = obspy.Stream()
 
@@ -246,7 +250,7 @@ class S3DataSource:
                     for channel in all_channels:
                         if check[channel]:
                             logger.debug(
-                                f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at {channel} channel"
                             )
                             continue
                         for uri in self._generate_waveform_uris(
@@ -268,7 +272,7 @@ class S3DataSource:
                         for channel in all_channels:
                             if check[channel]:
                                 logger.debug(
-                                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                    f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                                 )
                                 continue
                             stream += s.select(channel=f"{channel}?")
@@ -280,7 +284,7 @@ class S3DataSource:
                     yield [stream, station, day]
                 else:
                     logger.debug(
-                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
+                        f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
                     )
 
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
@@ -311,11 +315,7 @@ class S3DataSource:
             except ClientError:
                 logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
                 time.sleep(5)
-            except FileNotFoundError:
-                return obspy.Stream()
-            except ValueError:
-                return obspy.Stream()
-            except TypeError:
+            except (FileNotFoundError, ValueError, TypeError):
                 return obspy.Stream()
 
     def _generate_waveform_uris(
@@ -332,6 +332,33 @@ class S3DataSource:
             uris.append(self.s3helper.get_s3_path(net, sta, loc, cha, year, day, c))
 
         return uris
+
+    def _get_inventory(self):
+        # Use IRIS web service for inventory request
+        client = obspy.clients.fdsn.Client("IRIS")
+
+        sta_code = ",".join([i.split(".")[1] for i in self.stations])
+        net_code = ",".join(self.networks)
+        cha_code = ",".join(
+            set([f"{j}?" for i in self.meta.channels for j in i.split(",")])
+        )
+
+        while True:
+            try:
+                inv = client.get_stations(
+                    network=net_code,
+                    station=sta_code,
+                    channel=cha_code,
+                    level="response",
+                    starttime=obspy.UTCDateTime(self.start),
+                    endtime=obspy.UTCDateTime(self.end),
+                )
+                return inv
+            except:
+                logger.warning(
+                    f"FDSN service might be busy. Sleep for 5 seconds and retry."
+                )
+                time.sleep(5)
 
 
 class S3MongoSBBridge:
@@ -359,6 +386,7 @@ class S3MongoSBBridge:
             self.model = self.create_model(model, weight, p_threshold, s_threshold)
         else:
             self.model = None
+        self.amp_extor = AmplitudeExtractor()
         self.model_name = model
         self.weight = weight
         self.p_threshold = p_threshold
@@ -416,8 +444,8 @@ class S3MongoSBBridge:
         )
 
         picks = self.db.get_picks(list(stations["id"].values), t0, t1)
-        picks.rename(columns={"trace_id": "station"}, inplace=True)
-        picks["time"] = picks["time"].apply(lambda x: x.timestamp())
+        picks.rename(columns={"tid": "station"}, inplace=True)
+        picks["time"] = picks["peak"].apply(lambda x: x.timestamp())
         logger.debug(f"Associating {len(picks)} picks")
 
         if len(picks) == 0:
@@ -496,11 +524,11 @@ class S3MongoSBBridge:
                         len(stream_c) > 150
                     ):  # maximum number of data gap (3*50 per component)
                         logger.debug(
-                            f"Skipping {id.ljust(11)} {day.strftime('%Y.%j')} < too many gaps"
+                            f"Skip {id.ljust(11)} {day.strftime('%Y.%j')} < too many gaps"
                         )
                         stream_c = obspy.Stream()
                     else:
-                        logger.debug(f"Sending  {id.ljust(11)} {day.strftime('%Y.%j')}")
+                        logger.debug(f"Send {id.ljust(11)} {day.strftime('%Y.%j')}")
 
                     await data.put([stream_c, station, day, channel])
             else:
@@ -526,40 +554,60 @@ class S3MongoSBBridge:
 
             stream, station, day, channel = _st_sta_day_cha
             id = f"{station}.{channel}"
-            logger.debug(f"Picking  {id.ljust(11)} {day.strftime('%Y.%j')}")
+            logger.debug(f"Pick {id.ljust(11)} {day.strftime('%Y.%j')}")
             if len(stream) == 0:
                 logger.debug(
-                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
+                    f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
                 )
                 await picks.put([sbu.PickList(), station, day, channel])
             else:
+                # do picking
                 stream_annotations = await asyncio.to_thread(
                     self.model.classify, stream
                 )
-                await picks.put([stream_annotations.picks, station, day, channel])
+                # extract amplitudes
+                stream_amplitudes = await asyncio.to_thread(
+                    self.amp_extor.extract_amplitudes,
+                    stream,
+                    stream_annotations.picks,
+                    self.s3.inventory,
+                )
+                await picks.put(
+                    [stream_annotations.picks, stream_amplitudes, station, day, channel]
+                )
 
     async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
         """
         An async function reading picks from a queue and putting them into the MongoDB.
         """
         while True:
-            _pk_sta_day_cha = await picks.get()
-            if _pk_sta_day_cha is None:
+            _pk_amp_sta_day_cha = await picks.get()
+            if _pk_amp_sta_day_cha is None:
                 break
 
-            stream_picks, station, day, channel = _pk_sta_day_cha
+            stream_picks, stream_amplitudes, station, day, channel = _pk_amp_sta_day_cha
 
             id = f"{station}.{channel}"
             logger.debug(
-                f"Putting  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
                 f" > {(str(len(stream_picks))).ljust(3)} picks"
             )
             await asyncio.to_thread(
-                self._write_single_picklist_to_db, stream_picks, station, day, channel
+                self._write_single_picklist_to_db,
+                stream_picks,
+                stream_amplitudes,
+                station,
+                day,
+                channel,
             )
 
     def _write_single_picklist_to_db(
-        self, picks: sbu.PickList, station: str, day: datetime.datetime, channel: str
+        self,
+        picks: sbu.PickList,
+        amplitudes: list[float],
+        station: str,
+        day: datetime.datetime,
+        channel: str,
     ) -> None:
         """
         Converts picks into records that can be submitted to MongoDB and writes them.
@@ -570,14 +618,17 @@ class S3MongoSBBridge:
                 "picks",
                 [
                     {
-                        "trace_id": pick.trace_id,
-                        "channel": channel,
-                        "time": pick.peak_time.datetime,
-                        "confidence": float(pick.peak_value),
-                        "phase": pick.phase,
-                        "run_id": self.run_id,
+                        "tid": pick.trace_id,
+                        "cha": channel,
+                        "start": pick.start_time.datetime,
+                        "peak": pick.peak_time.datetime,
+                        "end": pick.end_time.datetime,
+                        "conf": float(pick.peak_value),
+                        "amp": float(amp),
+                        "pha": pick.phase,
+                        "rid": self.run_id,
                     }
-                    for pick in picks
+                    for pick, amp in zip(picks, amplitudes)
                 ],
             )
 
@@ -585,12 +636,12 @@ class S3MongoSBBridge:
             "picks_record",
             [
                 {
-                    "trace_id": station,
-                    "channel": channel,
-                    "year": day.year,
+                    "tid": station,
+                    "cha": channel,
+                    "yr": day.year,
                     "doy": int(day.strftime("%-j")),
-                    "picks_number": len(picks),
-                    "run_id": self.run_id,
+                    "npks": len(picks),
+                    "rid": self.run_id,
                 }
             ],
         )
