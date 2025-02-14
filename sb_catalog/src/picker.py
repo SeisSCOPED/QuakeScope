@@ -2,11 +2,11 @@ import argparse
 import asyncio
 import datetime
 import functools
-import itertools
+import io
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 
 import numpy as np
 import obspy
@@ -17,16 +17,9 @@ import seisbench.models as sbm
 import seisbench.util as sbu
 from botocore.exceptions import ClientError
 from bson import ObjectId
-from s3fs import S3FileSystem
-from tqdm import tqdm
 
-from .util import (
-    SeisBenchDatabase,
-    _prefix_mapper,
-    network_mapper,
-    parse_year_day,
-    s3_path_mapper,
-)
+from .s3_helper import CompositeS3ObjectHelper
+from .utils import SeisBenchDatabase, parse_year_day
 
 logger = logging.getLogger("sb_picker")
 
@@ -115,7 +108,7 @@ def main() -> None:
     if args.debug:  # Setup debug logging
         handler = logging.StreamHandler()
         formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
@@ -128,6 +121,7 @@ def main() -> None:
         start=args.start,
         end=args.end,
         components=args.components,
+        db=db,
     )
     if args.extent is None:
         extent = None
@@ -153,12 +147,8 @@ def main() -> None:
         logger.debug(f"Delaying this job for {delay} sec.")
         time.sleep(delay)
         picker.run_picking()
-    elif args.command == "station_list":
-        picker.run_station_listing()
     elif args.command == "associate":
         picker.run_association(args.start, args.end)
-    elif args.command == "pick_jobs":
-        picker.get_pick_jobs()
     else:
         raise ValueError(f"Unknown command '{args.command}'")
 
@@ -174,21 +164,22 @@ class S3DataSource:
         end: Optional[datetime.date] = None,
         stations: Optional[str] = None,
         components: str = "ZNE12",
-        channels: str = "HH?,BH?,EH?,HN?,BN?,EN?,HL?,BL?,EL?",
+        db: SeisBenchDatabase = None,
     ):
         self.start = start
         self.end = end
         self.components = components
-        self.s3s = list(set(network_mapper.values()))
         if stations is None:
             self.stations = []
             self.networks = []
         else:
             self.stations = stations.split(",")
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
-        self.channels = channels.split(",")
+        self.db = db
+        self.s3helper = CompositeS3ObjectHelper()
+        logger.debug(f"Initializing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
-    async def load_waveforms(self) -> AsyncIterator[obspy.Stream]:
+    async def load_waveforms(self) -> AsyncIterator[list]:
         """
         Load the waveforms. This function is async to allow loading data in parallel with processing.
         The function releases the GIL when reading from the S3 bucket.
@@ -197,168 +188,148 @@ class S3DataSource:
         This matches the typical access pattern required for single-station phase pickers.
         """
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
-        fs = S3FileSystem(anon=True)
+
+        meta = pd.DataFrame(
+            list(
+                self.db.database["stations"].find(
+                    {"id": {"$in": self.stations}}, {"_id": 0, "id": 1, "channels": 1}
+                )
+            )
+        )
+        meta = meta.set_index("id")
 
         for day in days:
             day = day.astype(datetime.datetime)
-
-            # get a list of exist uri
-            # fs.ls can be slow, but it merges many small fs.open request
-            # and reduced the total number of requests
-            avail_uri = []
+            # get a list of exist URIs
+            # ls can be slow, but it merges many small open request
+            # and effectively reduced the total number of requests
+            avail_uri = {}
             for net in self.networks:
-                s3 = network_mapper[net]
-                prefix = _prefix_mapper(s3, net, day.strftime("%Y"), day.strftime("%j"))
+                avail_uri[net] = []
+                # use the corresponding fs for the network
+                fs = self.s3helper.get_filesystem(net)
+                prefix = self.s3helper.get_prefix(
+                    net, day.strftime("%Y"), day.strftime("%j")
+                )
                 try:
-                    avail_uri += fs.ls(prefix)
+                    avail_uri[net] += fs.ls(prefix)
                 except FileNotFoundError:
-                    logging.debug(f"Path does not exist {prefix}")
+                    logger.debug(f"Path does not exist {prefix}")
                     pass
+                except PermissionError as e:
+                    logger.debug(e.args[0])
+                    raise e
 
             for station in self.stations:
-                logger.debug(f"Loading {station} - {day.strftime('%Y.%j')}")
+                all_channels = meta.loc[station, "channels"].split(",")
+                check = {
+                    cha: self.db.get_picks_record(
+                        station, day, cha, {"_id": 1}
+                    )  # return _id would be sufficient
+                    for cha in all_channels
+                }
+                # if all channel got results
+                if all(check.values()):
+                    logger.debug(
+                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at all {meta.loc[station, 'channels']} channel"
+                    )
+                    continue
+
+                net, sta, loc = station.split(".")
+                dc = self.s3helper.get_data_center(net)
+                logger.debug(
+                    f"Loading  {station.ljust(11)} {day.strftime('%Y.%j')} @ {dc}"
+                )
                 stream = obspy.Stream()
-                for channel in self.channels:
-                    for uri in self._generate_waveform_uris(station, channel[:2], day):
-                        if uri in avail_uri:
-                            stream += await asyncio.to_thread(
-                                self._read_waveform_from_s3, fs, uri
+
+                if dc in ["scedc", "ncedc"]:
+                    for channel in all_channels:
+                        if check[channel]:
+                            logger.debug(
+                                f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                             )
-                    if len(stream) > 0:
-                        break
+                            continue
+                        for uri in self._generate_waveform_uris(
+                            net, sta, loc, channel, day
+                        ):
+                            if uri in avail_uri[net]:
+                                stream += await asyncio.to_thread(
+                                    self._read_waveform_from_s3, uri, net
+                                )
+                elif dc == "earthscope":
+                    # use the first one: they should be all same
+                    r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
+                    # earthscope object name has version number
+                    uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
+                    if len(uri) > 0:
+                        s = await asyncio.to_thread(
+                            self._read_waveform_from_s3, uri[0], net
+                        )
+                        for channel in all_channels:
+                            if check[channel]:
+                                logger.debug(
+                                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                )
+                                continue
+                            stream += s.select(channel=f"{channel}?")
+                else:
+                    raise NotImplemented(f"Data center not supported: {dc}")
 
                 if len(stream) > 0:
-                    yield stream
+                    # yield stream with all candidate channels for one station, day long stream, with metadata
+                    yield [stream, station, day]
                 else:
-                    logger.debug(f"Empty stream {station} - {day}")
+                    logger.debug(
+                        f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
+                    )
 
-    def get_available_stations(self) -> pd.DataFrame:
+    def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
         """
-        List all stations available in the S3 bucket by scanning the StationXML files.
-        Returns station list as a dataframe.
-        """
-        fs = S3FileSystem(anon=True)
+        Failure tolerant method for reading data from S3.
 
-        station_uris = []
-        for s3 in self.s3s:
-            logger.debug(f"Listing StationXML URIs from {s3}.")
-            networks = fs.ls(f"{s3}/FDSNstationXML/")
-            for net in networks:
-                # SCEDC also holds "unauthoritative-XML" for other stations
-                if len(net.split("/")[-1]) == 2:
-                    station_uris += fs.ls(net)[1:]
+        OSError#5: accessing non-authorized earthscope data. Return empty stream.
+        PermissionError: EarthScope temporary credential expired. Refresh the credential and retry.
+        ClientError: S3 overloaded, the job will sleep for 5 seconds and retry until return.
+        FileNotFoundError: file not exist.
+        ValueError: certain types of corrupt files.
+        TypeError: certain types of empty mSEED files, i.e. in NCEDC
 
-        logger.debug(
-            "Reading and parsing all station inventories. This may take some time..."
-        )
-        stations = []
-        for uri in tqdm(station_uris, total=len(station_uris)):
-            with fs.open(uri) as f:
-                inv = obspy.read_inventory(f)
-
-            for net in inv:
-                for sta in net:
-                    start_date = sta.start_date.strftime("%Y.%j")
-                    try:
-                        # some stations may have no end date defined
-                        end_date = sta.end_date.strftime("%Y.%j")
-                    except AttributeError:
-                        end_date = "3000.001"
-
-                    locs = {cha.location_code for cha in sta}
-                    for loc in locs:
-                        channels = ",".join(
-                            sorted(
-                                {
-                                    cha.code
-                                    for cha in sta.select(location=loc)
-                                    if self._check_channel(cha.code)
-                                }
-                            )
-                        )
-                        if channels == "":
-                            continue
-
-                        stations.append(
-                            {
-                                "network_code": net.code,
-                                "station_code": sta.code,
-                                "location_code": loc,
-                                "channels": channels,
-                                "id": f"{net.code}.{sta.code}.{loc}",
-                                "latitude": sta.latitude,
-                                "longitude": sta.longitude,
-                                "elevation": sta.elevation,
-                                "start_date": start_date,
-                                "end_date": end_date,
-                            }
-                        )
-
-        stations = pd.DataFrame(stations)
-
-        def unify_channel_names(x):
-            """
-            Combines channel names into a string
-            """
-            channels = itertools.chain.from_iterable(
-                channels.split(",") for channels in x["channels"]
-            )
-            channels = ",".join(sorted(list(set(channels))))
-            out = x.iloc[0].copy()
-            out["channels"] = channels
-            return out
-
-        stations = (
-            stations.groupby("id")
-            .apply(unify_channel_names, include_groups=False)
-            .reset_index()
-        )
-
-        return stations
-
-    def _check_channel(self, channel: str) -> bool:
-        """
-        Check whether a channel matches the channel patterns defined in `self.channels`
-        """
-        for pattern in self.channels:
-            pattern = pattern.replace("?", ".?").replace("*", ".*")
-            if re.fullmatch(pattern, channel):
-                return True
-        return False
-
-    @staticmethod
-    def _read_waveform_from_s3(fs, uri) -> obspy.Stream:
-        """
-        Failure tolerant method for reading data from S3. If an error occurs, an empty stream is returned.
-        Unless the error is because of S3 overloaded, the job will sleep for 5 seconds and retry.
         """
         while True:
+            fs = self.s3helper.get_filesystem(net)
             try:
-                with fs.open(uri) as f:
-                    return obspy.read(f)
+                buff = io.BytesIO(fs.read_bytes(uri))
+                return obspy.read(buff)
+            except OSError as e:
+                if e.errno == 5:
+                    logger.warning(f"Not authorized to access this resource: {uri}")
+                    return obspy.Stream()
+            except PermissionError as e:
+                logger.debug(e.args[0])
+                self.s3helper.update_es_filesystem()
+                logger.warning("Credential refreshed.")
             except ClientError:
-                logger.debug(
-                    f"Getting S3 ClientError. Resting for 5 seconds and retry."
-                )
+                logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
                 time.sleep(5)
-            except FileNotFoundError:  # File does not exist
+            except FileNotFoundError:
                 return obspy.Stream()
-            except ValueError:  # Raised for certain types of corrupt files
+            except ValueError:
+                return obspy.Stream()
+            except TypeError:
                 return obspy.Stream()
 
     def _generate_waveform_uris(
-        self, station: str, cha: str, date: datetime.date
+        self, net: str, sta: str, loc: str, cha: str, date: datetime.date
     ) -> list[str]:
         """
         Generates a list of S3 uris for the requested data
         """
         uris = []
-        net, sta, loc = station.split(".")
         year = date.strftime("%Y")
         day = date.strftime("%j")
         for c in self.components:
             # go through all possible components...
-            uris.append(s3_path_mapper(net, sta, loc, cha, year, day, c))
+            uris.append(self.s3helper.get_s3_path(net, sta, loc, cha, year, day, c))
 
         return uris
 
@@ -410,7 +381,7 @@ class S3MongoSBBridge:
         A unique run_id that is saved in the database along with the configuration for reproducibility.
         """
         if self._run_id is None:
-            self._run_id = self._put_run_data(
+            self._run_id = self.db.write_run_data(
                 model=self.model_name,
                 weight=self.weight,
                 p_threshold=self.p_threshold,
@@ -420,10 +391,6 @@ class S3MongoSBBridge:
                 weight_version=self.model.weights_version,
             )
         return self._run_id
-
-    def _put_run_data(self, **kwargs: Any) -> ObjectId:
-        kwargs["timestamp"] = datetime.datetime.now(datetime.timezone.utc)
-        return self.db.database["sb_runs"].insert_one(kwargs).inserted_id
 
     @staticmethod
     def create_model(
@@ -437,17 +404,6 @@ class S3MongoSBBridge:
         model.default_args["S_threshold"] = s_threshold
         return model
 
-    def run_station_listing(self):
-        """
-        Lists all available stations and writes them to the database.
-        """
-        stations = self.s3.get_available_stations()
-        self._write_stations_to_db(stations)
-
-    def _write_stations_to_db(self, stations):
-        logger.debug("Writing station information to MongoDB")
-        self.db.insert_many_ignore_duplicates("stations", stations.to_dict("records"))
-
     def run_association(self, t0: datetime.datetime, t1: datetime.datetime):
         """
         Runs the phase association for the provided time range and the extent defined in self.extent.
@@ -459,7 +415,7 @@ class S3MongoSBBridge:
             f"Associating {len(stations)} stations: " + ",".join(stations["id"].values)
         )
 
-        picks = self._load_picks(list(stations["id"].values), t0, t1)
+        picks = self.db.get_picks(list(stations["id"].values), t0, t1)
         picks.rename(columns={"trace_id": "station"}, inplace=True)
         picks["time"] = picks["time"].apply(lambda x: x.timestamp())
         logger.debug(f"Associating {len(picks)} picks")
@@ -497,65 +453,7 @@ class S3MongoSBBridge:
             events = associator.transform_events(events)
             events["time"] = events["time"].apply(utc_from_timestamp)
 
-        self._write_events_to_db(events, assignments, picks)
-
-    @staticmethod
-    def _date_to_datetime(t: datetime.date | datetime.datetime) -> datetime.datetime:
-        """
-        Helper function to homogenize time formats
-        """
-        if isinstance(t, datetime.date):
-            return datetime.datetime.combine(t, datetime.datetime.min.time())
-        return t
-
-    def _write_events_to_db(
-        self, events: pd.DataFrame, assignments: pd.DataFrame, picks: pd.DataFrame
-    ) -> None:
-        """
-        Writes events and the associated picks into the MongoDB. Ensures that the pick and event ids are consistent
-        with the ones used in the database.
-        """
-        # Put events and get mongodb ids, replace event and pick ids with their mongodb counterparts,
-        # write assignments to database
-        event_result = self.db.insert_many_ignore_duplicates(
-            "events", events.to_dict("records")
-        )
-
-        event_key = pd.DataFrame(
-            {
-                "event_id": event_result.inserted_ids,
-                "event_idx": events["idx"].values,
-            }
-        )
-        pick_key = pd.DataFrame(
-            {
-                "pick_id": picks["_id"],
-                "pick_idx": np.arange(len(picks)),
-            }
-        )
-
-        merged = pd.merge(event_key, assignments, on="event_idx")
-        merged = pd.merge(merged, pick_key, on="pick_idx")
-
-        merged = merged[["event_id", "pick_id"]]
-
-        self.db.database["assignments"].insert_many(merged.to_dict("records"))
-
-    def _load_picks(
-        self, station_ids: list[str], t0: datetime.datetime, t1: datetime.datetime
-    ) -> pd.DataFrame:
-        """
-        Loads picks for a list of stations during a given time range from the database.
-        The database has already been configured with indices that speed up this query.
-        """
-        cursor = self.db.database["picks"].find(
-            {
-                "time": {"$gt": t0, "$lt": t1},
-                "trace_id": {"$in": station_ids},
-            }
-        )
-
-        return pd.DataFrame(cursor)
+        self.db.write_events(events, assignments, picks)
 
     def run_picking(self) -> None:
         """
@@ -582,128 +480,132 @@ class S3MongoSBBridge:
 
     async def _load_data(
         self,
-        data: asyncio.Queue[obspy.Stream | None],
+        data: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function getting data from the S3 sources and putting it into a queue.
         """
-        async for stream in self.s3.load_waveforms():
+        async for stream, station, day in self.s3.load_waveforms():
             if len(stream) > 0:
-                station, day = self._parse_stream(stream)
-                if self._find_pick_records_from_db(station, day) is not None:
-                    logger.debug(
-                        f"Found picks for {station} - {day.strftime('%Y.%j')}. Skipping."
-                    )
-                    continue
+                for channel in list(set([t.stats.channel[:2] for t in stream])):
+                    stream_c = stream.select(channel=f"{channel}?")
 
-            await data.put(stream)
+                    # put stream with one channel type
+                    id = f"{station}.{channel}"
+                    if (
+                        len(stream_c) > 150
+                    ):  # maximum number of data gap (3*50 per component)
+                        logger.debug(
+                            f"Skipping {id.ljust(11)} {day.strftime('%Y.%j')} < too many gaps"
+                        )
+                        stream_c = obspy.Stream()
+                    else:
+                        logger.debug(f"Sending  {id.ljust(11)} {day.strftime('%Y.%j')}")
 
+                    await data.put([stream_c, station, day, channel])
+            else:
+                # put empty stream
+                await data.put([stream, station, day, None])
+
+        # put None marking the end of the data queue
         await data.put(None)
 
     async def _pick_data(
         self,
-        data: asyncio.Queue[obspy.Stream | None],
-        picks: asyncio.Queue[sbu.PickList | None],
+        data: asyncio.Queue[list | None],
+        picks: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function taking data from a queue, picking it and returning the results to an output queue.
         """
         while True:
-            stream = await data.get()
-            if stream is None:
+            _st_sta_day_cha = await data.get()
+            if _st_sta_day_cha is None:
                 await picks.put(None)
                 break
 
+            stream, station, day, channel = _st_sta_day_cha
+            id = f"{station}.{channel}"
+            logger.debug(f"Picking  {id.ljust(11)} {day.strftime('%Y.%j')}")
             if len(stream) == 0:
-                continue
+                logger.debug(
+                    f"Skipping {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
+                )
+                await picks.put([sbu.PickList(), station, day, channel])
+            else:
+                stream_annotations = await asyncio.to_thread(
+                    self.model.classify, stream
+                )
+                await picks.put([stream_annotations.picks, station, day, channel])
 
-            logger.debug(f"Picking {stream[0].id} - {stream[0].stats.starttime}")
-
-            stream_annotations = await asyncio.to_thread(self.model.classify, stream)
-            await picks.put(stream_annotations.picks)
-
-    async def _write_picks_to_db(
-        self, picks: asyncio.Queue[sbu.PickList | None]
-    ) -> None:
+    async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
         """
         An async function reading picks from a queue and putting them into the MongoDB.
         """
         while True:
-            stream_picks = await picks.get()
-            if stream_picks is None:
+            _pk_sta_day_cha = await picks.get()
+            if _pk_sta_day_cha is None:
                 break
 
-            if len(stream_picks) == 0:
-                continue
+            stream_picks, station, day, channel = _pk_sta_day_cha
 
+            id = f"{station}.{channel}"
             logger.debug(
-                f"Putting {len(stream_picks)} picks including {stream_picks[0]}"
+                f"Putting  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                f" > {(str(len(stream_picks))).ljust(3)} picks"
+            )
+            await asyncio.to_thread(
+                self._write_single_picklist_to_db, stream_picks, station, day, channel
             )
 
-            await asyncio.to_thread(self._write_single_picklist_to_db, stream_picks)
-
-            await asyncio.to_thread(self._record_single_picklist_to_db, stream_picks)
-
-    def _write_single_picklist_to_db(self, picks: sbu.PickList) -> None:
+    def _write_single_picklist_to_db(
+        self, picks: sbu.PickList, station: str, day: datetime.datetime, channel: str
+    ) -> None:
         """
         Converts picks into records that can be submitted to MongoDB and writes them.
+        Populates the `picks` and `picks_record` collection.
         """
-        self.db.insert_many_ignore_duplicates(
-            "picks",
-            [
-                {
-                    "trace_id": pick.trace_id,
-                    "time": pick.peak_time.datetime,
-                    "confidence": float(pick.peak_value),
-                    "phase": pick.phase,
-                    "run_id": self.run_id,
-                }
-                for pick in picks
-            ],
-        )
+        if len(picks) > 0:
+            self.db.insert_many_ignore_duplicates(
+                "picks",
+                [
+                    {
+                        "trace_id": pick.trace_id,
+                        "channel": channel,
+                        "time": pick.peak_time.datetime,
+                        "confidence": float(pick.peak_value),
+                        "phase": pick.phase,
+                        "run_id": self.run_id,
+                    }
+                    for pick in picks
+                ],
+            )
 
-    def _record_single_picklist_to_db(self, picks: sbu.PickList) -> None:
-        """
-        Converts picks into records that can be submitted to MongoDB and writes them.
-        """
         self.db.insert_many_ignore_duplicates(
-            "pick_records",
+            "picks_record",
             [
                 {
-                    "trace_id": picks[0].trace_id,
-                    "year": picks[0].peak_time.datetime.year,
-                    "doy": int(picks[0].peak_time.datetime.strftime("%-j")),
+                    "trace_id": station,
+                    "channel": channel,
+                    "year": day.year,
+                    "doy": int(day.strftime("%-j")),
                     "picks_number": len(picks),
                     "run_id": self.run_id,
                 }
             ],
         )
 
-    def _parse_stream(self, s: obspy.Stream):
+    @staticmethod
+    def _date_to_datetime(t: datetime.date | datetime.datetime) -> datetime.datetime:
         """
-        Get a rough staiton code and day time based on the given stream
+        Helper function to homogenize time formats
         """
-        net = s[0].stats.network
-        sta = s[0].stats.station
-        loc = s[0].stats.location
-        day = s[0].stats.starttime
-        station = ".".join([net, sta, loc])
-        return station, day
-
-    def _find_pick_records_from_db(self, station, day):
-        return self.db.database["pick_records"].find_one(
-            {"trace_id": station, "year": day.year, "doy": int(day.strftime("%-j"))}
-        )
-
-    def get_pick_jobs(self) -> None:
-        """
-        Lists the available stations in an area and prints them
-        :return:
-        """
-        stations = self.db.get_stations(self.extent)
-        logger.debug(f"Found {len(stations)} jobs")
-        print(",".join(stations["id"]))
+        if isinstance(t, datetime.date):
+            return datetime.datetime.combine(t, datetime.datetime.min.time())
+        return t
 
 
 if __name__ == "__main__":
+    logger.info(f"Start job at {datetime.datetime.now()}")
     main()
+    logger.info(f"Finish job at {datetime.datetime.now()}")
