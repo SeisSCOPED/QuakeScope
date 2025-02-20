@@ -1,4 +1,5 @@
 import os
+import time
 from abc import abstractmethod
 from datetime import datetime, timedelta, timezone
 
@@ -96,8 +97,14 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         """
         Set 5 minutes buffer time to update credential
         """
-        with EarthScopeClient() as client:
-            return client.user.get_aws_credentials(ttl_threshold=self.ttl_threshold)
+        while True:
+            try:
+                with EarthScopeClient() as client:
+                    return client.user.get_aws_credentials(
+                        ttl_threshold=self.ttl_threshold
+                    )
+            except:
+                time.sleep(5)
 
     def set_es_filesystem(self):
         self.fs["earthscope"] = S3FileSystem(
