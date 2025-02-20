@@ -559,7 +559,7 @@ class S3MongoSBBridge:
                 logger.debug(
                     f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
                 )
-                await picks.put([sbu.PickList(), station, day, channel])
+                await picks.put([sbu.PickList(), [], station, day, channel])
             else:
                 # do picking
                 stream_annotations = await asyncio.to_thread(
