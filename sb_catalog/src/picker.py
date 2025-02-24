@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 from bson import ObjectId
 
 from .amplitude_extractor import AmplitudeExtractor
+from .classifier import QuakeXNet
 from .s3_helper import CompositeS3ObjectHelper
 from .utils import SeisBenchDatabase, parse_year_day
 
@@ -102,22 +103,28 @@ def main() -> None:
         "--delay", default=30, type=int, help="Add random delay when starting the job."
     )
     parser.add_argument(
-        "--debug", action="store_true", help="Enables additional debug output."
+        "--classifier",
+        action="store_true",
+        help="Append the classifier to the picking job.",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable additional debug output."
     )
     args = parser.parse_args()
 
-    if args.debug:  # Setup debug logging
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
-    # Idle the job to scatter requests
+    if args.debug:  # Setup debug logging
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+
+    # Delay the job to scatter requests
     delay = np.random.randint(args.delay)
-    logger.debug(f"Delaying this job for {delay} sec.")
+    logger.info(f"Delaying this job for {delay} sec.")
     time.sleep(delay)
 
     # Set up data base for results and data source
@@ -136,7 +143,7 @@ def main() -> None:
         assert len(extent) == 4, "Extent needs to be exactly 4 coordinates"
 
     # Set up main class handling the commands
-    picker = S3MongoSBBridge(
+    bridge = S3MongoSBBridge(
         s3=s3,
         db=db,
         model=args.model,
@@ -146,12 +153,13 @@ def main() -> None:
         data_queue_size=args.data_queue_size,
         pick_queue_size=args.pick_queue_size,
         extent=extent,
+        classifier=args.classifier,
     )
 
     if args.command == "pick":
-        picker.run_picking()
+        bridge.run_picking()
     elif args.command == "associate":
-        picker.run_association(args.start, args.end)
+        bridge.run_association(args.start, args.end)
     else:
         raise ValueError(f"Unknown command '{args.command}'")
 
@@ -180,17 +188,15 @@ class S3DataSource:
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.db = db
         self.s3helper = CompositeS3ObjectHelper()
-        logger.debug(
-            f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}"
-        )
+        logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
         self.meta = self.db.get_station_metadata(
             self.stations, {"_id": 0, "id": 1, "channels": 1}
         ).set_index("id")
-        logger.debug(f"Done preparing metadata for the assigned stations")
+        logger.info(f"Done preparing metadata for the assigned stations")
 
         self.inventory = self._get_inventory()
-        logger.debug(f"Done preparing inventory for the assigned stations")
+        logger.info(f"Done preparing inventory for the assigned stations")
 
     async def load_waveforms(self) -> AsyncIterator[list]:
         """
@@ -234,14 +240,14 @@ class S3DataSource:
                 }
                 # if all channel got results
                 if all(check.values()):
-                    logger.debug(
+                    logger.info(
                         f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
                     )
                     continue
 
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
-                logger.debug(
+                logger.info(
                     f"Load {station.ljust(11)}   {day.strftime('%Y.%j')} @ {dc}"
                 )
                 stream = obspy.Stream()
@@ -380,12 +386,20 @@ class S3MongoSBBridge:
         data_queue_size: Optional[int] = None,
         pick_queue_size: Optional[int] = None,
         extent: Optional[tuple[float, float, float, float]] = None,
+        classifier: Optional[bool] = None,
     ):
         self.extent = extent
+
+        # model preparation
         if model is not None:
             self.model = self.create_model(model, weight, p_threshold, s_threshold)
         else:
             self.model = None
+
+        if classifier is not None:
+            self.classifier = QuakeXNet.from_pretrained("base")
+        else:
+            self.classifier = None
         self.amp_extor = AmplitudeExtractor()
         self.model_name = model
         self.weight = weight
@@ -497,18 +511,18 @@ class S3MongoSBBridge:
         Similarly, the outputs are written to MongoDB while the next data is already being processed.
         To guarantee this, all underlying functions have been designed to release the GIL.
         """
-        data = asyncio.Queue(self.data_queue_size)
-        picks = asyncio.Queue(self.pick_queue_size)
+        data_queue = asyncio.Queue(self.data_queue_size)
+        picks_queue = asyncio.Queue(self.pick_queue_size)
 
-        task_load = self._load_data(data)
-        task_pick = self._pick_data(data, picks)
-        task_db = self._write_picks_to_db(picks)
+        task_load = self._load_data(data_queue)
+        task_pick = self._pick_data(data_queue, picks_queue)
+        task_db = self._write_picks_to_db(picks_queue)
 
         await asyncio.gather(task_load, task_pick, task_db)
 
     async def _load_data(
         self,
-        data: asyncio.Queue[list | None],
+        data_queue: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function getting data from the S3 sources and putting it into a queue.
@@ -530,26 +544,26 @@ class S3MongoSBBridge:
                     else:
                         logger.debug(f"Send {id.ljust(11)} {day.strftime('%Y.%j')}")
 
-                    await data.put([stream_c, station, day, channel])
+                    await data_queue.put([stream_c, station, day, channel])
             else:
                 # put empty stream
-                await data.put([stream, station, day, None])
+                await data_queue.put([stream, station, day, None])
 
         # put None marking the end of the data queue
-        await data.put(None)
+        await data_queue.put(None)
 
     async def _pick_data(
         self,
-        data: asyncio.Queue[list | None],
-        picks: asyncio.Queue[list | None],
+        data_queue: asyncio.Queue[list | None],
+        picks_queue: asyncio.Queue[list | None],
     ) -> None:
         """
         An async function taking data from a queue, picking it and returning the results to an output queue.
         """
         while True:
-            _st_sta_day_cha = await data.get()
+            _st_sta_day_cha = await data_queue.get()
             if _st_sta_day_cha is None:
-                await picks.put(None)
+                await picks_queue.put(None)
                 break
 
             stream, station, day, channel = _st_sta_day_cha
@@ -559,7 +573,7 @@ class S3MongoSBBridge:
                 logger.debug(
                     f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
                 )
-                await picks.put([sbu.PickList(), [], station, day, channel])
+                await picks_queue.put([sbu.PickList(), [], [], station, day, channel])
             else:
                 # do picking
                 stream_annotations = await asyncio.to_thread(
@@ -572,30 +586,57 @@ class S3MongoSBBridge:
                     stream_annotations.picks,
                     self.s3.inventory,
                 )
-                await picks.put(
-                    [stream_annotations.picks, stream_amplitudes, station, day, channel]
+
+                # classifier
+                if self.classifier:
+                    stream_classifier = await asyncio.to_thread(
+                        self.classifier.classify, stream
+                    )
+                else:
+                    stream_classifier = []
+                await picks_queue.put(
+                    [
+                        stream_annotations.picks,
+                        stream_amplitudes,
+                        stream_classifier,
+                        station,
+                        day,
+                        channel,
+                    ]
                 )
 
-    async def _write_picks_to_db(self, picks: asyncio.Queue[list | None]) -> None:
+    async def _write_picks_to_db(self, picks_queue: asyncio.Queue[list | None]) -> None:
         """
         An async function reading picks from a queue and putting them into the MongoDB.
         """
         while True:
-            _pk_amp_sta_day_cha = await picks.get()
-            if _pk_amp_sta_day_cha is None:
+            _pk_amp_clf_sta_day_cha = await picks_queue.get()
+            if _pk_amp_clf_sta_day_cha is None:
                 break
 
-            stream_picks, stream_amplitudes, station, day, channel = _pk_amp_sta_day_cha
+            (
+                picks,
+                amplitudes,
+                classifies,
+                station,
+                day,
+                channel,
+            ) = _pk_amp_clf_sta_day_cha
 
             id = f"{station}.{channel}"
-            logger.debug(
+            logger.info(
                 f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
-                f" > {(str(len(stream_picks))).ljust(3)} picks"
+                f" > {(str(len(picks))).ljust(3)} phase picks"
+            )
+            logger.info(
+                f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                f" > {(str(len(classifies))).ljust(3)} classifier picks"
             )
             await asyncio.to_thread(
                 self._write_single_picklist_to_db,
-                stream_picks,
-                stream_amplitudes,
+                picks,
+                amplitudes,
+                classifies,
                 station,
                 day,
                 channel,
@@ -605,20 +646,21 @@ class S3MongoSBBridge:
         self,
         picks: sbu.PickList,
         amplitudes: list[float],
+        classifies: list[tuple],
         station: str,
         day: datetime.datetime,
         channel: str,
     ) -> None:
         """
         Converts picks into records that can be submitted to MongoDB and writes them.
-        Populates the `picks` and `picks_record` collection.
+        Populates the `picks`, `classifies`, and `picks_record` collection.
         """
         if len(picks) > 0:
             self.db.insert_many_ignore_duplicates(
                 "picks",
                 [
                     {
-                        "tid": pick.trace_id,
+                        "tid": station,
                         "cha": channel,
                         "start": pick.start_time.datetime,
                         "peak": pick.peak_time.datetime,
@@ -632,6 +674,21 @@ class S3MongoSBBridge:
                 ],
             )
 
+        if len(classifies) > 0:
+            self.db.insert_many_ignore_duplicates(
+                "classifies",
+                [
+                    {
+                        "tid": station,
+                        "cha": channel,
+                        "lab": c[0],
+                        "peak": c[1].datetime,
+                        "rid": self.run_id,
+                    }
+                    for c in classifies
+                ],
+            )
+
         self.db.insert_many_ignore_duplicates(
             "picks_record",
             [
@@ -641,6 +698,7 @@ class S3MongoSBBridge:
                     "yr": day.year,
                     "doy": int(day.strftime("%-j")),
                     "npks": len(picks),
+                    "nclfs": len(classifies),
                     "rid": self.run_id,
                 }
             ],

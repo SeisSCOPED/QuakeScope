@@ -42,7 +42,7 @@ class SubmitHelper:
         region: str,
         environ: dict = {},
         station_group_size: int = 40,
-        day_group_size: int = 10,
+        day_group_size: int = 20,
     ):
         self.start = start
         self.end = end
