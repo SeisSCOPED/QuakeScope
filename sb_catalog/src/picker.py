@@ -2,25 +2,21 @@ import argparse
 import asyncio
 import datetime
 import functools
-import io
 import logging
-import re
 import time
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 import numpy as np
 import obspy
-import pandas as pd
 import pyocto
 import seisbench
 import seisbench.models as sbm
 import seisbench.util as sbu
-from botocore.exceptions import ClientError
 from bson import ObjectId
 
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
-from .s3_helper import CompositeS3ObjectHelper
+from .s3_helper import S3DataSource
 from .utils import SeisBenchDatabase, parse_year_day
 
 logger = logging.getLogger("sb_picker")
@@ -162,209 +158,6 @@ def main() -> None:
         bridge.run_association(args.start, args.end)
     else:
         raise ValueError(f"Unknown command '{args.command}'")
-
-
-class S3DataSource:
-    """
-    This class provides functionality to load waveform data from an S3 bucket.
-    """
-
-    def __init__(
-        self,
-        start: Optional[datetime.date] = None,
-        end: Optional[datetime.date] = None,
-        stations: Optional[str] = None,
-        components: str = "ZNE12",
-        db: SeisBenchDatabase = None,
-    ):
-        self.start = start
-        self.end = end
-        self.components = components
-        if stations is None:
-            self.stations = []
-            self.networks = []
-        else:
-            self.stations = stations.split(",")
-            self.networks = list(set([s.split(".")[0] for s in self.stations]))
-        self.db = db
-        self.s3helper = CompositeS3ObjectHelper()
-        logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
-
-        self.meta = self.db.get_station_metadata(
-            self.stations, {"_id": 0, "id": 1, "channels": 1}
-        ).set_index("id")
-        logger.info(f"Done preparing metadata for the assigned stations")
-
-        self.inventory = self._get_inventory()
-        logger.info(f"Done preparing inventory for the assigned stations")
-
-    async def load_waveforms(self) -> AsyncIterator[list]:
-        """
-        Load the waveforms. This function is async to allow loading data in parallel with processing.
-        The function releases the GIL when reading from the S3 bucket.
-        The iterator returns data by station and within each station day by day.
-        Data from all channels of a station is returned simultaneously.
-        This matches the typical access pattern required for single-station phase pickers.
-        """
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
-
-        for day in days:
-            day = day.astype(datetime.datetime)
-            # get a list of exist URIs
-            # ls can be slow, but it merges many small open request
-            # and effectively reduced the total number of requests
-            avail_uri = {}
-            for net in self.networks:
-                avail_uri[net] = []
-                # use the corresponding fs for the network
-                fs = self.s3helper.get_filesystem(net)
-                prefix = self.s3helper.get_prefix(
-                    net, day.strftime("%Y"), day.strftime("%j")
-                )
-                try:
-                    avail_uri[net] += fs.ls(prefix)
-                except FileNotFoundError:
-                    logger.debug(f"Path does not exist {prefix}")
-                    pass
-                except PermissionError as e:
-                    logger.debug(e.args[0])
-                    raise e
-
-            for station in self.stations:
-                all_channels = self.meta.loc[station, "channels"].split(",")
-                check = {
-                    cha: self.db.get_picks_record(
-                        station, day, cha, {"_id": 1}
-                    )  # return _id would be sufficient
-                    for cha in all_channels
-                }
-                # if all channel got results
-                if all(check.values()):
-                    logger.info(
-                        f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
-                    )
-                    continue
-
-                net, sta, loc = station.split(".")
-                dc = self.s3helper.get_data_center(net)
-                logger.info(
-                    f"Load {station.ljust(11)}   {day.strftime('%Y.%j')} @ {dc}"
-                )
-                stream = obspy.Stream()
-
-                if dc in ["scedc", "ncedc"]:
-                    for channel in all_channels:
-                        if check[channel]:
-                            logger.debug(
-                                f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at {channel} channel"
-                            )
-                            continue
-                        for uri in self._generate_waveform_uris(
-                            net, sta, loc, channel, day
-                        ):
-                            if uri in avail_uri[net]:
-                                stream += await asyncio.to_thread(
-                                    self._read_waveform_from_s3, uri, net
-                                )
-                elif dc == "earthscope":
-                    # use the first one: they should be all same
-                    r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
-                    # earthscope object name has version number
-                    uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
-                    if len(uri) > 0:
-                        s = await asyncio.to_thread(
-                            self._read_waveform_from_s3, uri[0], net
-                        )
-                        for channel in all_channels:
-                            if check[channel]:
-                                logger.debug(
-                                    f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
-                                )
-                                continue
-                            stream += s.select(channel=f"{channel}?")
-                else:
-                    raise NotImplemented(f"Data center not supported: {dc}")
-
-                if len(stream) > 0:
-                    # yield stream with all candidate channels for one station, day long stream, with metadata
-                    yield [stream, station, day]
-                else:
-                    logger.debug(
-                        f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
-                    )
-
-    def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
-        """
-        Failure tolerant method for reading data from S3.
-
-        OSError#5: accessing non-authorized earthscope data. Return empty stream.
-        PermissionError: EarthScope temporary credential expired. Refresh the credential and retry.
-        ClientError: S3 overloaded, the job will sleep for 5 seconds and retry until return.
-        FileNotFoundError: file not exist.
-        ValueError: certain types of corrupt files.
-        TypeError: certain types of empty mSEED files, i.e. in NCEDC
-
-        """
-        while True:
-            fs = self.s3helper.get_filesystem(net)
-            try:
-                buff = io.BytesIO(fs.read_bytes(uri))
-                return obspy.read(buff)
-            except OSError as e:
-                if e.errno == 5:
-                    logger.warning(f"Not authorized to access this resource: {uri}")
-                    return obspy.Stream()
-            except PermissionError as e:
-                logger.debug(e.args[0])
-                self.s3helper.update_es_filesystem()
-                logger.warning("Credential refreshed.")
-            except ClientError:
-                logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
-                time.sleep(5)
-            except (FileNotFoundError, ValueError, TypeError):
-                return obspy.Stream()
-
-    def _generate_waveform_uris(
-        self, net: str, sta: str, loc: str, cha: str, date: datetime.date
-    ) -> list[str]:
-        """
-        Generates a list of S3 uris for the requested data
-        """
-        uris = []
-        year = date.strftime("%Y")
-        day = date.strftime("%j")
-        for c in self.components:
-            # go through all possible components...
-            uris.append(self.s3helper.get_s3_path(net, sta, loc, cha, year, day, c))
-
-        return uris
-
-    def _get_inventory(self):
-        # Use IRIS web service for inventory request
-        client = obspy.clients.fdsn.Client("IRIS")
-
-        sta_code = ",".join([i.split(".")[1] for i in self.stations])
-        net_code = ",".join(self.networks)
-        cha_code = ",".join(
-            set([f"{j}?" for i in self.meta.channels for j in i.split(",")])
-        )
-
-        while True:
-            try:
-                inv = client.get_stations(
-                    network=net_code,
-                    station=sta_code,
-                    channel=cha_code,
-                    level="response",
-                    starttime=obspy.UTCDateTime(self.start),
-                    endtime=obspy.UTCDateTime(self.end),
-                )
-                return inv
-            except:
-                logger.warning(
-                    f"FDSN service might be busy. Sleep for 5 seconds and retry."
-                )
-                time.sleep(5)
 
 
 class S3MongoSBBridge:
