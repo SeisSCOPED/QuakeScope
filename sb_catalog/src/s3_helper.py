@@ -1,11 +1,11 @@
 import asyncio
+import datetime
 import io
 import logging
 import os
 import re
 import time
 from abc import abstractmethod
-from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Optional
 
 import numpy as np
@@ -83,7 +83,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             "earthscope": EARTHSCOPE_S3_ACCESS_POINT,
         }
 
-        self.ttl_threshold = timedelta(minutes=5)
+        self.ttl_threshold = datetime.timedelta(minutes=5)
         self.credential = self.get_es_credential()
         self.fs = {
             "scedc": S3FileSystem(anon=True),
@@ -130,7 +130,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
 
     def update_es_filesystem(self):
         if (
-            self.credential.expiration - datetime.now(tz=timezone.utc)
+            self.credential.expiration - datetime.datetime.now(tz=datetime.timezone.utc)
         ) < self.ttl_threshold:
             # credential should be updated
             self.credential = self.get_es_credential()
