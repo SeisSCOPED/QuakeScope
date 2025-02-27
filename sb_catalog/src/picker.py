@@ -381,7 +381,7 @@ class S3MongoSBBridge:
                 )
 
                 # classifier
-                if self.classifier:
+                if self.classifier and (channel in ["BH", "HH"]):
                     stream_classifier = await asyncio.to_thread(
                         self.classifier.classify, stream
                     )
@@ -471,13 +471,7 @@ class S3MongoSBBridge:
             self.db.insert_many_ignore_duplicates(
                 "classifies",
                 [
-                    {
-                        "tid": station,
-                        "cha": channel,
-                        "lab": c[0],
-                        "peak": c[1].datetime,
-                        "rid": self.run_id,
-                    }
+                    {"tid": station, "cha": channel, "rid": self.run_id, **c}
                     for c in classifies
                 ],
             )

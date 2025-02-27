@@ -48,7 +48,7 @@ class SeisBenchDatabase(pymongo.MongoClient):
         classify_coll = self.database["classifies"]
         if "classify_idx" not in classify_coll.index_information():
             classify_coll.create_index(
-                ["tid", "cha", "lab", "peak"], unique=True, name="classify_idx"
+                ["tid", "cha", "start"], unique=True, name="classify_idx"
             )
 
         station_coll = self.database["stations"]

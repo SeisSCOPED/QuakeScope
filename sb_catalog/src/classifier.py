@@ -1,18 +1,18 @@
 from typing import Any
 
 import numpy as np
+import obspy
 import scipy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.signal import butter, filtfilt
 from seisbench.models.base import WaveformModel
 
 
 class QuakeXNet(WaveformModel):
     _annotate_args = WaveformModel._annotate_args.copy()
-    # Set default stride in samples
     _annotate_args["stride"] = (_annotate_args["stride"][0], 1000)
+    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.2)
 
     def __init__(
         self,
@@ -24,12 +24,20 @@ class QuakeXNet(WaveformModel):
         num_channels=3,
         num_classes=4,
         dropout_rate=0.4,
-        **kwargs
+        threshold=0.2,
+        filter_kwargs={
+            "type": "bandpass",
+            "freqmin": 1,
+            "freqmax": 20,
+            "corners": 4,
+            "zerophase": True,
+        },
+        **kwargs,
     ):
 
         citation = (
             "Kharita, Akash, Marine Denolle, Alexander Hutko, and J. Renate Hartog."
-            "A comprehensive machine learning and deep learning exploration for seismic event classification in the Pacific Northwest."
+            " A comprehensive machine learning and deep learning exploration for seismic event classification in the Pacific Northwest."
             " AGU24 (2024)."
         )
 
@@ -41,7 +49,8 @@ class QuakeXNet(WaveformModel):
             pred_sample=pred_sample,
             labels=labels,
             sampling_rate=sampling_rate,
-            **kwargs
+            filter_kwargs=filter_kwargs,
+            **kwargs,
         )
 
         # Define the layers of the CNN architecture
@@ -103,7 +112,6 @@ class QuakeXNet(WaveformModel):
             x = F.relu(self.bn5(self.conv5(x)))
             x = F.relu(self.bn6(self.conv6(x)))
             x = F.relu(self.bn7(self.conv7(x)))
-            # print(f"Output shape after conv layers: {x.shape}")
         return x.numel()
 
     def forward(self, x):
@@ -127,51 +135,7 @@ class QuakeXNet(WaveformModel):
         x = F.relu(self.fc1_bn(self.fc1(x)))  # classifier
         x = self.fc2_bn(self.fc2(x))  # classifier
 
-        # Do not apply softmax here, as it will be applied in the loss function
         return x
-
-    def linear_detrend(self, tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Apply linear detrending similar to ObsPy.
-        """
-        # Time indices
-        time = torch.arange(tensor.shape[-1], dtype=tensor.dtype, device=tensor.device)
-
-        # Calculate linear fit coefficients using least squares
-        time_mean = time.mean()
-        time_variance = ((time - time_mean) ** 2).sum()
-        slope = (
-            (tensor * (time - time_mean)).sum(dim=-1, keepdim=True)
-        ) / time_variance
-        intercept = tensor.mean(dim=-1, keepdim=True) - slope * time_mean
-
-        # Compute the trend
-        trend = slope * time + intercept
-
-        # Remove the trend from the original tensor
-        return tensor - trend
-
-    # Apply the filter using filtfilt
-    def bandpass_filter(
-        self, batch: torch.Tensor, fs: float, lowcut: float, highcut: float, order=4
-    ) -> torch.Tensor:
-        # Convert tensor to numpy array
-        input_numpy = batch.numpy()  # Shape: (batch_size, num_channels, window_length)
-
-        nyquist = 0.5 * fs
-        low = lowcut / nyquist
-        high = highcut / nyquist
-        b, a = butter(order, [low, high], btype="band")
-
-        # Apply the bandpass filter to each batch and each channel
-        filtered_numpy = np.zeros_like(input_numpy)
-        for i in range(input_numpy.shape[0]):  # Iterate over batch size
-            for j in range(input_numpy.shape[1]):  # Iterate over channels
-                filtered_numpy[i, j, :] = filtfilt(b, a, input_numpy[i, j, :])
-
-        # Convert back to tensor
-        filtered_tensor = torch.tensor(filtered_numpy)
-        return filtered_tensor
 
     def annotate_batch_pre(
         self, batch: torch.Tensor, argdict: dict[str, Any]
@@ -179,31 +143,21 @@ class QuakeXNet(WaveformModel):
         batch = batch.cpu()
 
         # Detrend each component
-        batch = self.linear_detrend(batch)
+        batch = linear_detrend(batch)
 
         # Create a Tukey window using scipy
         tukey_window = scipy.signal.windows.tukey(batch.shape[-1], alpha=0.1)
 
-        # Convert the Tukey window to a PyTorch tensor
-        taper = torch.tensor(tukey_window, device=batch.device)
-
         # Apply the Tukey window to the batch
-        batch = batch * taper  # Broadcasting over last axis
-
-        # Apply bandpass filter (1-20 Hz) using torchaudio for filtfilt behavior
-        batch = self.bandpass_filter(
-            batch, lowcut=1, highcut=20, fs=argdict["sampling_rate"]
-        )
+        batch *= tukey_window  # Broadcasting over last axis
 
         # Normalize each component by the standard deviation of their absolute values
         batch_abs = torch.abs(batch)
-        std_abs = batch_abs.std(dim=-1, keepdim=True)
-        batch = batch / (std_abs + 1e-10)  # Avoid division by zero
+        batch /= batch_abs.std(dim=-1, keepdim=True) + 1e-10  # Avoid division by zero
 
         # Convert the processed waveforms to spectrograms
-        spec, f, t = self.extract_spectrograms(batch, fs=argdict["sampling_rate"])
+        spec = self.extract_spectrograms(batch, fs=argdict["sampling_rate"])
 
-        # print(spec.shape)
         return spec
 
     def annotate_batch_post(
@@ -212,14 +166,21 @@ class QuakeXNet(WaveformModel):
         return torch.softmax(batch, dim=-1)
 
     def classify_aggregate(self, annotations, argdict) -> list:
-        window_labels = np.argmax(np.array(annotations), axis=0)
-
-        lb = [self.labels[i] for i in window_labels]
         t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
+        onsets = get_onset_time(
+            annotations.select(channel=f"{self.__class__.__name__}_no")[0],
+            self._annotate_args["threshold"][1],
+        )
+        eq = annotations.select(channel=f"{self.__class__.__name__}_eq")[0].data
+        px = annotations.select(channel=f"{self.__class__.__name__}_px")[0].data
+        su = annotations.select(channel=f"{self.__class__.__name__}_su")[0].data
+        return [
+            {"start": t[i[0]].datetime, "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
+            for i in onsets
+        ]
 
-        return [i for i in zip(lb, t) if i[0] != "no"]
-
-    def extract_spectrograms(self, waveforms, fs, nperseg=256, overlap=0.5):
+    @staticmethod
+    def extract_spectrograms(waveforms, fs, nperseg=256, overlap=0.5):
         """
         Extract spectrograms, time segments, and frequency bins from waveforms.
 
@@ -236,14 +197,6 @@ class QuakeXNet(WaveformModel):
         """
         noverlap = int(nperseg * overlap)  # Calculate overlap
         hop_length = nperseg - noverlap  # Calculate hop length
-
-        # Compute frequencies
-        frequencies = torch.fft.rfftfreq(nperseg, d=1 / fs)
-
-        # Compute time segments
-        time_segments = (
-            torch.arange(0, waveforms.shape[-1] - nperseg + 1, hop_length) / fs
-        )
 
         # Example spectrogram to get dimensions
         example_spectrogram = torch.stft(
@@ -267,18 +220,197 @@ class QuakeXNet(WaveformModel):
 
         # Compute spectrograms
         for i in range(waveforms.shape[0]):  # For each waveform
-            for j in range(waveforms.shape[1]):  # For each channel
-                Sxx = torch.stft(
-                    waveforms[i, j],
-                    n_fft=nperseg,
-                    hop_length=hop_length,
-                    win_length=nperseg,
-                    return_complex=True,
-                    center=False,
-                )
-                spectrograms[i, j] = Sxx  # Fill the tensor
+            Sxx = torch.stft(
+                waveforms[i, :],
+                n_fft=nperseg,
+                hop_length=hop_length,
+                win_length=nperseg,
+                return_complex=True,
+                center=False,
+            )
+            spectrograms[i, :] = Sxx  # Fill the tensor
+        return spectrograms.abs()
 
-        # Convert complex spectrogram to magnitude
-        spectrograms = torch.abs(spectrograms)
 
-        return spectrograms, frequencies, time_segments
+class QuakeXNetoneD(WaveformModel):
+    _annotate_args = WaveformModel._annotate_args.copy()
+    _annotate_args["stride"] = (_annotate_args["stride"][0], 2500)
+    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.2)
+
+    def __init__(
+        self,
+        sampling_rate=50,
+        classes=4,
+        output_type="point",
+        labels=["eq", "px", "no", "su"],
+        pred_sample=19,
+        num_channels=3,
+        num_classes=4,
+        dropout_rate=0.4,
+        filter_kwargs={
+            "type": "bandpass",
+            "freqmin": 1,
+            "freqmax": 20,
+            "corners": 4,
+            "zerophase": True,
+        },
+        **kwargs,
+    ):
+
+        citation = (
+            "Kharita, Akash, Marine Denolle, Alexander Hutko, and J. Renate Hartog."
+            " A comprehensive machine learning and deep learning exploration for seismic event classification in the Pacific Northwest."
+            " AGU24 (2024)."
+        )
+
+        super().__init__(
+            citation=citation,
+            output_type="point",
+            component_order="ENZ",
+            in_samples=5000,
+            pred_sample=pred_sample,
+            labels=labels,
+            sampling_rate=sampling_rate,
+            filter_kwargs=filter_kwargs,
+            **kwargs,
+        )
+
+        # Define the layers of the CNN architecture
+        self.conv1 = nn.Conv1d(
+            in_channels=num_channels, out_channels=8, kernel_size=9, stride=1, padding=4
+        )
+        self.conv2 = nn.Conv1d(
+            in_channels=8, out_channels=8, kernel_size=9, stride=2, padding=4
+        )
+        self.conv3 = nn.Conv1d(
+            in_channels=8, out_channels=16, kernel_size=7, stride=1, padding=3
+        )
+        self.conv4 = nn.Conv1d(
+            in_channels=16, out_channels=16, kernel_size=7, stride=2, padding=3
+        )
+        self.conv5 = nn.Conv1d(
+            in_channels=16, out_channels=32, kernel_size=5, stride=1, padding=2
+        )
+        self.conv6 = nn.Conv1d(
+            in_channels=32, out_channels=32, kernel_size=5, stride=2, padding=2
+        )
+        self.conv7 = nn.Conv1d(
+            in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1
+        )
+
+        self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
+
+        # Batch-normalization layers
+        self.bn1 = nn.BatchNorm1d(8)
+        self.bn2 = nn.BatchNorm1d(8)
+        self.bn3 = nn.BatchNorm1d(16)
+        self.bn4 = nn.BatchNorm1d(16)
+        self.bn5 = nn.BatchNorm1d(32)
+        self.bn6 = nn.BatchNorm1d(32)
+        self.bn7 = nn.BatchNorm1d(64)
+
+        # Dynamically calculate the size of the first fully connected layer
+        self.fc_input_size = self._get_conv_output_size(num_channels, input_length=5000)
+        self.fc1 = nn.Linear(self.fc_input_size, 128)
+        self.fc2 = nn.Linear(128, num_classes)
+        self.fc1_bn = nn.BatchNorm1d(128)
+        self.fc2_bn = nn.BatchNorm1d(num_classes)
+
+        # Define dropout
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def _get_conv_output_size(self, num_channels, input_length):
+        # Forward pass a dummy input through the conv layers to get the output size
+        dummy_input = torch.randn(1, num_channels, input_length)
+        with torch.no_grad():
+            x = F.relu(self.bn1(self.conv1(dummy_input)))
+            x = self.pool1(F.relu(self.bn2(self.conv2(x))))
+            x = F.relu(self.bn3(self.conv3(x)))
+            x = self.pool1(F.relu(self.bn4(self.conv4(x))))
+            x = F.relu(self.bn5(self.conv5(x)))
+            x = self.pool1(F.relu(self.bn6(self.conv6(x))))
+            x = F.relu(self.bn7(self.conv7(x)))
+        return x.numel()
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.pool1(F.relu(self.bn2(self.conv2(x))))
+        x = self.dropout(x)
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = self.pool1(F.relu(self.bn4(self.conv4(x))))
+        x = self.dropout(x)
+        x = F.relu(self.bn5(self.conv5(x)))
+        x = self.pool1(F.relu(self.bn6(self.conv6(x))))
+        x = self.dropout(x)
+        x = F.relu(self.bn7(self.conv7(x)))
+        x = x.view(x.size(0), -1)  # Flatten before fully connected layer
+        x = self.dropout(x)
+        x = F.relu(self.fc1_bn(self.fc1(x)))
+        x = self.fc2_bn(self.fc2(x))
+        return x
+
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        batch = batch.cpu()
+
+        # Detrend each component
+        batch = linear_detrend(batch)
+
+        # Create a Tukey window using scipy
+        tukey_window = scipy.signal.windows.tukey(batch.shape[-1], alpha=0.1)
+
+        # Apply the Tukey window to the batch
+        batch *= tukey_window  # Broadcasting over last axis
+
+        # Normalize each component by the standard deviation of their absolute values
+        batch_abs = torch.abs(batch)
+        batch /= batch_abs.std(dim=-1, keepdim=True) + 1e-10  # Avoid division by zero
+
+        return batch.float()
+
+    def annotate_batch_post(
+        self, batch: torch.Tensor, piggyback: Any, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        return torch.softmax(batch, dim=-1)
+
+    def classify_aggregate(self, annotations, argdict) -> list:
+        t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
+        onsets = get_onset_time(
+            annotations.select(channel=f"{self.__class__.__name__}_no")[0],
+            self._annotate_args["threshold"][1],
+        )
+        eq = annotations.select(channel=f"{self.__class__.__name__}_eq")[0].data
+        px = annotations.select(channel=f"{self.__class__.__name__}_px")[0].data
+        su = annotations.select(channel=f"{self.__class__.__name__}_su")[0].data
+        return [
+            {"start": t[i[0]].datetime, "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
+            for i in onsets
+        ]
+
+
+def get_onset_time(trace: obspy.Trace, threshold: float) -> list:
+    triggers = obspy.signal.trigger.trigger_onset(
+        1 - trace.data, threshold, threshold / 2
+    )
+    return triggers
+
+
+def linear_detrend(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Apply linear detrending similar to ObsPy.
+    """
+    # Time indices
+    time = torch.arange(tensor.shape[-1], dtype=tensor.dtype, device=tensor.device)
+
+    # Calculate linear fit coefficients using least squares
+    time_mean = time.mean()
+    time_variance = ((time - time_mean) ** 2).sum()
+    slope = ((tensor * (time - time_mean)).sum(dim=-1, keepdim=True)) / time_variance
+    intercept = tensor.mean(dim=-1, keepdim=True) - slope * time_mean
+
+    # Compute the trend
+    trend = slope * time + intercept
+
+    # Remove the trend from the original tensor
+    return tensor - trend
