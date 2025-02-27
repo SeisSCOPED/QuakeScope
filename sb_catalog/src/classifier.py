@@ -12,7 +12,7 @@ from seisbench.models.base import WaveformModel
 class QuakeXNet(WaveformModel):
     _annotate_args = WaveformModel._annotate_args.copy()
     _annotate_args["stride"] = (_annotate_args["stride"][0], 1000)
-    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.2)
+    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.5)
 
     def __init__(
         self,
@@ -28,7 +28,7 @@ class QuakeXNet(WaveformModel):
         filter_kwargs={
             "type": "bandpass",
             "freqmin": 1,
-            "freqmax": 20,
+            "freqmax": 19.9,
             "corners": 4,
             "zerophase": True,
         },
@@ -175,7 +175,7 @@ class QuakeXNet(WaveformModel):
         px = annotations.select(channel=f"{self.__class__.__name__}_px")[0].data
         su = annotations.select(channel=f"{self.__class__.__name__}_su")[0].data
         return [
-            {"start": t[i[0]].datetime, "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
+            {"start": t[i[0]], "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
             for i in onsets
         ]
 
@@ -235,7 +235,7 @@ class QuakeXNet(WaveformModel):
 class QuakeXNetoneD(WaveformModel):
     _annotate_args = WaveformModel._annotate_args.copy()
     _annotate_args["stride"] = (_annotate_args["stride"][0], 2500)
-    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.2)
+    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.5)
 
     def __init__(
         self,
@@ -250,7 +250,7 @@ class QuakeXNetoneD(WaveformModel):
         filter_kwargs={
             "type": "bandpass",
             "freqmin": 1,
-            "freqmax": 20,
+            "freqmax": 19.9,
             "corners": 4,
             "zerophase": True,
         },
@@ -384,7 +384,7 @@ class QuakeXNetoneD(WaveformModel):
         px = annotations.select(channel=f"{self.__class__.__name__}_px")[0].data
         su = annotations.select(channel=f"{self.__class__.__name__}_su")[0].data
         return [
-            {"start": t[i[0]].datetime, "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
+            {"start": t[i[0]], "eq": eq[i[0]], "px": px[i[0]], "su": su[i[0]]}
             for i in onsets
         ]
 

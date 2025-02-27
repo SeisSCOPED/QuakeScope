@@ -421,10 +421,11 @@ class S3MongoSBBridge:
                 f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
                 f" > {(str(len(picks))).ljust(3)} phase picks"
             )
-            logger.info(
-                f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
-                f" > {(str(len(classifies))).ljust(3)} classifier picks"
-            )
+            if self.classifier and (channel in ["BH", "HH"]):
+                logger.info(
+                    f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                    f" > {(str(len(classifies))).ljust(3)} classifier picks"
+                )
             await asyncio.to_thread(
                 self._write_single_picklist_to_db,
                 picks,
@@ -471,7 +472,15 @@ class S3MongoSBBridge:
             self.db.insert_many_ignore_duplicates(
                 "classifies",
                 [
-                    {"tid": station, "cha": channel, "rid": self.run_id, **c}
+                    {
+                        "tid": station,
+                        "cha": channel,
+                        "rid": self.run_id,
+                        "start": c["start"].datetime,
+                        "eq": float(c["eq"]),
+                        "px": float(c["px"]),
+                        "su": float(c["su"]),
+                    }
                     for c in classifies
                 ],
             )
