@@ -17,11 +17,12 @@ containerProperties:
   - Ref::start
   - "--end"
   - Ref::end
+  - "--classifier"
   - "--debug"
   resourceRequirements: # The type and amount of resources to assign to a container.
-  - value: '4'
+  - value: '8'
     type: VCPU
-  - value: '8192'
+  - value: '16384'
     type: MEMORY
   secrets: []
   networkConfiguration:
@@ -32,7 +33,7 @@ containerProperties:
     operatingSystemFamily: LINUX
     cpuArchitecture: X86_64
 timeout:
-  attemptDurationSeconds: 6000
+  attemptDurationSeconds: 86400
 tags: {}
 platformCapabilities:
 - FARGATE
@@ -41,7 +42,5 @@ retryStrategy:
   evaluateOnExit:
     - action: "RETRY"
       onStatusReason: "Your Spot Task was interrupted."
-    - action: "RETRY"
-      onStatusReason: "Job attempt duration exceeded timeout"
     - action: "EXIT"
       onReason: "*"

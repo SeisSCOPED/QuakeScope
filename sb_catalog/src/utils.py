@@ -24,7 +24,14 @@ class SeisBenchDatabase(pymongo.MongoClient):
         self.db_uri = db_uri
         self.database = super().__getitem__(database)
 
-        self.colls = {"picks", "stations", "sb_runs", "events", "assignments"}
+        self.colls = {
+            "picks",
+            "classifies",
+            "stations",
+            "sb_runs",
+            "events",
+            "assignments",
+        }
         self._setup()
 
     def _setup(self) -> None:
@@ -36,6 +43,12 @@ class SeisBenchDatabase(pymongo.MongoClient):
         if "pick_idx" not in pick_coll.index_information():
             pick_coll.create_index(
                 ["tid", "cha", "pha", "peak"], unique=True, name="pick_idx"
+            )
+
+        classify_coll = self.database["classifies"]
+        if "classify_idx" not in classify_coll.index_information():
+            classify_coll.create_index(
+                ["tid", "cha", "start"], unique=True, name="classify_idx"
             )
 
         station_coll = self.database["stations"]
