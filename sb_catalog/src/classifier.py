@@ -1,6 +1,5 @@
 from typing import Any
 
-import numpy as np
 import obspy
 import scipy
 import torch
