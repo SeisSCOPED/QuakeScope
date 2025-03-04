@@ -165,6 +165,11 @@ class QuakeXNet(WaveformModel):
         return torch.softmax(batch, dim=-1)
 
     def classify_aggregate(self, annotations, argdict) -> list:
+        try:
+            assert len(annotations) == 4
+        except:
+            return []
+
         t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
         onsets = get_onset_time(
             annotations.select(channel=f"{self.__class__.__name__}_no")[0],
@@ -374,6 +379,11 @@ class QuakeXNetoneD(WaveformModel):
         return torch.softmax(batch, dim=-1)
 
     def classify_aggregate(self, annotations, argdict) -> list:
+        try:
+            assert len(annotations) == 4
+        except:
+            return []
+
         t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
         onsets = get_onset_time(
             annotations.select(channel=f"{self.__class__.__name__}_no")[0],
