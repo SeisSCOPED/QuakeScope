@@ -318,9 +318,6 @@ class S3DataSource:
         return uris
 
     def _get_inventory(self):
-        # Use IRIS web service for inventory request
-        client = obspy.clients.fdsn.Client("IRIS")
-
         sta_code = ",".join([i.split(".")[1] for i in self.stations])
         net_code = ",".join(self.networks)
         cha_code = ",".join(
@@ -328,6 +325,9 @@ class S3DataSource:
         )
 
         while True:
+            # Use IRIS web service for inventory request
+            client = obspy.clients.fdsn.Client("IRIS")
+            
             try:
                 inv = client.get_stations(
                     network=net_code,
