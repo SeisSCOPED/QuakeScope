@@ -9,7 +9,7 @@ from bson import ObjectId
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 from pymongo.results import InsertManyResult
 
-logger = logging.getLogger("sb_picker")
+logger = logging.getLogger("picker")
 
 
 class SeisBenchDatabase(pymongo.MongoClient):

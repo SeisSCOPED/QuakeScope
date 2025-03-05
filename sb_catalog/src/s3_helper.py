@@ -10,9 +10,9 @@ from typing import AsyncIterator, Optional
 
 import numpy as np
 import obspy
-import pandas as pd
 from botocore.exceptions import ClientError
 from earthscope_sdk import EarthScopeClient
+from obspy.clients.fdsn.header import FDSNNoDataException
 from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING
@@ -20,7 +20,7 @@ from .utils import SeisBenchDatabase
 
 EARTHSCOPE_S3_ACCESS_POINT = os.environ["EARTHSCOPE_S3_ACCESS_POINT"]
 
-logger = logging.getLogger("sb_picker")
+logger = logging.getLogger("picker")
 
 
 class S3ObjectHelper:
@@ -117,7 +117,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                     )
             except:
                 logger.warning(
-                    f"EarthScope client might be busy. Sleep for 5 seconds and retry."
+                    f"EarthScope credential client might be busy. Sleep for 5 seconds and retry."
                 )
                 time.sleep(5)
 
@@ -135,7 +135,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             # credential should be updated
             self.credential = self.get_es_credential()
             self.set_es_filesystem()
-            logger.info(f"EarthScope credential renewed.")
+            logger.warning(f"EarthScope credential renewed.")
         else:
             pass
 
@@ -219,22 +219,20 @@ class S3DataSource:
                 # if all channel got results
                 if all(check.values()):
                     logger.info(
-                        f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
                     )
                     continue
 
                 net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
-                logger.info(
-                    f"Load {station.ljust(11)}   {day.strftime('%Y.%j')} @ {dc}"
-                )
+                logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
                 stream = obspy.Stream()
 
                 if dc in ["scedc", "ncedc"]:
                     for channel in all_channels:
                         if check[channel]:
                             logger.debug(
-                                f"Skip {station.ljust(11)}   {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                             )
                             continue
                         for uri in self._generate_waveform_uris(
@@ -256,7 +254,7 @@ class S3DataSource:
                         for channel in all_channels:
                             if check[channel]:
                                 logger.debug(
-                                    f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                                    f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                                 )
                                 continue
                             stream += s.select(channel=f"{channel}?")
@@ -267,8 +265,8 @@ class S3DataSource:
                     # yield stream with all candidate channels for one station, day long stream, with metadata
                     yield [stream, station, day]
                 else:
-                    logger.debug(
-                        f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty"
+                    logger.info(
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
 
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
@@ -327,7 +325,7 @@ class S3DataSource:
         while True:
             # Use IRIS web service for inventory request
             client = obspy.clients.fdsn.Client("IRIS")
-            
+
             try:
                 inv = client.get_stations(
                     network=net_code,
@@ -338,8 +336,13 @@ class S3DataSource:
                     endtime=obspy.UTCDateTime(self.end),
                 )
                 return inv
+            except FDSNNoDataException:
+                logger.warning(
+                    f"No metadata at EarthScope FDSN service. Return empty inventory."
+                )
+                return obspy.Inventory()
             except:
                 logger.warning(
-                    f"FDSN service might be busy. Sleep for 5 seconds and retry."
+                    f"EarthScope FDSN web service might be busy. Sleep for 5 seconds and retry."
                 )
                 time.sleep(5)

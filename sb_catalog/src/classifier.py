@@ -11,7 +11,7 @@ from seisbench.models.base import WaveformModel
 class QuakeXNet(WaveformModel):
     _annotate_args = WaveformModel._annotate_args.copy()
     _annotate_args["stride"] = (_annotate_args["stride"][0], 1000)
-    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.5)
+    _annotate_args["threshold"] = ("Detection threshold for non-noise class", 0.8)
 
     def __init__(
         self,
@@ -23,7 +23,6 @@ class QuakeXNet(WaveformModel):
         num_channels=3,
         num_classes=4,
         dropout_rate=0.4,
-        threshold=0.2,
         filter_kwargs={
             "type": "bandpass",
             "freqmin": 1,

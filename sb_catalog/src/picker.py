@@ -19,7 +19,7 @@ from .classifier import QuakeXNet
 from .s3_helper import S3DataSource
 from .utils import SeisBenchDatabase, parse_year_day
 
-logger = logging.getLogger("sb_picker")
+logger = logging.getLogger("picker")
 
 
 def main() -> None:
@@ -109,7 +109,9 @@ def main() -> None:
     args = parser.parse_args()
 
     handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    formatter = logging.Formatter(
+        "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+    )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
@@ -331,11 +333,11 @@ class S3MongoSBBridge:
                         len(stream_c) > 150
                     ):  # maximum number of data gap (3*50 per component)
                         logger.debug(
-                            f"Skip {id.ljust(11)} {day.strftime('%Y.%j')} < too many gaps"
+                            f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < too many gaps"
                         )
                         stream_c = obspy.Stream()
                     else:
-                        logger.debug(f"Send {id.ljust(11)} {day.strftime('%Y.%j')}")
+                        logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
 
                     await data_queue.put([stream_c, station, day, channel])
             else:
@@ -361,10 +363,10 @@ class S3MongoSBBridge:
 
             stream, station, day, channel = _st_sta_day_cha
             id = f"{station}.{channel}"
-            logger.debug(f"Pick {id.ljust(11)} {day.strftime('%Y.%j')}")
+            logger.debug(f"Pick {id.ljust(14)} {day.strftime('%Y.%j')}")
             if len(stream) == 0:
-                logger.debug(
-                    f"Skip {station.ljust(11)} {day.strftime('%Y.%j')} < stream is empty due to exception"
+                logger.info(
+                    f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < stream is empty due to exception"
                 )
                 await picks_queue.put([sbu.PickList(), [], [], station, day, channel])
             else:
@@ -418,12 +420,12 @@ class S3MongoSBBridge:
 
             id = f"{station}.{channel}"
             logger.info(
-                f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                f"Put  {id.ljust(14)} {day.strftime('%Y.%j')}"
                 f" > {(str(len(picks))).ljust(3)} phase picks"
             )
             if self.classifier and (channel in ["BH", "HH"]):
                 logger.info(
-                    f"Put  {id.ljust(11)} {day.strftime('%Y.%j')}"
+                    f"Put  {id.ljust(14)} {day.strftime('%Y.%j')}"
                     f" > {(str(len(classifies))).ljust(3)} classifier picks"
                 )
             await asyncio.to_thread(
