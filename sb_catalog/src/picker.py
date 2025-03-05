@@ -477,11 +477,11 @@ class S3MongoSBBridge:
                     {
                         "tid": station,
                         "cha": channel,
-                        "rid": self.run_id,
                         "start": c["start"].datetime,
                         "eq": float(c["eq"]),
                         "px": float(c["px"]),
                         "su": float(c["su"]),
+                        "rid": self.run_id,
                     }
                     for c in classifies
                 ],
