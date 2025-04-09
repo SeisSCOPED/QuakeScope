@@ -95,7 +95,7 @@ class AmplitudeExtractor:
         large_window.detrend("linear")
         try:
             large_window.remove_response(sub_inv, **self.response_removal_args)
-        except ValueError:  # No response information
+        except:  # No response information
             return np.nan
 
         large_window.simulate(paz_simulate=WOOD_ANDERSON)
