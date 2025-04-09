@@ -285,7 +285,11 @@ class S3DataSource:
             fs = self.s3helper.get_filesystem(net)
             try:
                 buff = io.BytesIO(fs.read_bytes(uri))
-                return obspy.read(buff)
+                bytes_mb = buff.getbuffer().nbytes / 1024**2
+                if bytes_mb > 100: # skip stream bigger than 100 MB
+                    logger.warning(f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}")
+                else:
+                    return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
                     logger.warning(f"Not authorized to access this resource: {uri}")
