@@ -288,6 +288,7 @@ class S3DataSource:
                 bytes_mb = buff.getbuffer().nbytes / 1024**2
                 if bytes_mb > 100: # skip stream bigger than 100 MB
                     logger.warning(f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}")
+                    return obspy.Stream()
                 else:
                     return obspy.read(buff)
             except OSError as e:
