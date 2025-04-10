@@ -257,9 +257,15 @@ class S3DataSource:
                                     f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                                 )
                                 continue
-                            stream += s.select(channel=f"{channel}?")
+                            stream += s.select(channel=f"{channel}?", location=loc)
+
                 else:
                     raise NotImplemented(f"Data center not supported: {dc}")
+
+                # the sampling rate should be at least 40 Hz (for amplitude extractor)
+                for tr in stream:
+                    if tr.stats.sampling_rate < 40.0:
+                        stream.remove(tr)
 
                 if len(stream) > 0:
                     # yield stream with all candidate channels for one station, day long stream, with metadata
@@ -284,12 +290,14 @@ class S3DataSource:
         while True:
             fs = self.s3helper.get_filesystem(net)
             try:
-                buff = io.BytesIO(fs.read_bytes(uri))
-                bytes_mb = buff.getbuffer().nbytes / 1024**2
-                if bytes_mb > 100: # skip stream bigger than 100 MB
-                    logger.warning(f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}")
+                bytes_mb = fs.info(uri)["size"] / 1024**2
+                if bytes_mb > 100:  # skip stream bigger than 100 MB
+                    logger.warning(
+                        f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}"
+                    )
                     return obspy.Stream()
                 else:
+                    buff = io.BytesIO(fs.read_bytes(uri))
                     return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
@@ -328,10 +336,10 @@ class S3DataSource:
         )
 
         while True:
-            # Use IRIS web service for inventory request
-            client = obspy.clients.fdsn.Client("IRIS")
-
             try:
+                # Use IRIS web service for inventory request
+                client = obspy.clients.fdsn.Client("IRIS")
+
                 inv = client.get_stations(
                     network=net_code,
                     station=sta_code,
