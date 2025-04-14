@@ -312,6 +312,8 @@ class S3DataSource:
                 time.sleep(5)
             except (FileNotFoundError, ValueError, TypeError):
                 return obspy.Stream()
+            except:
+                return obspy.Stream()
 
     def _generate_waveform_uris(
         self, net: str, sta: str, loc: str, cha: str, date: datetime.date
