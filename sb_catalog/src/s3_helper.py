@@ -262,11 +262,6 @@ class S3DataSource:
                 else:
                     raise NotImplemented(f"Data center not supported: {dc}")
 
-                # the sampling rate should be at least 40 Hz (for amplitude extractor)
-                for tr in stream:
-                    if tr.stats.sampling_rate < 40.0:
-                        stream.remove(tr)
-
                 if len(stream) > 0:
                     # yield stream with all candidate channels for one station, day long stream, with metadata
                     yield [stream, station, day]
