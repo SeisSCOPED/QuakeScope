@@ -1,16 +1,18 @@
 import argparse
 import datetime
-import json
 import logging
+import os
 
 import boto3
 import numpy as np
+import pandas as pd
+import pytz
 from botocore.config import Config
 
 from .parameters import *
 from .utils import SeisBenchDatabase, filter_station_by_start_end_date
 
-logger = logging.getLogger("sb_picker")
+logger = logging.getLogger("submit_helper")
 handler = logging.StreamHandler()
 formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s")
 handler.setFormatter(formatter)
@@ -70,6 +72,15 @@ class SubmitHelper:
             raise ValueError(f"Unknown command '{command}'")
 
     def submit_pick_jobs(self) -> None:
+        # for submission logging
+        submissions = []
+        os.makedirs("../submissions/", exist_ok=True)
+        ts = (
+            datetime.datetime.today()
+            .astimezone(tz=pytz.timezone("US/Pacific"))
+            .strftime("%Y-%m-%dT%H-%M")
+        )
+
         # get stations based on extent and/or network code
         # ... and operation time
         stations = self.db.get_stations(extent=self.extent, network=self.network)
@@ -91,18 +102,24 @@ class SubmitHelper:
             pick_jobs = []
             j = 0
             while j < len(days) - 1:
+                job_name = f"picking_{ts}_{i}_{j}"
                 day0 = days[j].astype(datetime.datetime).strftime("%Y.%j")
                 day1 = (
                     days[min(j + self.day_group_size, len(days) - 1)]
                     .astype(datetime.datetime)
                     .strftime("%Y.%j")
                 )
-                parameters = {"start": day0, "end": day1, "stations": sub_stations}
+                parameters = {
+                    "start": day0,
+                    "end": day1,
+                    "job_name": job_name,
+                    "stations": sub_stations,
+                }
+                submissions += [parameters]
 
-                logger.info(f"Submitting picking job: {parameters}")
                 pick_jobs.append(
                     self.client.submit_job(
-                        jobName=f"picking_{i}_{j}",
+                        jobName=job_name,
                         jobQueue=JOB_QUEUE,
                         jobDefinition=JOB_DEFINITION_PICKING,
                         parameters={
@@ -117,7 +134,11 @@ class SubmitHelper:
             i += self.station_group_size
             njobs += len(pick_jobs)
 
+        pd.DataFrame().from_records(submissions).to_csv(
+            f"../submissions/picking_{ts}.csv", index=False
+        )
         logger.info(f"{njobs} jobs submitted in total.")
+        logger.info(f"See ../submissions/picking_{ts}.csv for logging.")
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)

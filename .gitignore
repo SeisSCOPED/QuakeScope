@@ -168,9 +168,11 @@ cython_debug/
 _build/
 log.txt
 
-# Notebooks and PEM
-notebooks/
+# PEM
 *.pem
 
 # Dev
 dev/
+
+# submission history
+submissions/
