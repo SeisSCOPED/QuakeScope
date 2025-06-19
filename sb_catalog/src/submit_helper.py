@@ -90,7 +90,6 @@ class SubmitHelper:
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
-        logger.info(f"Submitting jobs with shared variables: {self.shared_parameters}")
 
         njobs = 0
         i = 0
