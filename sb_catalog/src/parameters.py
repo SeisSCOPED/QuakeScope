@@ -1,5 +1,5 @@
 """
-Parameter for cloud job submission and DocumentDB access. All parameters are required.
+Parameter for cloud job submission and DocumentDB access.
 """
 
 # Required by Batch job submission
