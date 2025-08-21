@@ -286,7 +286,7 @@ class S3DataSource:
             fs = self.s3helper.get_filesystem(net)
             try:
                 bytes_mb = fs.info(uri)["size"] / 1024**2
-                if bytes_mb > 100:  # skip stream bigger than 100 MB
+                if bytes_mb > 200:  # skip stream bigger than 200 MB
                     logger.warning(
                         f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}"
                     )
