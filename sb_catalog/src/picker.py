@@ -181,7 +181,7 @@ class S3MongoSBBridge:
         data_queue_size: Optional[int] = None,
         pick_queue_size: Optional[int] = None,
         extent: Optional[tuple[float, float, float, float]] = None,
-        classifier: Optional[bool] = None,
+        classifier: Optional[bool] = False,
     ):
         self.extent = extent
 
@@ -191,7 +191,7 @@ class S3MongoSBBridge:
         else:
             self.model = None
 
-        if classifier is not None:
+        if classifier:
             self.classifier = QuakeXNet.from_pretrained("base")
         else:
             self.classifier = None
