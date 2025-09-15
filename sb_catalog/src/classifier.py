@@ -1,6 +1,5 @@
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy
 import torch
@@ -289,25 +288,3 @@ class QuakeXNet(WaveformModel):
         min_vals = spec_flat.min(dim=-1, keepdim=True)[0].view(B, C, 1, 1)
         max_vals = spec_flat.max(dim=-1, keepdim=True)[0].view(B, C, 1, 1)
         return (spectrogram - min_vals) / (max_vals - min_vals + 1e-10)
-
-    def plot_waveforms(waveform, title="Normalized waveforms"):
-        components = ["Z", "N", "E"]
-        fs = 50  # sampling rate in Hz
-        time = np.arange(waveform.shape[1]) / fs  # convert sample index to seconds
-
-        plt.figure(figsize=(12, 8))
-
-        for i in range(3):
-            plt.subplot(3, 1, i + 1)
-            plt.plot(time, waveform[i], linewidth=1.2)
-            plt.title(f"{components[i]} Component", fontsize=14)
-            plt.ylabel("Amplitude", fontsize=12)
-            plt.grid(True, linestyle="--", alpha=0.5)
-            if i == 2:
-                plt.xlabel("Time (s)", fontsize=12)
-            else:
-                plt.xticks([])  # hide x-ticks for top plots to reduce clutter
-
-        plt.suptitle(title, fontsize=16)
-        plt.tight_layout(rect=[0, 0, 1, 0.96])  # adjust layout to fit suptitle
-        plt.show()
