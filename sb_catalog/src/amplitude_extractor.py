@@ -27,6 +27,12 @@ class AmplitudeExtractor:
                                   Passed directly to obspy's `remove_response` function.
                                   By default, uses `{"water_level": 20, "pre_filt": [0.02, 0.05, 40, 45]}`.
     :param components: Components to take into account.
+    :param raw_time_before: Time before pick in seconds for the raw amplitude window.
+    :param raw_time_after: Time after pick in seconds for the raw amplitude window.
+    :param raw_highpass: Corner frequency in Hz of the high-pass filter applied
+                         before measuring the raw amplitude. Suppresses microseism
+                         and long-period noise that would mask small events.
+                         Set to None to measure on unfiltered counts.
     """
 
     def __init__(
@@ -37,12 +43,18 @@ class AmplitudeExtractor:
         response_removal_args: Optional[dict] = None,
         components: str = "NE12",
         parallel: bool = True,
+        raw_time_before: float = 2,
+        raw_time_after: float = 2,
+        raw_highpass: Optional[float] = 1.0,
     ):
         self.time_before = time_before
         self.time_after = time_after
         self.slack = slack
         self.components = components
         self.parallel = parallel
+        self.raw_time_before = raw_time_before
+        self.raw_time_after = raw_time_after
+        self.raw_highpass = raw_highpass
 
         if response_removal_args is None:
             self.response_removal_args = {
@@ -85,6 +97,55 @@ class AmplitudeExtractor:
 
         if self.parallel:
             amplitudes = Parallel(n_jobs=-1)(amplitudes)
+
+        return amplitudes
+
+    def extract_raw_amplitudes(
+        self, stream: obspy.Stream, picks: sbu.PickList
+    ) -> list[float]:
+        """
+        Extract peak raw amplitudes around each pick, P and S alike, in a
+        window of raw_time_before/raw_time_after seconds around the pick peak.
+        The data is kept in raw counts (no response removal), but high-passed
+        at raw_highpass Hz (default 1 Hz) so microseism and long-period noise
+        do not mask small events. The filter is applied on a window with slack
+        seconds of margin on both sides, so edge effects stay outside the
+        measurement window. All components are considered and the maximum
+        over components is returned.
+        Returns NaN for every pick where no data is available.
+        """
+        amplitudes = []
+        for pick in picks:
+            net = pick.trace_id.split(".")[0]
+            sta = pick.trace_id.split(".")[1]
+            large_window = (
+                stream.select(network=net, station=sta)
+                .slice(
+                    pick.peak_time - self.raw_time_before - self.slack,
+                    pick.peak_time + self.raw_time_after + self.slack,
+                )
+                .copy()
+            )
+
+            if self.raw_highpass is not None:
+                large_window.detrend("linear")
+                large_window.taper(max_percentage=0.05, type="cosine")
+                large_window.filter(
+                    "highpass", freq=self.raw_highpass, corners=4, zerophase=True
+                )
+
+            window = large_window.slice(
+                pick.peak_time - self.raw_time_before,
+                pick.peak_time + self.raw_time_after,
+            )
+
+            peak = np.nan
+            for trace in window:
+                if len(trace.data) == 0:
+                    continue
+                val = np.max(np.abs(trace.data - np.mean(trace.data)))
+                peak = val if np.isnan(peak) else max(peak, val)
+            amplitudes.append(peak)
 
         return amplitudes
 

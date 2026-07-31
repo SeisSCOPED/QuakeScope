@@ -368,7 +368,9 @@ class S3MongoSBBridge:
                 logger.info(
                     f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < stream is empty due to exception"
                 )
-                await picks_queue.put([sbu.PickList(), [], [], station, day, channel])
+                await picks_queue.put(
+                    [sbu.PickList(), [], [], [], station, day, channel]
+                )
             else:
                 # do picking
                 stream_annotations = await asyncio.to_thread(
@@ -380,6 +382,12 @@ class S3MongoSBBridge:
                     stream,
                     stream_annotations.picks,
                     self.s3.inventory,
+                )
+                # extract raw amplitudes around each pick
+                stream_raw_amplitudes = await asyncio.to_thread(
+                    self.amp_extor.extract_raw_amplitudes,
+                    stream,
+                    stream_annotations.picks,
                 )
 
                 # classifier
@@ -393,6 +401,7 @@ class S3MongoSBBridge:
                     [
                         stream_annotations.picks,
                         stream_amplitudes,
+                        stream_raw_amplitudes,
                         stream_classifier,
                         station,
                         day,
@@ -412,6 +421,7 @@ class S3MongoSBBridge:
             (
                 picks,
                 amplitudes,
+                raw_amplitudes,
                 classifies,
                 station,
                 day,
@@ -432,6 +442,7 @@ class S3MongoSBBridge:
                 self._write_single_picklist_to_db,
                 picks,
                 amplitudes,
+                raw_amplitudes,
                 classifies,
                 station,
                 day,
@@ -442,6 +453,7 @@ class S3MongoSBBridge:
         self,
         picks: sbu.PickList,
         amplitudes: list[float],
+        raw_amplitudes: list[float],
         classifies: list[tuple],
         station: str,
         day: datetime.datetime,
@@ -463,10 +475,11 @@ class S3MongoSBBridge:
                         "end": pick.end_time.datetime,
                         "conf": float(pick.peak_value),
                         "amp": float(amp),
+                        "amp_raw": float(raw_amp),
                         "pha": pick.phase,
                         "rid": self.run_id,
                     }
-                    for pick, amp in zip(picks, amplitudes)
+                    for pick, amp, raw_amp in zip(picks, amplitudes, raw_amplitudes)
                 ],
             )
 
