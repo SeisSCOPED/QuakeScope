@@ -1,5 +1,18 @@
 # 02 — Installing the new weights and building the container
 
+**Where the best weights come from** (verified July 2026):
+
+- **QuakeXNet**: `sb_catalog/models/quakexnet/base.pt.v1` in this repo is
+  already the latest version — byte-identical to the `base.pt.v3` published
+  in `Akashkharita/pnw_seismic_event_detection` (Dec 2025). Nothing to do
+  unless a newer retrain lands.
+- **Phase picker**: the champion of the `Denolle-Lab/phasenet-retrain`
+  project is experiment **v7** (jma_wc fine-tune; P-MAE 0.340 s, recall
+  0.853, MCC 0.760). Its checkpoint sits on the lab back-end server
+  (`checkpoints/finetune_jma_wc_global_v7/best.pt`); convert it with
+  [sb_catalog/models/phasenet/convert_checkpoint.py](../../sb_catalog/models/phasenet/convert_checkpoint.py)
+  and commit the resulting pair here (step 2 below).
+
 Two models get new weights:
 
 1. **QuakeXNet** — the event classifier (`sb_catalog/src/classifier.py`).
