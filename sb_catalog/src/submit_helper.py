@@ -96,7 +96,7 @@ class SubmitHelper:
         stations = filter_station_by_start_end_date(stations, self.start, self.end)
 
         # restrict to an explicit station list if one was provided
-        if self.station_ids:
+        if self.station_ids is not None:
             requested = set(self.station_ids)
             stations = stations[stations["id"].isin(requested)]
             missing = requested - set(stations["id"])
