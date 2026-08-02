@@ -84,11 +84,15 @@ class AmplitudeExtractor:
 
             if self.parallel:
                 amplitudes.append(
-                    delayed(self._extract_single_amplitude)(large_window, pick, sub_inv)
+                    delayed(self._extract_single_amplitude)(
+                        large_window, pick, sub_inv, mean=True
+                    )
                 )
             else:
                 amplitudes.append(
-                    self._extract_single_amplitude(large_window, pick, sub_inv)
+                    self._extract_single_amplitude(
+                        large_window, pick, sub_inv, mean=True
+                    )
                 )
 
         if self.parallel:
@@ -122,11 +126,13 @@ class AmplitudeExtractor:
 
             if self.parallel:
                 amplitudes.append(
-                    delayed(self._extract_single_amplitude)(large_window, pick, None)
+                    delayed(self._extract_single_amplitude)(
+                        large_window, pick, None, mean=False
+                    )
                 )
             else:
                 amplitudes.append(
-                    self._extract_single_amplitude(large_window, pick, None)
+                    self._extract_single_amplitude(large_window, pick, None, mean=False)
                 )
 
         if self.parallel:
@@ -135,7 +141,11 @@ class AmplitudeExtractor:
         return amplitudes
 
     def _extract_single_amplitude(
-        self, large_window: obspy.Stream, pick: sbu.Pick, sub_inv: obspy.Inventory
+        self,
+        large_window: obspy.Stream,
+        pick: sbu.Pick,
+        sub_inv: obspy.Inventory,
+        mean: bool = True,
     ):
         # normalize window
         large_window.detrend("linear")
@@ -172,4 +182,7 @@ class AmplitudeExtractor:
             )  # Has been detrended with comparison to larger window before
             component_peaks[trace.id[-1]] = max(component_peaks[trace.id[-1]], val)
 
-        return np.nanmean(list(component_peaks.values()))
+        if mean:
+            return np.nanmean(list(component_peaks.values()))
+        else:
+            return np.nanmax(list(component_peaks.values()))
