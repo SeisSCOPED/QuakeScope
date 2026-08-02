@@ -106,7 +106,11 @@ class SubmitHelper:
                     f"(or outside extent/network/date filters): {','.join(sorted(missing))}"
                 )
 
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
@@ -161,7 +165,11 @@ class SubmitHelper:
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         extent = ",".join([str(x) for x in self.extent])
 
         logger.debug(
