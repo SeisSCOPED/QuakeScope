@@ -43,7 +43,7 @@ class SubmitHelper:
         network: str,
         db: SeisBenchDatabase,
         region: str,
-        environ: dict = {},
+        environ: dict | None = None,
         station_group_size: int = 40,
         day_group_size: int = 20,
         model: str = "PhaseNet",
@@ -56,7 +56,7 @@ class SubmitHelper:
         self.network = network
         self.station_ids = station_ids
         self.db = db
-        self.environ = environ
+        self.environ = {} if environ is None else environ
         self.region = region
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
