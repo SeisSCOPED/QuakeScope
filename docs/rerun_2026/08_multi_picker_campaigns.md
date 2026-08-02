@@ -14,10 +14,10 @@ which picks.
 
 ## 1. Bake all three weights into the image
 
-Put all three weight pairs in `sb_catalog/models/phasenet/`:
+Put all three weight pairs in `sb_catalog/models/v3/phasenet/`:
 
 ```
-sb_catalog/models/phasenet/
+sb_catalog/models/v3/phasenet/
 ├── obs2026.pt.v1          + obs2026.json.v1
 ├── general2026.pt.v1      + general2026.json.v1
 └── california2026.pt.v1   + california2026.json.v1

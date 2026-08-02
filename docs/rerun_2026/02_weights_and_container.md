@@ -38,7 +38,7 @@ Two cases:
   the image (next bullet) is still kinder to the SeisBench servers when you
   run hundreds of jobs.
 - **The weights are files you were handed** (the likely case): put them in
-  `sb_catalog/models/phasenet/` as a SeisBench pair:
+  `sb_catalog/models/v3/phasenet/` as a SeisBench pair:
 
   ```bash
   cp /path/to/new_picker.pt   sb_catalog/models/v3/phasenet/quakescope2026.pt.v1
