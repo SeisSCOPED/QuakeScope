@@ -154,10 +154,12 @@ class S3DataSource:
         stations: Optional[str] = None,
         components: str = "ZNE12",
         db: SeisBenchDatabase = None,
+        limit_mb: Optional[int] = 200,
     ):
         self.start = start
         self.end = end
         self.components = components
+        self.limit_mb = limit_mb
         if stations is None:
             self.stations = []
             self.networks = []
@@ -286,10 +288,8 @@ class S3DataSource:
             fs = self.s3helper.get_filesystem(net)
             try:
                 bytes_mb = fs.info(uri)["size"] / 1024**2
-                if bytes_mb > 200:  # skip stream bigger than 200 MB
-                    logger.warning(
-                        f"SEED too big ({bytes_mb} MB) and may cause OOM: {uri}"
-                    )
+                if self.limit_mb is not None and bytes_mb > self.limit_mb:
+                    logger.warning(f"mSEED is too big (%.3f MB): %s" % (bytes_mb, uri))
                     return obspy.Stream()
                 else:
                     buff = io.BytesIO(fs.read_bytes(uri))

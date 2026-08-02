@@ -27,8 +27,8 @@ RUN wget https://munchmeyer.de/data/sbmodels_v3_230614.tgz \
     && rm -rf models/ \
     && rm -rf sbmodels_v3_230614.tgz
 
-# Send quakexnet pretrained weights "base"
-COPY models/quakexnet /root/.seisbench/models/v3/quakexnet
+# Send and merge local weights into the image
+COPY models/v3/ /root/.seisbench/models/v3/
 
 # command to run on container start
 ENTRYPOINT ["python", "-m", "src.picker"]

@@ -1,6 +1,8 @@
 jobDefinitionName: '' # [REQUIRED] Specify a name for the job definition to register.
 type: container
-parameters: {} # These parameters will be overwritten
+parameters: # Defaults, overwritten at submission time
+  model: PhaseNet
+  weight: instance
 containerProperties:
   image: ghcr.io/seisscoped/quakescope:latest
   jobRoleArn: '' # [REQUIRED] The Amazon Resource Name (ARN) of the IAM role that the container can assume for AWS permissions.
@@ -17,6 +19,10 @@ containerProperties:
   - Ref::start
   - "--end"
   - Ref::end
+  - "--model"
+  - Ref::model
+  - "--weight"
+  - Ref::weight
   - "--classifier"
   - "--debug"
   resourceRequirements: # The type and amount of resources to assign to a container.

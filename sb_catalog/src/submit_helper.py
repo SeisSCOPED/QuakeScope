@@ -32,6 +32,7 @@ class SubmitHelper:
     :param region: AWS region to run jobs
     :param station_group_size: Number of stations to process in a single picking job
     :param day_group_size: Number of days to process in a single picking/association job
+    :param station_ids: Explicit list of station ids (NET.STA.LOC) to restrict the submission to
     """
 
     def __init__(
@@ -42,23 +43,31 @@ class SubmitHelper:
         network: str,
         db: SeisBenchDatabase,
         region: str,
-        environ: dict = {},
+        environ: dict | None = None,
         station_group_size: int = 40,
         day_group_size: int = 20,
+        model: str = "PhaseNet",
+        weight: str = "instance",
+        station_ids: list = None,
     ):
         self.start = start
         self.end = end
         self.extent = extent
         self.network = network
+        self.station_ids = station_ids
         self.db = db
-        self.environ = environ
+        self.environ = {} if environ is None else environ
         self.region = region
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
+        self.model = model
+        self.weight = weight
         self.client = boto3.client("batch", config=Config(region_name=region))
         self.shared_parameters = {
             "db_uri": self.db.db_uri,
             "database": self.db.database.name,
+            "model": self.model,
+            "weight": self.weight,
         }
 
         self._environ_kv = [{"name": k, "value": v} for k, v in self.environ.items()]
@@ -86,7 +95,22 @@ class SubmitHelper:
         stations = self.db.get_stations(extent=self.extent, network=self.network)
         stations = filter_station_by_start_end_date(stations, self.start, self.end)
 
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        # restrict to an explicit station list if one was provided
+        if self.station_ids is not None:
+            requested = set(self.station_ids)
+            stations = stations[stations["id"].isin(requested)]
+            missing = requested - set(stations["id"])
+            if missing:
+                logger.warning(
+                    f"{len(missing)} stations from the list not found in the database "
+                    f"(or outside extent/network/date filters): {','.join(sorted(missing))}"
+                )
+
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
@@ -141,7 +165,11 @@ class SubmitHelper:
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         extent = ",".join([str(x) for x in self.extent])
 
         logger.debug(
@@ -173,6 +201,25 @@ class SubmitHelper:
 
 def parse_year_day(x: str) -> datetime.date:
     return datetime.datetime.strptime(x, "%Y.%j").date()
+
+
+def read_station_file(path: str) -> list[str]:
+    """
+    Reads a station list: either a CSV with an 'id' column or a plain text
+    file with one NET.STA.LOC id per line. Lines starting with # are ignored.
+    """
+    with open(path) as f:
+        first = f.readline()
+    if "id" in [c.strip() for c in first.split(",")]:
+        ids = pd.read_csv(path)["id"].astype(str).str.strip()
+        return sorted(set(ids[ids != ""]))
+    ids = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                ids.append(line.split(",")[0].strip())
+    return sorted(set(ids))
 
 
 def main():
@@ -208,9 +255,35 @@ def main():
     parser.add_argument(
         "--region", type=str, default="us-east-2", help="Working region on AWS."
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="PhaseNet",
+        help="SeisBench model type for picking jobs.",
+    )
+    parser.add_argument(
+        "--weight",
+        type=str,
+        default="instance",
+        help="Model weights for picking jobs, e.g. a custom weight baked into the image.",
+    )
+    parser.add_argument(
+        "--station_file",
+        type=str,
+        help="Path to a station list restricting the submission: a text file with "
+        "one NET.STA.LOC id per line (# comments allowed), or a CSV with an 'id' column.",
+    )
     args = parser.parse_args()
 
-    assert args.extent or args.network, "Either extent or network needs to be set"
+    assert (
+        args.extent or args.network or args.station_file
+    ), "Either extent, network, or station_file needs to be set"
+
+    if args.station_file:
+        station_ids = read_station_file(args.station_file)
+        logger.info(f"Read {len(station_ids)} station ids from {args.station_file}")
+    else:
+        station_ids = None
 
     if args.extent:
         extent = tuple([float(x) for x in args.extent.split(",")])
@@ -236,6 +309,9 @@ def main():
         db=db,
         region=args.region,
         environ=environ,
+        model=args.model,
+        weight=args.weight,
+        station_ids=station_ids,
     )
     helper.submit_jobs(args.command)
 
