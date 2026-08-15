@@ -1,0 +1,126 @@
+cff-version: 1.2.0
+title: "QuakeScope: Machine Learning-based Seismic Phase Picking at Cloud Scale"
+abstract: >
+  A cloud-native workflow for automated seismic phase picking and earthquake
+  detection using deep learning (PhaseNet v7), deployed on AWS with containerized
+  models, elastic computing (Batch/Fargate), and managed database (DocumentDB).
+  Includes tools for model validation, cloud monitoring, and earthquake association.
+
+authors:
+  - family-names: Ni
+    given-names: Yiyu
+    affiliation: "Department of Earth and Space Sciences, University of Washington"
+    email: niyiyu@uw.edu
+    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+
+  - family-names: Munchmeyer
+    given-names: Jannes
+    affiliation: "Institut des Sciences de la Terre, Université Grenoble Alpes"
+    email: munchmej@univ-grenoble-alpes.fr
+    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+
+  - family-names: Denolle
+    given-names: Marine A.
+    affiliation: "Department of Earth and Space Sciences, University of Washington"
+    email: mdenolle@uw.edu
+    orcid: "https://orcid.org/0000-0002-5146-5518"
+
+license: "MIT"
+repository-code: "https://github.com/SeisSCOPED/QuakeScope"
+keywords:
+  - seismology
+  - machine-learning
+  - deep-learning
+  - phase-picking
+  - earthquake-detection
+  - cloud-computing
+  - aws
+  - containerization
+
+identifiers:
+  - description: "Zenodo archive DOI (primary)"
+    type: doi
+    value: "10.5281/zenodo.XXXXXXX"  # To be updated after Zenodo upload
+
+date-released: 2026-01-01
+version: "2.0.0"
+
+references:
+  - authors:
+      - family-names: Ni
+        given-names: Yiyu
+      - family-names: Munchmeyer
+        given-names: Jannes
+      - family-names: Denolle
+        given-names: Marine A.
+    title: "QuakeScope: Machine learning-based seismic phase picking at cloud scale"
+    journal: "Geophysical Journal International"
+    year: 2025
+    volume: "XXX"
+    issue: "X"
+    pages: "XXX--XXX"
+    doi: "10.1093/gji/ggxxxx"  # To be updated
+    type: journal-article
+
+  - authors:
+      - family-names: Ni
+        given-names: Yiyu
+      - family-names: Munchmeyer
+        given-names: Jannes
+      - family-names: Denolle
+        given-names: Marine A.
+    title: "QuakeScope earthquake catalog and phase picks from 2026 re-run"
+    journal: "Seismica Data Mine"
+    year: 2025
+    doi: "10.26443/seismica.xxxxx"  # To be updated
+    type: journal-article
+
+  - authors:
+      - family-names: Zhu
+        given-names: Weiqiang
+      - family-names: Beroza
+        given-names: Gregory C.
+    title: "PhaseNet: a deep-neural-network-based seismic arrival time picking method"
+    journal: "Nature Communications"
+    year: 2019
+    volume: 10
+    pages: 1937
+    doi: "10.1038/s41467-019-09748-z"
+    type: journal-article
+
+  - authors:
+      - family-names: Woollam
+        given-names: Jack
+      - family-names: Rietbrock
+        given-names: Andreas
+      - family-names: Buenning
+        given-names: Fabian
+      - family-names: Wassermann
+        given-names: Jürgen
+      - family-names: Nissen-Meyer
+        given-names: Tarje
+    title: "SeisBench—A Toolbox for Machine Learning in Seismology"
+    journal: "Seismological Research Letters"
+    year: 2022
+    volume: 93
+    issue: 3
+    pages: "1695–1709"
+    doi: "10.1785/0220210324"
+    type: journal-article
+
+related-resources:
+  - description: "PhaseNet on GitHub"
+    type: repository
+    url: "https://github.com/coreseismic/PhaseNet"
+
+  - description: "SeisBench documentation"
+    type: documentation
+    url: "https://seisbench.readthedocs.io/"
+
+  - description: "PyOcto earthquake associator"
+    type: repository
+    url: "https://github.com/aur-archive/pyocto"
+
+  - description: "Southern California Earthquake Data Center (SCEDC)"
+    type: repository
+    url: "https://scedc.caltech.edu"
