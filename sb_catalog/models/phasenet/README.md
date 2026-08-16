@@ -19,8 +19,12 @@ repository baked in by the Dockerfile) remain available.
   [Denolle-Lab/phasenet-retrain](https://github.com/Denolle-Lab/phasenet-retrain)
   is experiment **v7** (fine-tuned from SeisBench `jma_wc` with knowledge
   distillation; benchmark P-MAE 0.340 s, P-recall 0.853, MCC 0.760 on the
-  cross-domain split — see that repo's `paper_draft.qmd` leaderboard). The
-  checkpoint lives on the lab back-end server at
+  cross-domain split — see that repo's `paper_draft.qmd` leaderboard). Note
+  that v7 wins on *timing* only: the un-fine-tuned `jma_wc` parent still scores
+  higher P-recall (0.881) and MCC (0.790), so the choice is a trade, not a
+  strict upgrade — see
+  [`docs/phasenet_v7_model_description.md`](../../../docs/phasenet_v7_model_description.md).
+  The checkpoint lives on the lab back-end server at
   `phasenet-retrain/checkpoints/finetune_jma_wc_global_v7/best.pt`
   (checkpoints are git-ignored there). Convert it to a SeisBench pair with:
 

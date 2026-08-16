@@ -46,9 +46,11 @@ pixi run smoke-test
 ## Key Features
 
 - 🌩️ **Cloud-native**: AWS Batch/Fargate for elastic, serverless phase picking
-- 🔬 **Production-ready models**: PhaseNet v7 fine-tuned on global seismic data
+- 🔬 **Selectable weights**: ships SeisBench models; custom fine-tunes drop in via `--weight`
 - 📊 **Scalable database**: DocumentDB for catalog storage and querying
-- 🎯 **High accuracy**: PhaseNet P-recall 0.853, MAE 0.340s (cross-domain benchmark)
+- ⏱️ **Timing-tuned picker**: the v7 fine-tune improves P-MAE to 0.340 s from its
+  parent's 0.374 s, trading recall to get there — see
+  [the model notes](docs/phasenet_v7_model_description.md) before choosing it
 - 📦 **Containerized**: Docker-based deployment with custom weights and dependencies
 - 🔍 **Monitored**: CloudWatch dashboards and SNS alerts for job tracking
 
