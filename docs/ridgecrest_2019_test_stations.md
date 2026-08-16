@@ -1,115 +1,81 @@
-# Ridgecrest 2019 Smoke Test Stations
+# Ridgecrest 2019 smoke-test data
 
-**Event**: M7.1 Ridgecrest earthquake, July 5, 2019, 17:33:50 UTC  
-**Epicenter**: 35.705°N, 117.504°W (Kern County, California)  
-**Depth**: ~6-7 km  
-**Network**: CI (Southern California Seismic Network)  
-**Data Source**: SCEDC S3 bucket (`scedc-pds/continuous_waveforms/`)
+Reference for the stations and events used by
+[`tutorials/phasenet_smoke_test_ridgecrest.ipynb`](../tutorials/phasenet_smoke_test_ridgecrest.ipynb)
+and [`tutorials/compare_phasenet_models.ipynb`](../tutorials/compare_phasenet_models.ipynb).
 
-## Selected Stations (All Within 50 km)
+Everything below was verified against the live SCEDC bucket and the USGS
+catalog — station codes, coordinates, and object keys all resolve.
 
-Five SCSN stations selected for close-field smoke testing. All stations are within 50 km of the epicenter, providing strong, clear signals for robust model validation.
+## Events
 
-| # | Code | Network | Latitude | Longitude | Distance (km) | Azimuth | Description |
-|---|------|---------|----------|-----------|---------------|---------|-------------|
-| 1 | **DAM** | CI | 35.740 | -117.560 | **6.4** | **Very close** — Furnace Creek area, nearest to epicenter |
-| 2 | **BOR** | CI | 35.650 | -117.330 | **16.9** | **Close** — Boron area, northern Kern County |
-| 3 | **SYC** | CI | 35.810 | -117.860 | **34.2** | **Moderate-close** — Sycamore area, Sierra Nevada foothills |
-| 4 | **TNP** | CI | 35.500 | -117.850 | **38.7** | **Moderate-close** — Timberlake Peak area, mountains |
-| 5 | **PIG** | CI | 35.280 | -117.400 | **48.2** | **Moderate** — Pisgah/Mojave area, desert |
+Both fall on 2019 day-of-year **187**, so they share the same SCEDC day files.
 
-## Expected Phase Arrivals
+| Event | Origin (UTC) | Lat | Lon | Depth |
+|---|---|---|---|---|
+| M7.1 mainshock | 2019-07-06 03:19:53.04 | 35.770 | −117.599 | 8.0 km |
+| M4.6 aftershock | 2019-07-06 08:32:57.55 | 35.639 | −117.491 | 3.1 km |
 
-Using typical Southern California crustal velocities (Vp = 5.8 km/s, Vs = 3.3 km/s):
+The M6.4 foreshock (2019-07-04 17:33:49, DOY **185**) is a different day and is
+not used.
 
-### P-Wave Arrival Times (approx from event time)
+**Why two events.** A magnitude 7 ruptures for tens of seconds, so at these
+distances its S arrival is buried inside ongoing rupture radiation and pickers
+routinely miss it — observed here as P-only picks at every station. That makes
+the mainshock good for the record section but useless for validating S. The
+moderate aftershock has a short, impulsive source and yields clean P and S, so
+it carries the S−P timing check.
 
-| Station | Distance | P arrival time | Comments |
-|---------|----------|-----------------|----------|
-| DAM | 6.4 km | ~1.1s | Strong emergent motion |
-| BOR | 16.9 km | ~2.9s | Clear, distinct P |
-| SYC | 34.2 km | ~5.9s | Regional P |
-| TNP | 38.7 km | ~6.7s | Clear phase |
-| PIG | 48.2 km | ~8.3s | Moderate amplitude |
+## Stations
 
-### S-Wave Arrival Times & P-S Intervals
+Network **CI** (SCSN), channel **HH** (broadband, 100 Hz). Distances are
+epicentral, in km.
 
-| Station | Distance | P-S Interval | S arrival (from event) | Comments |
-|---------|----------|--------------|------------------------|----------|
-| DAM | 6.4 km | 0.7-1.5s | ~1.8-2.6s | Strong S phase, short duration |
-| BOR | 16.9 km | 2.0-3.2s | ~5.0-6.1s | Clear S |
-| SYC | 34.2 km | 4.0-6.0s | ~9.9-11.9s | Distinct S arrival |
-| TNP | 38.7 km | 4.6-7.0s | ~11.3-13.7s | Moderate S amplitude |
-| PIG | 48.2 km | 5.7-8.6s | ~14.0-16.9s | Clear S phase |
+| Station | Lat | Lon | → mainshock | → aftershock |
+|---|---|---|---|---|
+| CLC | 35.8157 | −117.5975 | 5.1 | 21.8 |
+| TOW2 | 35.8086 | −117.7649 | 15.6 | 31.1 |
+| SRT | 35.6923 | −117.7505 | 16.2 | 24.2 |
+| WRC2 | 35.9479 | −117.6504 | 20.3 | 37.2 |
+| JRC2 | 35.9825 | −117.8089 | 30.2 | 47.7 |
 
-**All stations within close range** → all P-S intervals are short, all picks should cluster tightly around the event time.
+WRC2 records the mainshock but yields no picks for the aftershock — expected
+for the most distant station and a moderate event, and reported as such rather
+than silently dropped.
 
-## Validation Checklist
+## SCEDC object layout
 
-### Physical Plausibility
-- [ ] **DAM**: P arrives before S, P-S ≈ 0.5-1.5s (very close → short interval)
-- [ ] **ISA**: P arrives before S, P-S ≈ 6-9s (moderate distance)
-- [ ] **SBC**: P arrives before S, P-S ≈ 8-12s (comparable to ISA—slightly farther)
-- [ ] **GSC**: P arrives before S, P-S ≈ 18-22s (far distance → long interval)
-- [ ] **PAS**: P arrives before S, P-S ≈ 30-40s (teleseismic → very long interval)
+SCEDC differs from NCEDC: the network is **not** a directory level, the day
+folder uses an underscore, and the station code is padded to five characters.
 
-### Detection Consistency
-- [ ] All 5 stations detect the M7.1 main event
-- [ ] Picks cluster within ±5s of true event time (17:33:50 UTC)
-- [ ] Both P and S picks present for main event on all stations
-- [ ] No false positives in pre-event noise (before 17:33:40 UTC)
+```
+scedc-pds/continuous_waveforms/<year>/<year>_<doy>/
+    <net><sta padded to 5><cha><comp><loc padded to 3><year><doy>.ms
+```
 
-### Model Comparison (if running compare_phasenet_models.ipynb)
-- [ ] v7 and original both detect main event
-- [ ] v7 detects additional events (higher recall)?
-- [ ] v7 and original agree on timing of main event (within ±1s)?
-- [ ] No systematic biases in v7 picks vs. original
+For example `CICLC__HHZ___2019187.ms`. Files are whole-day, roughly 20 MB per
+channel, and readable anonymously — no AWS credentials needed.
 
-## Data Availability & Known Issues
+Using the NCEDC pattern (`ncedc-pds/continuous_waveforms/<net>/...`) against
+this bucket returns `FileNotFoundError` for every request.
 
-### DAM (Furnace Creek area)
-- **Status**: Excellent data for Ridgecrest (very close station)
-- **SNR**: Very high (close to event)
-- **Known issues**: None typical
+## Expected result
 
-### ISA (Anza array)
-- **Status**: Reliable, part of long-running array
-- **SNR**: High (mountain site)
-- **Known issues**: Possible gaps in digital archive pre-2010
+Observed S−P should track the interval implied by hypocentral distance. From a
+run with the published `original` weights:
 
-### SBC (Santa Barbara)
-- **Status**: Good, coastal station
-- **SNR**: Moderate (marine noise)
-- **Known issues**: Occasional data gaps, tilt noise at long periods
+| Station | Observed S−P | Predicted | Difference |
+|---|---|---|---|
+| CLC | 3.05 s | 2.63 s | +0.42 |
+| TOW2 | 4.87 s | 3.72 s | +1.15 |
+| SRT | 4.11 s | 2.91 s | +1.20 |
+| JRC2 | 6.10 s | 5.69 s | +0.41 |
 
-### GSC (Goldstone)
-- **Status**: Excellent, located at NASA tracking station
-- **SNR**: High (remote desert site)
-- **Known issues**: Instrument sensitivity changed c. 2006
-
-### PAS (Pasadena/Caltech)
-- **Status**: Excellent historical data
-- **SNR**: Moderate in urban environment
-- **Known issues**: Urban noise, especially at short periods
-
-## Ridgecrest Earthquake Sequence Context
-
-The 2019 Ridgecrest sequence included two major events:
-
-1. **M6.4 foreshock** — July 4, 2019, 10:33 UTC (day 185)
-   - Depth: ~8 km
-   - ~35 km away from main epicenter
-
-2. **M7.1 main shock** — July 5, 2019, 17:33 UTC (day 186) ← **Smoke test target**
-   - Depth: ~6 km
-   - This is the event we test on
-
-**Note**: This notebook fetches data from July 5 (day 186) to capture the main event. If you want to include the foreshock, you'd need to also fetch July 4 data (day 185).
+Observed running slightly long is normal: the prediction assumes a single layer
+at Vp 6.0 / Vs 3.5 km/s (Vp/Vs = 1.71), while the real crust here is a little
+higher.
 
 ## References
 
-- **USGS Event Page**: https://earthquake.usgs.gov/earthquakes/events/2019ca/
-- **SCSN Network**: Southern California Seismic Network (CI), operated by Caltech
-- **SCSN Station Map**: https://scsn.caltech.edu/
-- **SCEDC Data**: Southern California Earthquake Data Center — public S3 bucket `scedc-pds/continuous_waveforms/`
-- **Typical Southern California velocities**: Hadley & Kanamori (1977), Vp ≈ 5.8 km/s, Vs ≈ 3.3 km/s
+- USGS event pages: <https://earthquake.usgs.gov/earthquakes/eventpage/ci38457511/executive>
+- SCEDC open data: <https://scedc.caltech.edu/data/cloud.html>

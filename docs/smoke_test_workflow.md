@@ -1,167 +1,81 @@
-# PhaseNet Smoke Test Workflow
+# Phase-picker smoke test
 
-**Goal**: Validate the original PhaseNet v7 weights on real waveforms before deploying to production.
+A two-minute check that a PhaseNet weight set produces sane picks before it is
+trusted for a production run. It is not a benchmark — for that, see
+[phasenet_v7_model_description.md](phasenet_v7_model_description.md).
 
-**Focus**: Visual inspection of picks against waveforms to ensure physical plausibility.
+## Run it
 
-## Workflow Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Configure Event & Stations                               │
-│    - Ridgecrest M7.1 (July 5, 2019)                          │
-│    - 2-3 SCSN stations at varying distances                 │
-│      (close: DAM; moderate: GSC; far: PAS)                  │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Fetch Waveforms from S3                                  │
-│    - NCEDC S3 bucket: ncedc-pds/continuous_waveforms        │
-│    - Network: CI (SCSN)                                     │
-│    - Format: HH* (broadband, high-sample-rate)             │
-│    - Date: 2019-07-05 (day of year 186)                     │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 3. Load Model Weights                                       │
-│    Primary: v7 (quakescope2026)                             │
-│    Fallback: SeisBench 'instance' (for comparison)          │
-│    Location: sb_catalog/models/phasenet/                    │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 4. Run Phase Picking                                        │
-│    - Model.classify() on 24h waveforms                      │
-│    - P threshold: 0.3, S threshold: 0.3                     │
-│    - Collect all picks in PickList                          │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 5. Visual Validation                                        │
-│    For each station:                                         │
-│    ├─ Plot 3-component waveforms (Z, N, E)                 │
-│    ├─ Overlay picks as vertical lines (blue=P, green=S)    │
-│    ├─ Highlight event time window (±10s before, +60s after)│
-│    └─ Inspect: Do picks align with onset features?         │
-│                                                              │
-│    Expected patterns:                                       │
-│    • P picks on vertical (Z) or any component              │
-│    • S picks after P with P-S ~ 3-10s (distance dependent)│
-│    • Picks cluster near event time, not random             │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 6. Sanity Checks                                            │
-│    ├─ P picks precede S picks for same event               │
-│    ├─ P-S intervals are physically reasonable              │
-│    ├─ Picks cluster around event time                      │
-│    ├─ No spurious picks in noise windows                   │
-│    └─ Consistent results across multiple stations          │
-└─────────────────────────────────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│ PASS/FAIL Decision                                          │
-│                                                              │
-│ PASS if:                                                    │
-│ ✓ Picks align with waveform onsets on all channels        │
-│ ✓ P consistently precedes S with 3-10s intervals          │
-│ ✓ No spurious picks in noise windows                       │
-│ ✓ Results consistent across stations                       │
-│                                                              │
-│ FAIL if:                                                    │
-│ ✗ Picks miss obvious onsets                                │
-│ ✗ S precedes P or P-S intervals unrealistic               │
-│ ✗ High false-positive rate in noise                        │
-│ ✗ Inconsistent behavior across stations                    │
-└─────────────────────────────────────────────────────────────┘
+```bash
+pixi install --environment tutorials
+pixi run -e tutorials install-kernel
+pixi run -e tutorials smoke-test
 ```
 
-## Running the Smoke Test
+Select the **QuakeScope CPU (tutorials)** kernel. The notebook downloads roughly
+300 MB per event from the SCEDC public bucket and runs on CPU in about 90
+seconds.
 
-### Setup
-1. Ensure NCEDC S3 credentials (anonymous access, no setup needed)
-2. Verify v7 weights are in `sb_catalog/models/phasenet/`:
-   ```bash
-   ls sb_catalog/models/phasenet/*.v1
-   ```
-3. If v7 weights not present, convert from lab server:
-   ```bash
-   cd sb_catalog/models/phasenet
-   python convert_checkpoint.py --checkpoint /path/to/best.pt --name quakescope2026 --verify
-   ```
+## What it does
 
-### Execute
-1. Open `tutorials/phasenet_smoke_test_ridgecrest.ipynb`
-2. Run cells in order:
-   - **Config**: Adjust event time, stations, thresholds if needed
-   - **Fetch**: Download waveforms from S3 (5-10 min depending on data availability)
-   - **Load**: Load model weights
-   - **Pick**: Run inference (1-5 min per station)
-   - **Visualize**: Inspect plots (main validation step)
-   - **Sanity Checks**: Verify statistics
-3. Record findings in a cell markdown as pass/fail with notes
+1. Fetches five CI stations, 5–48 km from the 2019 Ridgecrest events, from
+   `scedc-pds` over anonymous S3.
+2. Loads `quakescope2026` if it has been converted locally, otherwise the
+   published `original` weights — and says which it used.
+3. Picks the M7.1 mainshock, plots per-station waveforms and a record section.
+4. Picks a M4.6 aftershock and compares observed S−P against the interval
+   implied by hypocentral distance.
 
-### What to Look For
+Station and event details are in
+[ridgecrest_2019_test_stations.md](ridgecrest_2019_test_stations.md).
 
-**Good signs:**
-- Clean P arrival on Z component (strong upward first motion)
-- Clear S arrival on horizontal (N/E) with ~5-8s delay from P at close distance
-- Picks clustered around 17:33:50 UTC (event time)
-- No false positives in pre-event noise (before ~17:33:40)
+## Reading the result
 
-**Red flags:**
-- Picks scattered randomly throughout day
-- S picks before P
-- Picks on obvious noise transients, not seismic arrivals
-- Missing obvious onsets on close stations
-- Inconsistent behavior between nearby stations
+**Healthy:** picks sit on visible onsets; P precedes S at every station;
+observed S−P grows with distance and lands within a second or two of prediction;
+picks in the record section follow the moveout curves.
 
-## Expected Stations & Distances
+**Investigate:** S before P; S−P that does not scale with distance (usually a
+component-mapping or resampling problem); dense picks in pre-event noise; a
+station producing nothing while neighbours at similar distance work.
 
-| Station | Network | Lat   | Lon     | Dist (km) | Expected P-S (s) |
-|---------|---------|-------|---------|-----------|------------------|
-| DAM     | CI      | 35.73 | -117.52 | ~3        | ~0.5            |
-| GSC     | CI      | 35.47 | -116.43 | ~130      | ~18             |
-| PAS     | CI      | 34.15 | -118.17 | ~225      | ~32             |
+**Expected, not a failure:** no S picks for the mainshock at close range — a
+magnitude 7 ruptures for tens of seconds and buries its own S arrival. Also
+expect many extra picks: this window sits inside one of the most active
+aftershock sequences on record, so much of that extra energy is real
+earthquakes.
 
-(Assuming v_p=5.8 km/s, v_s=3.3 km/s typical for SoCal crust)
+## Comparing weight sets
 
-## Comparing with Baseline
+```bash
+pixi run -e tutorials compare-models
+```
 
-If comparing v7 to "instance" weights:
-1. Run notebook with both models (modify Step 3 to load both)
-2. Create side-by-side plots of picks for each model
-3. Document differences in pick counts, precision, false positives
-4. Record in PR/commit message
+Runs every available weight set over identical waveforms. Pick counts alone do
+not rank models — a model emitting more picks may be recovering real
+aftershocks or firing on noise, and only the waveform panels separate those
+cases. What carries information is whether the weight sets agree on a shared
+arrival to within a few tenths of a second, and whether any misses a station its
+peers handle.
 
-## Output Artifacts
+Note that `jma_wc` fails to load in some SeisBench releases
+(`InvalidVersion: '1.partial'`); the notebook skips unloadable weights with a
+message rather than aborting.
 
-- **Waveform plots** (PNG): Visual record of picks on data
-- **Pick statistics** (CSV): All picks with times, phases, confidence
-- **Notebook execution log**: Terminal output showing processing steps
-- **Validation checklist**: Markdown cell summarizing pass/fail decisions
+## Before a production run
 
-## Troubleshooting
+If the smoke test passes, convert and install the production weights:
 
-| Issue | Likely Cause | Fix |
-|-------|--------------|-----|
-| "FileNotFoundError" on S3 | Station/channel unavailable | Skip station, try different date |
-| Model fails to load | v7 weights not in right format | Convert checkpoint again, check file permissions |
-| No picks returned | Waveforms too noisy or thresholds too high | Lower P_THRESHOLD, S_THRESHOLD to 0.2 |
-| Picks misaligned with waveforms | Trace time/sampling mismatch | Check stats on trace, verify trim() call |
-| Slow execution | Network latency or large data | Reduce time window or number of stations |
+```bash
+cd sb_catalog/models/phasenet
+python convert_checkpoint.py --checkpoint /path/to/best.pt \
+    --name quakescope2026 --verify
+```
 
-## Next Steps After Smoke Test
-
-1. **PASS**: Proceed to full production deployment
-2. **FAIL**: Debug model or revert to previous weights
-3. **PARTIAL PASS**: Document caveats and acceptable error rates
-4. **UNCLEAR**: Expand to additional events/stations for more evidence
+Then re-run the smoke test — it picks up `quakescope2026` automatically — and
+proceed to [rerun_2026/README.md](rerun_2026/README.md).
 
 ## References
 
-- **Event**: Ridgecrest earthquake sequence, July 2019
-  - USGS: https://earthquake.usgs.gov/earthquakes/events/2019ca
-- **Waveform data**: NCEDC public S3 bucket (Continuous California seismic data)
-- **PhaseNet**: Zhu & Beroza (2019), https://doi.org/10.1038/s41467-019-09748-z
-- **SeisBench**: Woollam et al. (2022), https://doi.org/10.1109/IGARSS46834.2022.9883952
+- Zhu & Beroza (2019), PhaseNet: <https://doi.org/10.1093/gji/ggy423>
+- Woollam et al. (2022), SeisBench: <https://doi.org/10.1785/0220210324>

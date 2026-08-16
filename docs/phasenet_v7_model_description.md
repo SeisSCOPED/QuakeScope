@@ -165,4 +165,4 @@ If v7 misses obvious arrivals or has high false positives → investigate furthe
 - **phasenet-retrain**: https://github.com/Denolle-Lab/phasenet-retrain
 - **Paper draft** (leaderboard, full methods): `/Users/marinedenolle/GitHub/phasenet-retrain/paper_draft.html`
 - **SeisBench jma_wc**: https://seisbench.readthedocs.io/en/latest/ → Models → PhaseNet
-- **Zhu & Beroza (2019)**: https://doi.org/10.1038/s41467-019-09748-z
+- **Zhu & Beroza (2019)**, PhaseNet, *Geophysical Journal International* 216(1):261–273: https://doi.org/10.1093/gji/ggy423

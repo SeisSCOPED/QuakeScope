@@ -81,24 +81,41 @@ references:
       - family-names: Beroza
         given-names: Gregory C.
     title: "PhaseNet: a deep-neural-network-based seismic arrival time picking method"
-    journal: "Nature Communications"
+    journal: "Geophysical Journal International"
     year: 2019
-    volume: 10
-    pages: 1937
-    doi: "10.1038/s41467-019-09748-z"
+    volume: 216
+    issue: "1"
+    pages: "261--273"
+    doi: "10.1093/gji/ggy423"
     type: journal-article
 
   - authors:
       - family-names: Woollam
         given-names: Jack
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Tilmann
+        given-names: Frederik
       - family-names: Rietbrock
         given-names: Andreas
-      - family-names: Buenning
-        given-names: Fabian
-      - family-names: Wassermann
-        given-names: Jürgen
-      - family-names: Nissen-Meyer
-        given-names: Tarje
+      - family-names: Lange
+        given-names: Dietrich
+      - family-names: Bornstein
+        given-names: Thomas
+      - family-names: Diehl
+        given-names: Tobias
+      - family-names: Giunchi
+        given-names: Carlo
+      - family-names: Haslinger
+        given-names: Florian
+      - family-names: Jozinović
+        given-names: Dario
+      - family-names: Michelini
+        given-names: Alberto
+      - family-names: Saul
+        given-names: Joachim
+      - family-names: Soto
+        given-names: Hugo
     title: "SeisBench—A Toolbox for Machine Learning in Seismology"
     journal: "Seismological Research Letters"
     year: 2022
