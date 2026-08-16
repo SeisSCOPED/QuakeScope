@@ -55,4 +55,4 @@ dev = ["cpu", "dev"]
 smoke-test = "jupyter notebook tutorials/phasenet_smoke_test_ridgecrest.ipynb"
 compare-models = "jupyter notebook tutorials/compare_phasenet_models.ipynb"
 lab = "jupyter lab"
-install-kernel = "python -m ipykernel install --user --name quakescope-tutorials --display-name 'QuakeScope (tutorials)'"
+install-kernel = "python -m ipykernel install --user --name quakescope-cpu --display-name 'QuakeScope CPU (tutorials)'"

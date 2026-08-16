@@ -15,7 +15,9 @@ pixi run -e tutorials install-kernel   # registers the "QuakeScope (tutorials)" 
 pixi run -e tutorials smoke-test
 ```
 
-Select **QuakeScope (tutorials)** as the kernel when a notebook opens (Jupyter defaults to whatever kernel was last used otherwise).
+Select **QuakeScope CPU (tutorials)** as the kernel when a notebook opens (Jupyter defaults to whatever kernel was last used otherwise).
+
+> **Do not run `pixi install -e tutorials-gpu --platform linux-64` on macOS.** It materializes a Linux-arch env under `.pixi/envs/`, which VSCode then discovers and offers as a broken kernel. If that happens, `rm -rf .pixi/envs/tutorials-gpu` and reload the window.
 
 Verified working (macOS, `pixi 0.76.2`): `seisbench`, `obspy`, `torch`, `pyocto`, `ipykernel` all import cleanly in the `tutorials` env, and the kernel registers and is visible to `jupyter kernelspec list`.
 
