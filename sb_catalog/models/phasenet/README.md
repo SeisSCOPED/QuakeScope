@@ -24,12 +24,17 @@ repository baked in by the Dockerfile) remain available.
   higher P-recall (0.881) and MCC (0.790), so the choice is a trade, not a
   strict upgrade — see
   [`docs/phasenet_v7_model_description.md`](../../../docs/phasenet_v7_model_description.md).
-  The checkpoint lives on the lab back-end server at
-  `phasenet-retrain/checkpoints/finetune_jma_wc_global_v7/best.pt`
-  (checkpoints are git-ignored there). Convert it to a SeisBench pair with:
+  **The converted pair is already committed here** as
+  `quakescope2026.pt.v1` + `quakescope2026.json.v1`, so `--weight quakescope2026`
+  works without further setup.
+
+  It came from `phasenet_jma_wc_ft_v7.pt` at the root of the `phasenet-retrain`
+  repo (added there 2026-08-16 in commit `705f5a5`; note this is *not* the
+  git-ignored `checkpoints/finetune_jma_wc_global_v7/best.pt` path the training
+  config writes to). To regenerate after a retrain:
 
   ```
-  python convert_checkpoint.py --checkpoint best.pt --name quakescope2026 --verify
+  python convert_checkpoint.py --checkpoint phasenet_jma_wc_ft_v7.pt --name quakescope2026 --verify
   ```
 
 - **QuakeXNet** (classifier): `../quakexnet/base.pt.v1` already carries the

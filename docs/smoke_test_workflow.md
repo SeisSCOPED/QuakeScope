@@ -58,9 +58,16 @@ cases. What carries information is whether the weight sets agree on a shared
 arrival to within a few tenths of a second, and whether any misses a station its
 peers handle.
 
-Note that `jma_wc` fails to load in some SeisBench releases
-(`InvalidVersion: '1.partial'`); the notebook skips unloadable weights with a
-message rather than aborting.
+If a weight fails with `InvalidVersion: '1.partial'`, an interrupted download
+has left `*.partial` files in the SeisBench cache and the version parser trips
+on the filename — it is a local artifact, not a broken release. Clear it:
+
+```bash
+rm ~/.seisbench/models/v3/phasenet/*.partial
+```
+
+The notebook skips unloadable weights with a message rather than aborting
+either way.
 
 ## Before a production run
 

@@ -173,29 +173,34 @@ what forced the leaderboard-driven selection flagged as a caveat above.
 
 ### Convert v7 checkpoint to SeisBench format
 
-**The checkpoint is not in the git repository and not on any local clone.**
-`checkpoints/` and `results/` in `phasenet-retrain` contain only `.gitkeep` —
-both are git-ignored, and the weights live on the Denolle Lab back-end Linux
-server. Per `configs/finetune_jma_wc_global_v7.yaml`, its path there is relative
-to the repo root:
+**Already done — the converted pair is committed** as
+`sb_catalog/models/phasenet/quakescope2026.{pt,json}.v1`, so
+`--weight quakescope2026` works out of the box and the tutorials pick it up
+automatically.
 
-```
-checkpoints/finetune_jma_wc_global_v7/best.pt
-```
-
-Copy it down, then convert:
+The source checkpoint arrived in `phasenet-retrain` on 2026-08-16 (commit
+`705f5a5`, "Add jma_wc_ft_global_v7 checkpoint for advisor smoke test") at the
+repo root as `phasenet_jma_wc_ft_v7.pt` — 16 MB, not under the git-ignored
+`checkpoints/` path the config writes to. It was converted with:
 
 ```bash
-scp <labserver>:<path-to>/phasenet-retrain/checkpoints/finetune_jma_wc_global_v7/best.pt .
-
 cd sb_catalog/models/phasenet
-python convert_checkpoint.py --checkpoint best.pt --name quakescope2026 --verify
+python convert_checkpoint.py \
+    --checkpoint ../../../../phasenet-retrain/phasenet_jma_wc_ft_v7.pt \
+    --name quakescope2026 --verify
 ```
 
-`--verify` installs the pair into the local SeisBench cache and reloads it
-through `from_pretrained`, so a successful run means the tutorials will pick it
-up automatically. The name `quakescope2026` is this repository's deployment
-label for the v7 fine-tune; the training repo knows it only as v7.
+The converter strips the frozen distillation teacher (111 of 222 tensors),
+validates the remaining student against the `jma_wc` architecture, and writes a
+4.1 MB SeisBench pair. Checkpoint metadata reads `epoch=44, val_loss=0.0443`,
+matching the early-stop epoch the paper reports for v7.
+
+Verified after conversion: all 93 float tensors differ from `jma_wc`, and the
+result is *not* byte-equal to the frozen teacher — so the student was extracted,
+not the teacher.
+
+The name `quakescope2026` is this repository's deployment label; the training
+repo knows the model only as v7.
 
 This produces:
 - `quakescope2026.pt.v1` — PyTorch state dict (student weights only)
