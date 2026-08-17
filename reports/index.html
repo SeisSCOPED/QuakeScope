@@ -116,6 +116,14 @@
   <div class="meta">5 stations · 2 events · ~2 min to run</div>
 </a>
 
+<a class="card" href="phasenet_obs_offshore_benchmark.html">
+  <h3>Ocean-bottom pickers offshore</h3>
+  <p>What the three SeisBench OBS models buy over land models on ocean-bottom
+  data — Cascadia, the Alaska Peninsula, and the Blanco transform — and whether
+  the hydrophone channel earns its place.</p>
+  <div class="meta">3 deployments · 9 OBS stations · 5 models · ~50 min to run</div>
+</a>
+
 <a class="card" href="quakexnet_alaska_test.html">
   <h3>Classifier transfer to Alaska</h3>
   <p>Does the PNW-trained QuakeXNet separate earthquakes, explosions and surface
@@ -200,6 +208,36 @@ trained on Northern California. <code>jma_wc</code> is a different architecture
 — PhaseNetWC, double the filters per layer — trained on Japanese JMA data, and
 <code>quakescope2026</code> is fine-tuned from it. Nothing here descends from
 <code>original</code>.</p>
+
+<p><strong>Offshore.</strong> SeisBench ships three ocean-bottom pickers.
+<code>PickBlue</code> is a constructor returning the <code>obs</code> weights on
+either a PhaseNet or an EQTransformer backbone — both four-component, including a
+hydrophone — while <code>OBSTransformer</code> is OBS-trained but takes only three.
+Across 138 windows on three deployments the OBS models lead the land models by
+roughly 5–15 points of detection, and no single one wins everywhere.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Detection rate</th><th>pickblue<br>phasenet</th><th>pickblue<br>eqt</th><th>obs<br>transformer</th><th>quakescope<br>2026</th><th>original</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Cascadia (7D)</td><td>0.74</td><td class="best">0.79</td><td>0.61</td><td>0.72</td><td>0.65</td></tr>
+    <tr><td>AACSE (XO)</td><td>0.78</td><td>0.72</td><td class="best">0.89</td><td>0.78</td><td>0.67</td></tr>
+    <tr><td>Blanco (X9)</td><td>0.53</td><td>0.53</td><td>0.51</td><td>0.53</td><td>0.49</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>The hydrophone is not where the gain comes from.</strong> Re-running the
+  four-component model on 94 detected windows with the channel withheld moved mean
+  P confidence by <strong>+0.0002</strong> — helping 32 windows, hurting 35. Its
+  sampling rate spans 100 Hz to 10 Hz across these deployments and the effect is
+  indistinguishable from noise at any of them. That <code>obstransformer</code>
+  competes without a hydrophone at all points the same way: the advantage comes
+  from training on ocean-bottom data, not from the fourth channel.
+</div>
 
 <p><strong>The classifier.</strong> QuakeXNet agrees with the Alaska catalog 78% of
 the time when the analysis window matches the training convention, and 16% when it

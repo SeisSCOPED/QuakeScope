@@ -21,6 +21,7 @@ pixi run -e tutorials jupyter nbconvert --to html --template lab \
 | [phasenet_sequence_comparison.html](phasenet_sequence_comparison.html) | Do the three weight sets hold up across five sequences, four regions, and two catalogs? | ~25 min |
 | [phasenet_aftershock_benchmark.html](phasenet_aftershock_benchmark.html) | Detailed S-recall benchmark on one dense Ridgecrest window, against 533 analyst S picks | ~5 min |
 | [phasenet_smoke_test_ridgecrest.html](phasenet_smoke_test_ridgecrest.html) | Does one weight set produce physically sensible picks at all? The first thing to run | ~2 min |
+| [phasenet_obs_offshore_benchmark.html](phasenet_obs_offshore_benchmark.html) | What do the ocean-bottom pickers buy over land models on OBS data, and does the hydrophone matter? | ~50 min |
 | [quakexnet_alaska_test.html](quakexnet_alaska_test.html) | Does the PNW-trained classifier transfer to Alaska, and how much does window placement matter? | ~30 min |
 
 ## What these currently show
@@ -59,6 +60,23 @@ The three are also not one lineage. `original` is Zhu et al., trained on
 Northern California. `jma_wc` is a different architecture — PhaseNetWC, double
 the filters per layer — trained on Japanese JMA data, and `quakescope2026` is
 fine-tuned from it. Nothing here descends from `original`.
+
+**Offshore.** SeisBench ships three ocean-bottom pickers. `PickBlue` is a
+constructor returning the `obs` weights on either a PhaseNet or an
+EQTransformer backbone, both taking four components including a hydrophone;
+`OBSTransformer` is OBS-trained but takes only three. Across 138 windows on
+three deployments, the OBS models lead the land models by roughly 5–15 points
+of detection, and **no single one wins everywhere** — `pickblue_eqt` is best at
+Cascadia, `obstransformer` at AACSE, and at Blanco all five are within a few
+points of each other.
+
+The hydrophone turns out not to be the reason. Re-running the four-component
+model on 94 detected windows with the channel withheld moved mean P confidence
+by **+0.0002**, helping 32 windows and hurting 35. Its sampling rate spans
+100 Hz to 10 Hz across these deployments and the effect is indistinguishable
+from noise at any of them. That `obstransformer` competes without a hydrophone
+at all points the same way: the gain is from training on ocean-bottom data, not
+from the fourth channel.
 
 **The classifier.** QuakeXNet agrees with the Alaska catalog 78% of the time
 when the analysis window matches the training convention, and 16% when it does
