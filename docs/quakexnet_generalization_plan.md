@@ -160,6 +160,49 @@ earthquakes with P and S annotations, not source-type labels. It would help a
 picker and does nothing for a four-class discriminator. Not worth the effort
 for this problem.
 
+### 4a. Where the surface events actually are
+
+Surveyed 2026-08-16 against the providers' own services and the literature.
+Counts are analyst-assigned labels, not model output, unless stated.
+
+| Source | Access | SU-relevant content | Verdict |
+|---|---|---|---|
+| **Alaska (AEC/USGS)** | FDSN, open | 2000+ ice quakes; 31 landslides | **Best single source.** Glacial, well catalogued, already tested |
+| **ESEC** (EarthScope SPUD) | Open, + USGS ScienceBase SQLite | ~245 events: landslides, debris flows, avalanches, lahars, outburst floods, mine collapses, a submarine landslide, a volcanic flank collapse. Global. **Includes pointers to waveforms at the DMC** | **Keep as the test set.** Too small and too precious to train on |
+| **Piton de la Fournaise** (OVPF/IPGP) | Published catalogs; FDSN carries events but the text service omits event type | ~7,000 volcano-seismic events, 2014–2021, labelled across 7 classes including **rockfall** | **Largest labelled rockfall set found.** Worth a direct request to OVPF |
+| **Swiss Alps (SED/ETH)** | FDSN, open | Landslides rising 7/yr (2016) → **39/yr (2024)**; ~30 ice quakes; occasional rockslides; plus 2000+ quarry blasts | **Yes.** Modest volume but clean labels and a different tectonic and climatic setting |
+| **Illgraben** (WSL + SED) | Published; instrumented catchment | Manually labelled **debris flows**; roughly four weeks of dense labels, dozens of slope failures | **Yes, for a class we have nothing else for.** Small but it is the real thing |
+| **New Zealand (GeoNet)** | FDSN, open | Public catalog is essentially earthquakes — a couple of quarry blasts, one volcanic eruption, three volcano-tectonic across 2021–2025 | **No.** Good landslide science, but the labels are not in the public event service |
+| **Japan (NIED/JMA)** | Hi-net registration; no open labelled corpus found | Volcanic and tremor classification exists per study, not as a curated multi-class corpus | **Not now.** Access friction plus label assembly; revisit only if a collaborator supplies labels |
+| **Volcano observatories** (AVO, CVO, HVO) | Local catalogs, request | Rockfall, lahar, pyroclastic flow | Worth asking; these never reach the national feed |
+
+Two things this survey changes about the plan.
+
+**Rockfall is reachable at volume.** The Piton de la Fournaise catalog is roughly
+seven thousand labelled volcano-seismic events with rockfall as an explicit
+class — comparable in size to the entire exotic-event portion of the PNW
+dataset, from an island volcano with nothing in common with the Cascades. If
+one collaboration is worth pursuing for this project, it is that one.
+
+**Debris flow is a genuine hole.** Nothing in the American catalogs covers it
+and Illgraben is the only well-labelled source found. That matters because
+debris flows are long-duration emergent signals, which is exactly the corner of
+the `su` class the model is weakest in.
+
+### 4b. A warning from the rockfall literature
+
+Hibert and colleagues classified rockfalls against volcano-tectonic events at
+Piton de la Fournaise with up to 99% accuracy — and then reported that a
+classifier trained on 2009–2011 data **collapsed** when applied to 2014–2015
+data from the same volcano, attributed to a change in the physical mechanism of
+the rockfalls themselves.
+
+Same instruments, same site, same class label, five years apart, and the model
+stopped working. That is a stronger warning than anything in our own results:
+for surface events, the label names a process that can itself change. It argues
+for held-out splits in **time** as well as region, and for periodic
+re-validation rather than a train-once-deploy-forever posture.
+
 **Noise** should be sampled per region rather than reused from the PNW. Noise
 is the most site-specific class there is, and a model that learns PNW noise will
 call Alaskan noise something else.
@@ -214,9 +257,14 @@ addition with a large effect on usability.
    for regions with no representation in training.
 2. **Next, one retrain, no new labels.** Full-window position augmentation, or
    global pooling. Success is a flat placement curve.
-3. **Then, labels.** Nevada and Wyoming blasts, Alaska ice quakes. Region-level
-   held-out splits. ESEC stays a test set.
-4. **Then, the `su` question.** Cluster the embeddings, decide split-or-broaden,
+3. **Then, labels.** Nevada and Wyoming blasts and Alaska ice quakes first —
+   all open, all FDSN, no permission needed. Region-level held-out splits, and
+   for surface events hold out in time as well. ESEC stays a test set.
+4. **In parallel, ask.** Piton de la Fournaise rockfalls (OVPF) and Illgraben
+   debris flows (WSL) both need a conversation rather than a download, and both
+   cover classes nothing open fills. Start those early because they run on
+   other people's calendars.
+5. **Then, the `su` question.** Cluster the embeddings, decide split-or-broaden,
    and size the label collection from that answer.
 
 Steps 1 and 2 are days of work and address the larger measured effect. Step 3 is
@@ -234,3 +282,21 @@ closes before paying it.
 - Training code: <https://github.com/Denolle-Lab/PNW_Seismic_Event_Classification>
 - Deployment and Mt Rainier catalog:
   <https://github.com/Akashkharita/pnw_seismic_event_detection>
+
+Surface-event sources:
+
+- ESEC, Exotic Seismic Events Catalog — <https://ds.iris.edu/ds/products/esec/>,
+  searchable at <http://ds.iris.edu/spud/esec>; SQLite release *Seismogenic
+  Landslides and other Mass Movements* (v3.0, May 2025) on USGS ScienceBase
+- Hibert et al., *Automatic identification of rockfalls and volcano-tectonic
+  earthquakes at Piton de la Fournaise using a Random Forest algorithm*, JVGR —
+  <https://www.sciencedirect.com/science/article/abs/pii/S0377027316303948>
+  (source of the 2009–2011 → 2014–2015 degradation)
+- *Deep Learning and Machine Learning Applied to the Detection and
+  Classification of Volcano-Seismic Events at Piton de la Fournaise*, Pure
+  Appl. Geophys. (2025) — <https://link.springer.com/article/10.1007/s00024-025-03809-9>
+  (~7,000 events, seven classes, 2014–2021)
+- Chmiel et al., *Near-real-time automated classification of seismic signals of
+  slope failures with continuous random forests*, NHESS —
+  <https://nhess.copernicus.org/articles/21/339/2021/> (Illgraben)
+- Swiss Seismological Service event service — <https://eida.ethz.ch>
