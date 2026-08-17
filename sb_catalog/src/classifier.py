@@ -234,6 +234,30 @@ class QuakeXNet(WaveformModel):
     ) -> torch.Tensor:
         return torch.softmax(batch, dim=-1)
 
+    def _predictions_to_stream(self, prediction):
+        """Guard the single-window case in SeisBench >= 0.11.
+
+        The base implementation squeezes each (samples, channel) slice before
+        trimming NaN edges. A stream short enough to yield exactly one
+        prediction window leaves the sample axis with length one, so the
+        squeeze collapses it to a 0-d array and ``get_edge_indices`` raises
+        ``ValueError: array must be 1-dimensional``. Day-long production
+        streams are unaffected; short windows - smoke tests, single-event
+        snippets - hit it every time.
+
+        Duplicating the lone window keeps that axis alive, then the copy is
+        trimmed back off, so the returned stream is what the caller expects.
+        """
+        data = np.asarray(prediction.data)
+        if data.shape[0] != 1:
+            return super()._predictions_to_stream(prediction)
+
+        doubled = prediction._replace(data=np.repeat(data, 2, axis=0))
+        stream = super()._predictions_to_stream(doubled)
+        for trace in stream:
+            trace.data = trace.data[:1]
+        return stream
+
     def classify_aggregate(self, annotations, argdict) -> list:
         window_labels = np.argmax(np.array(annotations), axis=0)
 
