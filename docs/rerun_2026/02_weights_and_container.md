@@ -1,15 +1,24 @@
 # 02 — Installing the new weights and building the container
 
-**Where the best weights come from** (verified July 2026):
+> **The classifier is deferred for the 2026 campaign** — see the
+> [runbook](README.md). This page stays accurate for its weights and for the
+> container build; just do not pass `--classifier` when submitting.
 
-- **QuakeXNet**: `sb_catalog/models/quakexnet/base.pt.v1` in this repo is
-  already the latest version — byte-identical to the `base.pt.v3` published
-  in `Akashkharita/pnw_seismic_event_detection` (Dec 2025). Nothing to do
-  unless a newer retrain lands.
+**Where the best weights come from** (verified August 2026):
+
+- **QuakeXNet**: `sb_catalog/models/quakexnet/base.pt.v1` is the current model —
+  SHA-256 verified against `base.pt.v3` in
+  `Akashkharita/pnw_seismic_event_detection`. It has been **re-saved with CPU
+  storage**, because as published it carries CUDA tags and cannot load under
+  the image's CPU-only PyTorch. Tensor values are unchanged.
 - **Phase picker**: the champion of the `Denolle-Lab/phasenet-retrain`
   project is experiment **v7** (jma_wc fine-tune; P-MAE 0.340 s, recall
-  0.853, MCC 0.760). Its checkpoint sits on the lab back-end server
-  (`checkpoints/finetune_jma_wc_global_v7/best.pt`); convert it with
+  0.853, MCC 0.760 — but note it trades recall against its own parent, see
+  [`../phasenet_v7_model_description.md`](../phasenet_v7_model_description.md)).
+  **Already converted and committed** as
+  `sb_catalog/models/phasenet/quakescope2026.{pt,json}.v1`, from
+  `phasenet_jma_wc_ft_v7.pt` at the root of the phasenet-retrain repo. To
+  regenerate after a retrain, convert it with
   [sb_catalog/models/phasenet/convert_checkpoint.py](../../sb_catalog/models/phasenet/convert_checkpoint.py)
   and commit the resulting pair here (step 2 below).
 

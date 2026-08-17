@@ -1,9 +1,27 @@
 # QuakeScope 2026 re-run — master runbook
 
-Goal: re-run the QuakeScope picking + classification workflow with **new
-QuakeXNet weights** and **new SeisBench phase-picker weights** over three
-archives — **NCEDC**, **SCEDC**, and **EarthScope S3** — using AWS Batch on
-Fargate Spot, writing picks to DocumentDB.
+Goal: re-run the QuakeScope **picking** workflow with the **v7 phase-picker
+weights** (`quakescope2026`) over three archives — **NCEDC**, **SCEDC**, and
+**EarthScope S3** — using AWS Batch on Fargate Spot, writing picks to
+DocumentDB.
+
+> **Scope decision, 2026-08-17: the classifier is deferred for this run.**
+> Submit picking jobs **without** `--classifier`. QuakeXNet stays in the image
+> and everything below about its weights remains accurate, but it will not
+> write labels into the 2026 catalog.
+>
+> The reason is generalization, not a defect. The model was trained on Pacific
+> Northwest data, and out-of-region testing showed it is strongly dependent on
+> where the arrival sits in the analysis window — agreement on a fixed set of
+> Alaska events runs from 78% down to 16% on window placement alone, and the
+> pipeline currently slides windows blindly with a 50 s stride. That is fixable
+> and worth fixing, but not before a campaign. See
+> [`../quakexnet_generalization_plan.md`](../quakexnet_generalization_plan.md)
+> for the measurements and the plan, and
+> [Akashkharita/pnw_seismic_event_detection#2](https://github.com/Akashkharita/pnw_seismic_event_detection/issues/2)
+> for the upstream discussion.
+>
+> Picking is unaffected and proceeds as planned.
 
 This folder is written for someone returning to AWS after a long break. Follow
 the checklist top to bottom; each step links to a detailed guide. The

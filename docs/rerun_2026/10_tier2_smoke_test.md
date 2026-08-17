@@ -5,7 +5,7 @@ models on a laptop, against analyst picks, with no AWS involved. Tier 2 asks a
 different question — **does the deployed container reproduce that same result?**
 
 Passing means the image built correctly, the weights are inside it, S3 reads
-work from the VPC, DocumentDB accepts writes, and the classifier path runs. It
+work from the VPC, and DocumentDB accepts writes. It
 is the last gate before launching a campaign that costs real money.
 
 Budget an hour. Nothing here needs more than three stations and one day.
@@ -103,9 +103,13 @@ instead of just a red status in the console.
        --stations CI.CLC..,CI.TOW2..,CI.SRT.. \
        --start 2019.187 --end 2019.188 \
        --model PhaseNet --weight quakescope2026 \
-       --p_threshold 0.2 --s_threshold 0.2 \
-       --classifier
+       --p_threshold 0.2 --s_threshold 0.2
    ```
+
+   > The 2026 campaign runs **without** `--classifier` (see the
+   > [runbook](README.md)). Add the flag only when you are deliberately
+   > exercising the classifier path — it works, and the verifier checks it, but
+   > it is not part of this campaign.
 
    Watch for `Put CI.CLC..HH 2019.187 > NNNN phase picks` in the log. That line
    is the job confirming it wrote.
@@ -117,7 +121,8 @@ instead of just a red status in the console.
      python -m src.verify_smoke_test \
        --db_uri "$DB_URI" --database quakescope_smoke \
        --stations CI.CLC.,CI.TOW2.,CI.SRT. \
-       --start 2019.187 --end 2019.188
+       --start 2019.187 --end 2019.188 \
+       --no-classifier
    ```
 
    Every check must pass. Exit status is 0 or 1, so this can gate a script.
@@ -180,7 +185,7 @@ and VPC networking — none of which Option A touches.
 | `RuntimeError: Attempting to deserialize object on a CUDA device` | a checkpoint saved from a GPU; the image installs CPU-only PyTorch, so re-save the weights with CPU storage |
 | No picks written, no error | almost always S3 or database reachability; test each from inside the container before blaming the models |
 | Picks written but counts far off | compare `--weight`, `--p_threshold`, `--s_threshold` against the reference above; a threshold difference moves counts a long way |
-| Classifier rows absent | `--classifier` omitted, or the channel is not `BH`/`HH` — the classifier only runs on those |
+| Classifier rows absent | Expected for the 2026 campaign, which runs without `--classifier`. If you did pass it: the channel must be `BH` or `HH`, the classifier runs on nothing else |
 | Timeouts on EarthScope data | token expired; see [05_submitting_jobs.md](05_submitting_jobs.md). NCEDC and SCEDC are anonymous and unaffected |
 
 ## Clean up
