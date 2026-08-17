@@ -122,6 +122,8 @@ flowchart LR
 - [ ] E2. Submit **one small test job** (a few stations, a few days, one per archive).
 - [ ] E3. Verify picks arrive in the new database and `sb_runs` records the new weight names (notebook 4).
 - [ ] E4. Submit the real campaigns, archive by archive, year block by year block.
+      The five-campaign split, network lists, weights and order are in
+      [11_launch_plan.md](11_launch_plan.md).
 - [ ] E5. Running different weights on different station sets (OBS picker, general picker, California picker)? Partition the networks and submit one campaign per weight → [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
 - [ ] E6. Stakeholder run with the original PhaseNet on a defined station set (western states), isolated from the science run → [09_western_states_run.md](09_western_states_run.md).
 
