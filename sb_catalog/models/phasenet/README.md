@@ -37,9 +37,18 @@ repository baked in by the Dockerfile) remain available.
   python convert_checkpoint.py --checkpoint phasenet_jma_wc_ft_v7.pt --name quakescope2026 --verify
   ```
 
-- **QuakeXNet** (classifier): `../quakexnet/base.pt.v1` already carries the
-  latest weights — byte-identical to `base.pt.v3` published in
-  [Akashkharita/pnw_seismic_event_detection](https://github.com/Akashkharita/pnw_seismic_event_detection)
-  (Dec 2025), which supersedes the Oct 2024 `best_model_MyCNN_2d.pth` in
+- **QuakeXNet** (classifier): `../quakexnet/base.pt.v1` carries the latest
+  weights. Verified 2026-08-16 by SHA-256 against `src/models/quakexnet/base.pt.v3`
+  in [Akashkharita/pnw_seismic_event_detection](https://github.com/Akashkharita/pnw_seismic_event_detection)
+  (published there in commit `d9af765`) — the tensors are the same model, which
+  supersedes the Oct 2024 `best_model_MyCNN_2d.pth` in
   [Denolle-Lab/PNW_Seismic_Event_Classification](https://github.com/Denolle-Lab/PNW_Seismic_Event_Classification).
-  No update needed.
+
+  **Re-saved with CPU storage**, so the file is no longer byte-identical to
+  upstream while every tensor value is unchanged (63 tensors, zero mismatches).
+  As published, the weights carry CUDA storage tags and `torch.load` raises
+  `RuntimeError: Attempting to deserialize object on a CUDA device` on any
+  machine without a GPU. The production image installs **CPU-only** PyTorch, so
+  `QuakeXNet.from_pretrained("base")` failed there — the regression arrived with
+  `0a0df51` (2025-09-15); the earlier weights in `070a4fd` loaded on CPU fine.
+  Worth reporting upstream, since `base.pt.v3` has the same problem.
