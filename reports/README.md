@@ -25,13 +25,31 @@ pixi run -e tutorials jupyter nbconvert --to html --template lab \
 
 ## What these currently show
 
-**The picker.** `original` recovers the most S arrivals on every sequence where
-the comparison is well powered — Ridgecrest 0.76, Mendocino 0.73, Monte Cristo
-0.67 — against 0.56, 0.61 and 0.42 for `quakescope2026`. The fine-tune leads on
-P at Mendocino and on timing in several places, which is the trade its own
-training benchmark describes: v7 buys P-MAE and pays in recall. That the pattern
-repeats across four regions and two independent analyst catalogs makes it a
-property of the weights rather than of one window.
+**The picker — and a correction.** At the shared 0.3 threshold everyone uses,
+`original` appears to recover far more S arrivals than the others: Ridgecrest
+0.76 against 0.56, Mendocino 0.73 against 0.61. That reading is wrong, and the
+sequence report now shows why.
+
+Holding the threshold fixed across weight sets does not hold the *operating
+point* fixed. `original` emits close to twice as many S picks at 0.3 as the
+other two, so it sits further along the recall curve and collects both more
+recall and more extra detections. **At matched pick budgets the three are
+within a few points of each other** and no ordering survives across sequences:
+
+| Ridgecrest, S picks emitted | quakescope2026 | jma_wc | original |
+|---|--:|--:|--:|
+| 287 | 0.548 | 0.536 | 0.540 |
+| 370 | 0.663 | 0.639 | 0.628 |
+| 535 | 0.775 | 0.777 | 0.768 |
+
+The operational consequence is that **thresholds belong to the weight set, not
+to the pipeline**. Carrying 0.3 across a change of weights silently moves the
+operating point and changes catalog completeness with it.
+
+The three are also not one lineage. `original` is Zhu et al., trained on
+Northern California. `jma_wc` is a different architecture — PhaseNetWC, double
+the filters per layer — trained on Japanese JMA data, and `quakescope2026` is
+fine-tuned from it. Nothing here descends from `original`.
 
 **The classifier.** QuakeXNet agrees with the Alaska catalog 78% of the time
 when the analysis window matches the training convention, and 16% when it does

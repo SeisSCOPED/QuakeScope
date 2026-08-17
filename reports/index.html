@@ -125,26 +125,55 @@
 
 <h2>What they currently show</h2>
 
-<p><strong>The picker.</strong> <code>original</code> recovers the most S arrivals
-on every sequence where the comparison is well powered. The fine-tune leads on P
-in places and on timing in several, which is the trade its own training benchmark
-describes: v7 buys P-MAE and pays in recall.</p>
+<p><strong>The picker.</strong> At the shared 0.3 threshold everyone uses,
+<code>original</code> appears to recover far more S arrivals than the others.
+That reading is an artefact of the threshold, not a property of the weights.</p>
 
 <div class="scroll">
 <table>
   <thead>
-    <tr><th>S recall</th><th>quakescope2026</th><th>jma_wc</th><th>original</th><th>analyst S</th></tr>
+    <tr><th>S recall at a shared 0.3</th><th>quakescope2026</th><th>jma_wc</th><th>original</th><th>analyst S</th></tr>
   </thead>
   <tbody>
-    <tr><td>Ridgecrest</td><td>0.56</td><td>0.53</td><td class="best">0.76</td><td>274</td></tr>
-    <tr><td>Mendocino 2024</td><td>0.61</td><td>0.68</td><td class="best">0.73</td><td>111</td></tr>
-    <tr><td>Monte Cristo</td><td>0.42</td><td>0.50</td><td class="best">0.67</td><td>12</td></tr>
+    <tr><td>Ridgecrest</td><td>0.56</td><td>0.53</td><td>0.76</td><td>274</td></tr>
+    <tr><td>Mendocino 2024</td><td>0.61</td><td>0.68</td><td>0.73</td><td>111</td></tr>
+    <tr><td>Monte Cristo</td><td>0.42</td><td>0.50</td><td>0.67</td><td>12</td></tr>
   </tbody>
 </table>
 </div>
 
-<p>Repeating across four regions and two independent analyst catalogs makes this a
-property of the weights rather than of one window.</p>
+<p>Holding the threshold fixed does not hold the <em>operating point</em> fixed.
+<code>original</code> emits close to twice as many S picks at 0.3, so it sits
+further along the recall curve and collects both more recall and more extra
+detections. Matched on pick budget, the three are within a few points and no
+ordering survives across sequences:</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Ridgecrest · S picks emitted</th><th>quakescope2026</th><th>jma_wc</th><th>original</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>287</td><td>0.548</td><td>0.536</td><td>0.540</td></tr>
+    <tr><td>370</td><td>0.663</td><td>0.639</td><td>0.628</td></tr>
+    <tr><td>535</td><td>0.775</td><td>0.777</td><td>0.768</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Thresholds belong to the weight set, not to the pipeline.</strong>
+  Carrying 0.3 across a change of weights silently moves the operating point and
+  changes catalog completeness with it. Choose the target — a pick budget, an
+  extra-detection rate, a recall floor — then solve for the threshold that hits
+  it, separately for each weight set.
+</div>
+
+<p>The three are also not one lineage. <code>original</code> is Zhu et al.,
+trained on Northern California. <code>jma_wc</code> is a different architecture
+— PhaseNetWC, double the filters per layer — trained on Japanese JMA data, and
+<code>quakescope2026</code> is fine-tuned from it. Nothing here descends from
+<code>original</code>.</p>
 
 <p><strong>The classifier.</strong> QuakeXNet agrees with the Alaska catalog 78% of
 the time when the analysis window matches the training convention, and 16% when it
