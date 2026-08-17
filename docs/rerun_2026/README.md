@@ -96,6 +96,10 @@ flowchart LR
 
 ### Phase E — Smoke test, then scale (1 day + campaign) → [05_submitting_jobs.md](05_submitting_jobs.md)
 
+- [ ] E0. Run the **tier-2 smoke test** — three stations, one day, checked against
+      values measured locally → [10_tier2_smoke_test.md](10_tier2_smoke_test.md).
+      Do this before E2: it separates "the infrastructure is wrong" from "the
+      models are wrong", and it is an hour rather than a campaign.
 - [ ] E1. Get a fresh **EarthScope token** (needed only for the EarthScope archive).
 - [ ] E2. Submit **one small test job** (a few stations, a few days, one per archive).
 - [ ] E3. Verify picks arrive in the new database and `sb_runs` records the new weight names (notebook 4).

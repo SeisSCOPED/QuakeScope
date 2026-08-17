@@ -259,12 +259,34 @@ class QuakeXNet(WaveformModel):
         return stream
 
     def classify_aggregate(self, annotations, argdict) -> list:
-        window_labels = np.argmax(np.array(annotations), axis=0)
+        """One record per window whose most likely class is not noise.
 
-        lb = [self.labels[i] for i in window_labels]
-        t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
+        Each record carries the window time and the probability of every
+        non-noise class, which is the shape ``picker._write_single_picklist_to_db``
+        writes into the ``classifies`` collection. Returning only the winning
+        label would discard the margin between classes, and that margin is what
+        distinguishes a confident call from a coin flip.
+        """
+        # Select by channel rather than trusting trace order.
+        prob = {
+            label: annotations.select(channel=f"*_{label}")[0].data
+            for label in self.labels
+        }
+        reference = annotations.select(channel=f"*_{self.labels[0]}")[0]
+        times = [reference.stats.starttime + dt for dt in reference.times()]
+        stacked = np.vstack([prob[label] for label in self.labels])
+        winners = np.argmax(stacked, axis=0)
 
-        return [i for i in zip(lb, t) if i[0] != "no"]
+        reported = [c for c in self.labels if c != "no"]
+        return [
+            {
+                "start": times[i],
+                "label": self.labels[w],
+                **{c: float(prob[c][i]) for c in reported},
+            }
+            for i, w in enumerate(winners)
+            if self.labels[w] != "no"
+        ]
 
     def compute_spectrogram(
         self,
