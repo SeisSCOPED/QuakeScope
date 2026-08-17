@@ -46,6 +46,15 @@ The operational consequence is that **thresholds belong to the weight set, not
 to the pipeline**. Carrying 0.3 across a change of weights silently moves the
 operating point and changes catalog completeness with it.
 
+**`instance` — the weight the 2025 campaign ran — is a separate case**, and the
+distinction matters. On Mendocino it matches the others on budget and is
+competitive, in places best. On Ridgecrest it never reaches their budgets at
+all: with its threshold on the floor it emits 246 S picks where the others
+reach 684 and 832. No threshold recovers that, so it is a ceiling rather than a
+calibration offset. Ridgecrest is the densest and closest-in sequence here,
+which reads as the incumbent struggling specifically with heavily overlapping
+near-field aftershocks while remaining fine at regional distance.
+
 The three are also not one lineage. `original` is Zhu et al., trained on
 Northern California. `jma_wc` is a different architecture — PhaseNetWC, double
 the filters per layer — trained on Japanese JMA data, and `quakescope2026` is

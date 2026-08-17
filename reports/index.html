@@ -132,12 +132,12 @@ That reading is an artefact of the threshold, not a property of the weights.</p>
 <div class="scroll">
 <table>
   <thead>
-    <tr><th>S recall at a shared 0.3</th><th>quakescope2026</th><th>jma_wc</th><th>original</th><th>analyst S</th></tr>
+    <tr><th>S recall at a shared 0.3</th><th>quakescope2026</th><th>jma_wc</th><th>original</th><th>instance</th><th>analyst S</th></tr>
   </thead>
   <tbody>
-    <tr><td>Ridgecrest</td><td>0.56</td><td>0.53</td><td>0.76</td><td>274</td></tr>
-    <tr><td>Mendocino 2024</td><td>0.61</td><td>0.68</td><td>0.73</td><td>111</td></tr>
-    <tr><td>Monte Cristo</td><td>0.42</td><td>0.50</td><td>0.67</td><td>12</td></tr>
+    <tr><td>Ridgecrest</td><td>0.56</td><td>0.53</td><td>0.76</td><td>0.20</td><td>274</td></tr>
+    <tr><td>Mendocino 2024</td><td>0.61</td><td>0.68</td><td>0.73</td><td>0.56</td><td>111</td></tr>
+    <tr><td>Monte Cristo</td><td>0.42</td><td>0.50</td><td>0.67</td><td>0.50</td><td>12</td></tr>
   </tbody>
 </table>
 </div>
@@ -168,6 +168,32 @@ ordering survives across sequences:</p>
   extra-detection rate, a recall floor — then solve for the threshold that hits
   it, separately for each weight set.
 </div>
+
+<p><strong><code>instance</code> — what the 2025 campaign actually ran — is a
+separate case.</strong> On Mendocino it matches the others on budget and is in
+places the best of the four. On Ridgecrest it never reaches their budgets at
+all: with its threshold on the floor it emits 246 S picks where the others reach
+684 and 832. No threshold recovers that, so it is a <em>ceiling</em> rather than
+a calibration offset — and the two have opposite implications, since tuning
+fixes one and cannot fix the other.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Ridgecrest · S picks emitted</th><th>at 0.02 (floor)</th><th>at 0.1</th><th>at 0.3</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>original</td><td>832</td><td>646</td><td>520</td></tr>
+    <tr><td>quakescope2026</td><td>684</td><td>459</td><td>291</td></tr>
+    <tr><td>jma_wc</td><td>638</td><td>447</td><td>279</td></tr>
+    <tr><td>instance</td><td>246</td><td>149</td><td>98</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Ridgecrest is the densest and closest-in sequence here, so this reads as the
+incumbent weight struggling specifically with heavily overlapping near-field
+aftershocks, while remaining fine at regional distance.</p>
 
 <p>The three are also not one lineage. <code>original</code> is Zhu et al.,
 trained on Northern California. <code>jma_wc</code> is a different architecture
