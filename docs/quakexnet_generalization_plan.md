@@ -172,9 +172,85 @@ Counts are analyst-assigned labels, not model output, unless stated.
 | **Piton de la Fournaise** (OVPF/IPGP) | Published catalogs; FDSN carries events but the text service omits event type | ~7,000 volcano-seismic events, 2014–2021, labelled across 7 classes including **rockfall** | **Largest labelled rockfall set found.** Worth a direct request to OVPF |
 | **Swiss Alps (SED/ETH)** | FDSN, open | Landslides rising 7/yr (2016) → **39/yr (2024)**; ~30 ice quakes; occasional rockslides; plus 2000+ quarry blasts | **Yes.** Modest volume but clean labels and a different tectonic and climatic setting |
 | **Illgraben** (WSL + SED) | Published; instrumented catchment | Manually labelled **debris flows**; roughly four weeks of dense labels, dozens of slope failures | **Yes, for a class we have nothing else for.** Small but it is the real thing |
-| **New Zealand (GeoNet)** | FDSN, open | Public catalog is essentially earthquakes — a couple of quarry blasts, one volcanic eruption, three volcano-tectonic across 2021–2025 | **No.** Good landslide science, but the labels are not in the public event service |
+| **New Zealand** (GNS/GeoNet + universities) | FDSN catalog is earthquakes only; the useful material is in published work and institutional databases | Lahars at Ruapehu; volcano-seismic classes at Whakaari; two large landslide *inventories* | **Partly** — see 4c |
+| **Italy** (INGV + universities) | Open data portal has nothing under landslide or *frana*; the material is in published work | Stromboli flank landslides; instrumented rockslides; nanoseismic collapse catalogs | **Partly** — see 4c |
 | **Japan (NIED/JMA)** | Hi-net registration; no open labelled corpus found | Volcanic and tremor classification exists per study, not as a curated multi-class corpus | **Not now.** Access friction plus label assembly; revisit only if a collaborator supplies labels |
 | **Volcano observatories** (AVO, CVO, HVO) | Local catalogs, request | Rockfall, lahar, pyroclastic flow | Worth asking; these never reach the national feed |
+
+### 4c. New Zealand and Italy, looked at properly
+
+Both were dismissed too quickly on the strength of an empty FDSN query. The
+labels exist in both countries; they are simply not in the event web service.
+
+**New Zealand.** Three distinct things, only one of which is what we need.
+
+- **NZ Landslide Database** and the **2016 Kaikōura Landslide Inventory (v3)**
+  are large — hundreds of thousands of features in the former, tens of
+  thousands from Kaikōura alone — but they are *geomorphic inventories* mapped
+  from LiDAR and aerial imagery. Most entries are rainfall-triggered with no
+  known origin time, and the Kaikōura ones are coseismic, so their signals sit
+  inside a Mw 7.8 coda. Without a timestamp there is no window to cut. **Not
+  trainable as they stand**, though the database is the right place to look if
+  we ever want to match known failures against continuous data.
+- **Ruapehu lahars** are the genuinely useful piece. GNS runs two operational
+  seismo-acoustic detection systems on the mountain — ERLAWS and the Eruption
+  Detection System — and lahars are debris flows, the class we have almost
+  nothing for. Cole et al. (2009, GRL) analyse the seismic signature of the
+  2007 snow-slurry lahars directly. Small, operational, and squarely on target.
+- **Whakaari/White Island** has a rich classified record — VT, LP, VLP, and
+  tremor, with recent unsupervised classification work (Steinke et al., 2023).
+  Valuable, but see the taxonomy problem below.
+
+**Italy.** The open portal is genuinely empty on this topic — searches for both
+*rockfall landslide* and *frana* return nothing — but the published record is
+not.
+
+- **Stromboli** is the strongest candidate in the country. Landslides down the
+  Sciara del Fuoco produce a documented and distinctive signature: broader band
+  and higher frequency than explosion quakes or tremor, with a cigar-shaped
+  amplitude envelope. INGV has run a 13-station broadband network there since
+  2003, so the record is long, continuous, operational, and includes the
+  tsunamigenic 30 December 2002 collapse. There is published work on the
+  seismic signals of these landslides and on precursors to crater collapses.
+  **This is the Italian ask.**
+- **Instrumented slopes** — the Torgiovannetto quarry rockslide (temporary
+  network, 2012–13) and the Peschiera Springs system, where nanoseismic arrays
+  located 397 slope-instability events separated into 16 failures and 381
+  collapses, plus later sequences of 500+ underground collapses. These are
+  real labelled catalogs, but they are **nanoseismic**: metres to hundreds of
+  metres, recorded on dedicated arrays. Useful for understanding failure
+  physics, not directly transferable to regional stations at tens of km.
+- **Etna's** Valle del Bove flank instability is monitored but the published
+  classification work is volcanic-activity oriented — lava fountains, tremor
+  regimes — rather than mass movement.
+
+### 4d. The taxonomy problem nobody has solved
+
+The volcano observatories have the largest classified archives, and their
+ontology does not match ours. They work in **VT / LP / VLP / tremor /
+rockfall / eruption**; QuakeXNet works in **eq / px / no / su**.
+
+Rockfall maps onto `su` cleanly. VT maps onto `eq` cleanly. **LP, VLP and
+tremor map onto nothing** — they are volcanic source processes, not surface
+mass movement, not tectonic, and certainly not noise. Forcing them into `su`
+would teach the model that `su` means "anything unusual near a volcano", which
+is precisely the vagueness the paper already identifies as making `su` hard.
+
+This has to be decided before ingesting any observatory data, and the honest
+options are:
+
+1. **Take only the mappable classes** — rockfall and VT — and discard the rest.
+   Simple, wasteful, and safe.
+2. **Add volcanic classes** and move to six or seven, accepting that the model
+   then needs volcanic examples everywhere it is deployed or it will apply
+   those labels off-volcano.
+3. **Keep four classes but treat volcanic sources as an explicit reject class**,
+   so the model can say "not one of mine" rather than guessing.
+
+Option 1 is the right first move; it gets us Piton de la Fournaise rockfalls
+and Stromboli landslides without committing to an ontology change. Option 3 is
+where this probably needs to end up, and it pairs naturally with the
+calibration work in section 5.
 
 Two things this survey changes about the plan.
 
@@ -260,10 +336,18 @@ addition with a large effect on usability.
 3. **Then, labels.** Nevada and Wyoming blasts and Alaska ice quakes first —
    all open, all FDSN, no permission needed. Region-level held-out splits, and
    for surface events hold out in time as well. ESEC stays a test set.
-4. **In parallel, ask.** Piton de la Fournaise rockfalls (OVPF) and Illgraben
-   debris flows (WSL) both need a conversation rather than a download, and both
-   cover classes nothing open fills. Start those early because they run on
-   other people's calendars.
+4. **In parallel, ask.** Four conversations, none of which is a download, all
+   covering classes nothing open fills. Start them early because they run on
+   other people's calendars:
+   - **OVPF / IPGP** — Piton de la Fournaise rockfalls, ~7,000 labelled events.
+     The single largest prize.
+   - **INGV Osservatorio Vesuviano** — Stromboli Sciara del Fuoco landslides,
+     a 20-year operational broadband record with a documented signature.
+   - **WSL / SED** — Illgraben debris flows.
+   - **GNS** — Ruapehu lahars via ERLAWS.
+
+   Take only the classes that map onto ours to begin with (§4d), so none of
+   these commits us to an ontology change.
 5. **Then, the `su` question.** Cluster the embeddings, decide split-or-broaden,
    and size the label collection from that answer.
 
@@ -300,3 +384,33 @@ Surface-event sources:
   slope failures with continuous random forests*, NHESS —
   <https://nhess.copernicus.org/articles/21/339/2021/> (Illgraben)
 - Swiss Seismological Service event service — <https://eida.ethz.ch>
+
+New Zealand:
+
+- NZ Landslide Database (GNS) —
+  <https://www.gns.cri.nz/data-and-resources/new-zealand-landslide-database/>
+  (geomorphic inventory; most entries have no origin time)
+- Massey et al. (2018), *Landslides Triggered by the 14 November 2016 Mw 7.8
+  Kaikōura Earthquake*, BSSA — inventory behind the Kaikōura dataset
+- Cole et al. (2009), *Seismic signals of snow-slurry lahars in motion:
+  25 September 2007, Mt Ruapehu*, GRL —
+  <https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2009GL038030>
+- Eastern Ruapehu Lahar Alarm and Warning System (ERLAWS) — operational
+  seismo-acoustic lahar detection run by GNS
+- Steinke et al. (2023), *Identification of Seismo-Volcanic Regimes at
+  Whakaari/White Island via Systematic Tuning of an Unsupervised Classifier*,
+  JGR — <https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2022JB026221>
+
+Italy:
+
+- INGV open data portal — <https://data.ingv.it/en/> (no landslide or *frana*
+  datasets as of 2026-08; the material is in the literature)
+- *Seismic Signals Associated with Landslides and with Tsunami at Stromboli
+  Volcano* — signature of Sciara del Fuoco failures
+- *Seismic and thermal precursors of crater collapses and overflows at
+  Stromboli*, Sci. Rep. (2023) —
+  <https://www.nature.com/articles/s41598-023-38205-7>
+- *Seismic Monitoring of a Rockslide: The Torgiovannetto Quarry* —
+  <https://link.springer.com/chapter/10.1007/978-3-319-09057-3_272>
+- *Seismic monitoring system for landslide hazard assessment at the Peschiera
+  Springs* — nanoseismic arrays, 397 located slope-instability events
