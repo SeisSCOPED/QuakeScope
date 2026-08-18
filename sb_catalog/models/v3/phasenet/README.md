@@ -38,7 +38,7 @@ repository baked in by the Dockerfile) remain available.
   ```
 
 - **QuakeXNet** (classifier): `../quakexnet/base.pt.v1` carries the latest
-  weights. Verified 2026-08-16 by SHA-256 against `src/models/quakexnet/base.pt.v3`
+  weights. Verified 2026-08-16 by SHA-256 against `src/models/v3/quakexnet/base.pt.v3`
   in [Akashkharita/pnw_seismic_event_detection](https://github.com/Akashkharita/pnw_seismic_event_detection)
   (published there in commit `d9af765`) — the tensors are the same model, which
   supersedes the Oct 2024 `best_model_MyCNN_2d.pth` in

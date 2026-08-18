@@ -43,7 +43,7 @@ class SubmitHelper:
         network: str,
         db: SeisBenchDatabase,
         region: str,
-        environ: dict = {},
+        environ: dict | None = None,
         station_group_size: int = 40,
         day_group_size: int = 20,
         model: str = "PhaseNet",
@@ -57,7 +57,7 @@ class SubmitHelper:
         self.network = network
         self.station_ids = station_ids
         self.db = db
-        self.environ = environ
+        self.environ = {} if environ is None else environ
         self.region = region
         self.station_group_size = station_group_size
         self.day_group_size = day_group_size
@@ -99,7 +99,7 @@ class SubmitHelper:
         stations = filter_station_by_start_end_date(stations, self.start, self.end)
 
         # restrict to an explicit station list if one was provided
-        if self.station_ids:
+        if self.station_ids is not None:
             requested = set(self.station_ids)
             stations = stations[stations["id"].isin(requested)]
             missing = requested - set(stations["id"])
@@ -109,7 +109,11 @@ class SubmitHelper:
                     f"(or outside extent/network/date filters): {','.join(sorted(missing))}"
                 )
 
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         logger.info(
             f"Starting picking jobs for {len(stations)} stations and {len(days)} days"
         )
@@ -164,7 +168,11 @@ class SubmitHelper:
 
     def submit_association_jobs(self) -> None:
         stations = self.db.get_stations(self.extent)
-        days = np.arange(self.start, self.end, datetime.timedelta(days=1))
+        days = np.arange(
+            self.start,
+            self.end + datetime.timedelta(days=1),
+            datetime.timedelta(days=1),
+        )
         extent = ",".join([str(x) for x in self.extent])
 
         logger.debug(

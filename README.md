@@ -1,4 +1,4 @@
-# QuakeScope: Machine Learning-based Seismic Phase Picking at Cloud Scale
+# Cloud-native Machine Learning workflow for earthquake event detection and phase picking
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 
@@ -10,13 +10,14 @@ A cloud-native workflow for automated seismic phase picking and earthquake detec
 
 If you use QuakeScope in research, please cite:
 
-- **Ni et al. (2025a)** — *Geophysical Journal International*
-  - Primary QuakeScope methodology, cloud deployment, and operational results
-  - DOI: [10.1093/gji/ggxxxx](https://doi.org/10.1093/gji/ggxxxx) *(to be updated)*
-
-- **Ni et al. (2025b)** — *Seismica Data Mine*
-  - Earthquake catalog and phase picks dataset from QuakeScope 2026 re-run
-  - DOI: [10.26443/seismica.xxxxx](https://doi.org/10.26443/seismica.xxxxx) *(to be updated)*
+- Ni, Y., Denolle, M. A., Münchmeyer, J., Wang, Y., Feng, K. F., Suarez, C. G. J.,
+  Thomas, A. M., Trabant, C., Hamilton, A., Mencin, D. (2025). *A Review of Cloud
+  Computing and Storage in Seismology.* Geophysical Journal International,
+  243(1), ggaf322. [10.1093/gji/ggaf322](https://doi.org/10.1093/gji/ggaf322)
+- Ni, Y., Denolle, M. A., Thomas, A. M., Münchmeyer, J., Hamilton, A., Wang, Y.,
+  Bachelot, L., Trabant, C., Mencin, D. (2025). *A Global-scale Database of
+  Seismic Phases from Cloud-based Picking at Petabyte Scale.* Seismica, 4(2).
+  [10.26443/seismica.v4i2.1738](https://doi.org/10.26443/seismica.v4i2.1738)
 
 See [CITATION.cff](CITATION.cff) for BibTeX and other formats.
 
@@ -41,6 +42,7 @@ pixi run smoke-test
 | [docs/rerun_2026/README.md](docs/rerun_2026/README.md) | Production runbook |
 | [docs/phasenet_v7_model_description.md](docs/phasenet_v7_model_description.md) | Model architecture & benchmarks |
 | [docs/smoke_test_workflow.md](docs/smoke_test_workflow.md) | Validation workflow |
+| [reports/](reports/) | Rendered benchmark reports, published at [seisscoped.org/QuakeScope](https://seisscoped.org/QuakeScope/) |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security assessment |
 
 ## Key Features
@@ -87,8 +89,8 @@ QuakeScope/
 ├── INSTALL_TUTORIALS.md               # Tutorial setup
 │
 ├── sb_catalog/
-│   ├── models/
-│   │   ├── phasenet/                 # PhaseNet weights (v7, original, etc.)
+│   ├── models/v3/
+│   │   ├── phasenet/                 # PhaseNet weights (quakescope2026 = v7)
 │   │   └── quakexnet/                # Event classifier weights
 │   └── src/
 │       ├── picking.py                # Inference pipeline

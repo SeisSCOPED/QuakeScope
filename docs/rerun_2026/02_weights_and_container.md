@@ -6,7 +6,7 @@
 
 **Where the best weights come from** (verified August 2026):
 
-- **QuakeXNet**: `sb_catalog/models/quakexnet/base.pt.v1` is the current model —
+- **QuakeXNet**: `sb_catalog/models/v3/quakexnet/base.pt.v1` is the current model —
   SHA-256 verified against `base.pt.v3` in
   `Akashkharita/pnw_seismic_event_detection`. It has been **re-saved with CPU
   storage**, because as published it carries CUDA tags and cannot load under
@@ -16,10 +16,10 @@
   0.853, MCC 0.760 — but note it trades recall against its own parent, see
   [`../phasenet_v7_model_description.md`](../phasenet_v7_model_description.md)).
   **Already converted and committed** as
-  `sb_catalog/models/phasenet/quakescope2026.{pt,json}.v1`, from
+  `sb_catalog/models/v3/phasenet/quakescope2026.{pt,json}.v1`, from
   `phasenet_jma_wc_ft_v7.pt` at the root of the phasenet-retrain repo. To
   regenerate after a retrain, convert it with
-  [sb_catalog/models/phasenet/convert_checkpoint.py](../../sb_catalog/models/phasenet/convert_checkpoint.py)
+  [sb_catalog/models/v3/phasenet/convert_checkpoint.py](../../sb_catalog/models/v3/phasenet/convert_checkpoint.py)
   and commit the resulting pair here (step 2 below).
 
 Two models get new weights:
@@ -39,16 +39,13 @@ the files shipped in this repo. To install the new weights, **replace the file
 in place** (this is exactly how the September 2025 update was done):
 
 ```bash
-cp /path/to/new_quakexnet_weights.pt sb_catalog/models/quakexnet/base.pt.v1
+cp /path/to/new_quakexnet_weights.pt sb_catalog/models/v3/quakexnet/base.pt.v1
 ```
 
 Keep the filename `base.pt.v1`. The companion `base.json.v1` stays as is
 (it's just `{}`) unless the new training changed the architecture — if the
 architecture changed, `classifier.py` must be updated to match, as was done
 in commit `0a0df51`.
-
-If you also retrained the 1-D variant, same procedure in
-`sb_catalog/models/quakexnetoned/`.
 
 ## 2. Phase-picker weights (SeisBench)
 
@@ -61,11 +58,11 @@ Two cases:
   the image (next bullet) is still kinder to the SeisBench servers when you
   run hundreds of jobs.
 - **The weights are files you were handed** (the likely case): put them in
-  `sb_catalog/models/phasenet/` as a SeisBench pair:
+  `sb_catalog/models/v3/phasenet/` as a SeisBench pair:
 
   ```bash
-  cp /path/to/new_picker.pt   sb_catalog/models/phasenet/quakescope2026.pt.v1
-  cp /path/to/new_picker.json sb_catalog/models/phasenet/quakescope2026.json.v1
+  cp /path/to/new_picker.pt   sb_catalog/models/v3/phasenet/quakescope2026.pt.v1
+  cp /path/to/new_picker.json sb_catalog/models/v3/phasenet/quakescope2026.json.v1
   ```
 
   (If no `.json` metadata file was provided, create one containing the same

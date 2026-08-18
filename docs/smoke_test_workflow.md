@@ -74,7 +74,7 @@ either way.
 If the smoke test passes, convert and install the production weights:
 
 ```bash
-cd sb_catalog/models/phasenet
+cd sb_catalog/models/v3/phasenet
 python convert_checkpoint.py --checkpoint /path/to/best.pt \
     --name quakescope2026 --verify
 ```

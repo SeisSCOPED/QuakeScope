@@ -58,7 +58,7 @@ See [docs/rerun_2026/02_weights_and_container.md](docs/rerun_2026/02_weights_and
 - Building Docker image with custom weights
 
 ```bash
-cd sb_catalog/models/phasenet
+cd sb_catalog/models/v3/phasenet
 
 # Convert v7 checkpoint (example)
 python convert_checkpoint.py \
@@ -154,7 +154,7 @@ FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 RUN pip install obspy seisbench pyocto pymongo s3fs
 
 # Copy custom weights
-COPY sb_catalog/models/phasenet/*.v1 \
+COPY sb_catalog/models/v3/phasenet/*.v1 \
     /root/.seisbench/models/v3/phasenet/
 
 # Set entry point

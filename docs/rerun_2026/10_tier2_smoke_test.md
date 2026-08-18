@@ -88,7 +88,7 @@ instead of just a red status in the console.
        python -c "import seisbench.models as sbm; print(sbm.PhaseNet.list_pretrained())"
    ```
 
-   `quakescope2026` must appear. If it does not, the `COPY models/phasenet`
+   `quakescope2026` must appear. If it does not, the `COPY models/v3/`
    layer did not take — rebuild rather than continuing.
 
 4. **Run the picking job:**
@@ -148,8 +148,7 @@ and VPC networking — none of which Option A touches.
    db = SeisBenchDatabase(DB_URI, "quakescope_smoke")
    helper = SubmitHelper(
        start=datetime.date(2019, 7, 6),
-       end=datetime.date(2019, 7, 8),      # exclusive, and the day loop needs
-                                           # more than one day to emit a job
+       end=datetime.date(2019, 7, 7),      # inclusive: covers 7/6 and 7/7
        extent=None,
        network="CI",
        db=db,
@@ -185,7 +184,7 @@ and VPC networking — none of which Option A touches.
 
 | Symptom | Where to look |
 |---|---|
-| `quakescope2026` missing from `list_pretrained()` | the `COPY models/phasenet` layer; rebuild and re-push |
+| `quakescope2026` missing from `list_pretrained()` | the `COPY models/v3/` layer; rebuild and re-push |
 | `InvalidVersion: '1.partial'` | an interrupted download left `*.partial` in the SeisBench cache; `rm ~/.seisbench/models/v3/phasenet/*.partial` |
 | `RuntimeError: Attempting to deserialize object on a CUDA device` | a checkpoint saved from a GPU; the image installs CPU-only PyTorch, so re-save the weights with CPU storage |
 | No picks written, no error | almost always S3 or database reachability; test each from inside the container before blaming the models |

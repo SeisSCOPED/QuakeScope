@@ -91,8 +91,8 @@ flowchart LR
 
 ### Phase B — New weights + container (½ day) → [02_weights_and_container.md](02_weights_and_container.md)
 
-- [ ] B1. Drop the new QuakeXNet weights into `sb_catalog/models/quakexnet/` (replace `base.pt.v1`).
-- [ ] B2. Drop the new phase-picker weights into `sb_catalog/models/phasenet/` as `<name>.pt.v1` + `<name>.json.v1` — all of them, if running several pickers (OBS / general / California): see [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
+- [ ] B1. Drop the new QuakeXNet weights into `sb_catalog/models/v3/quakexnet/` (replace `base.pt.v1`).
+- [ ] B2. Drop the new phase-picker weights into `sb_catalog/models/v3/phasenet/` as `<name>.pt.v1` + `<name>.json.v1` — all of them, if running several pickers (OBS / general / California): see [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
 - [ ] B3. Push to `main`; the GitHub Action builds `ghcr.io/seisscoped/quakescope`.
 - [ ] B4. (Recommended) Test the image locally on one station-day.
 - [ ] B5. Note the image's **short-SHA tag** — pin it in the job definition for reproducibility.

@@ -49,30 +49,58 @@ references:
   - authors:
       - family-names: Ni
         given-names: Yiyu
-      - family-names: Munchmeyer
-        given-names: Jannes
       - family-names: Denolle
         given-names: Marine A.
-    title: "QuakeScope: Machine learning-based seismic phase picking at cloud scale"
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Wang
+        given-names: Yiyu
+      - family-names: Feng
+        given-names: Kuan-Fu
+      - family-names: Suarez
+        given-names: Carlos G. J.
+      - family-names: Thomas
+        given-names: Amanda M.
+      - family-names: Trabant
+        given-names: Chad
+      - family-names: Hamilton
+        given-names: Aaron
+      - family-names: Mencin
+        given-names: David
+    title: "A Review of Cloud Computing and Storage in Seismology"
     journal: "Geophysical Journal International"
     year: 2025
-    volume: "XXX"
-    issue: "X"
-    pages: "XXX--XXX"
-    doi: "10.1093/gji/ggxxxx"  # To be updated
+    volume: "243"
+    issue: "1"
+    pages: "ggaf322"
+    doi: "10.1093/gji/ggaf322"
     type: journal-article
 
   - authors:
       - family-names: Ni
         given-names: Yiyu
-      - family-names: Munchmeyer
-        given-names: Jannes
       - family-names: Denolle
         given-names: Marine A.
-    title: "QuakeScope earthquake catalog and phase picks from 2026 re-run"
-    journal: "Seismica Data Mine"
+      - family-names: Thomas
+        given-names: Amanda M.
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Hamilton
+        given-names: Aaron
+      - family-names: Wang
+        given-names: Yiyu
+      - family-names: Bachelot
+        given-names: Loïc
+      - family-names: Trabant
+        given-names: Chad
+      - family-names: Mencin
+        given-names: David
+    title: "A Global-scale Database of Seismic Phases from Cloud-based Picking at Petabyte Scale"
+    journal: "Seismica"
     year: 2025
-    doi: "10.26443/seismica.xxxxx"  # To be updated
+    volume: "4"
+    issue: "2"
+    doi: "10.26443/seismica.v4i2.1738"
     type: journal-article
 
   - authors:

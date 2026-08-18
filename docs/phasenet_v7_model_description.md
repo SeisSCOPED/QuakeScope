@@ -174,7 +174,7 @@ what forced the leaderboard-driven selection flagged as a caveat above.
 ### Convert v7 checkpoint to SeisBench format
 
 **Already done — the converted pair is committed** as
-`sb_catalog/models/phasenet/quakescope2026.{pt,json}.v1`, so
+`sb_catalog/models/v3/phasenet/quakescope2026.{pt,json}.v1`, so
 `--weight quakescope2026` works out of the box and the tutorials pick it up
 automatically.
 
@@ -184,7 +184,7 @@ repo root as `phasenet_jma_wc_ft_v7.pt` — 16 MB, not under the git-ignored
 `checkpoints/` path the config writes to. It was converted with:
 
 ```bash
-cd sb_catalog/models/phasenet
+cd sb_catalog/models/v3/phasenet
 python convert_checkpoint.py \
     --checkpoint ../../../../phasenet-retrain/phasenet_jma_wc_ft_v7.pt \
     --name quakescope2026 --verify
