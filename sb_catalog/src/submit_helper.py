@@ -248,6 +248,13 @@ def main():
         "--database", type=str, default="tutorial", help="MongoDB database name."
     )
     parser.add_argument(
+        "--parquet_uri",
+        type=str,
+        default="",
+        help="S3 prefix for Parquet output, e.g. s3://bucket/campaign. Empty "
+        "writes picks into the database instead.",
+    )
+    parser.add_argument(
         "--region", type=str, default="us-east-2", help="Working region on AWS."
     )
     parser.add_argument(
@@ -306,6 +313,7 @@ def main():
         environ=environ,
         model=args.model,
         weight=args.weight,
+        parquet_uri=args.parquet_uri,
         station_ids=station_ids,
     )
     helper.submit_jobs(args.command)

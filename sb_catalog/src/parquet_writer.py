@@ -260,23 +260,3 @@ class ParquetPickWriter:
             f"{len(self._records)} station-day-channels"
         )
         return summary
-
-
-class DualWriter:
-    """Writes to the database and to Parquet at once.
-
-    For the campaign that validates the change: both paths see identical calls,
-    so the row counts can be compared directly. Once Parquet is trusted this
-    should be dropped rather than left running, since it pays for both.
-    """
-
-    def __init__(self, db_writer, parquet_writer: ParquetPickWriter) -> None:
-        self.db_writer = db_writer
-        self.parquet_writer = parquet_writer
-
-    def add(self, *args, **kwargs) -> None:
-        self.db_writer(*args, **kwargs)
-        self.parquet_writer.add(*args, **kwargs)
-
-    def close(self) -> dict:
-        return self.parquet_writer.close()

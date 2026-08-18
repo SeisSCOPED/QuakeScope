@@ -349,7 +349,24 @@ class S3MongoSBBridge:
         if self._parquet is not None:
             # Written at the end because the file boundary is the job, not the
             # station-day; see parquet_writer for why that matters.
-            await asyncio.to_thread(self._parquet.close)
+            await asyncio.to_thread(self._finalise_parquet)
+
+    def _finalise_parquet(self) -> None:
+        """Flush the job's Parquet, then record the station-days it covered.
+
+        The order is the point. picks_record is what lets a re-submission skip
+        completed work, so it must never be written for a station-day whose
+        picks are still only in memory. Flushing first means an interrupted job
+        leaves no records and its whole retry re-does the work, which is exactly
+        what a job-sized file boundary implies.
+        """
+        summary = self._parquet.close()
+        records = summary.get("records", [])
+        if records:
+            self.db.insert_many_ignore_duplicates("picks_record", records)
+        logger.info(
+            f"Committed {len(records)} picks_record entries after the Parquet flush"
+        )
 
     async def _load_data(
         self,
@@ -544,6 +561,14 @@ class S3MongoSBBridge:
                     for c in classifies
                 ],
             )
+
+        if writer is not None:
+            # In Parquet mode the picks are buffered until the job ends, so
+            # committing picks_record here would let a Spot interruption strand
+            # station-days that are marked done but were never written. The
+            # records are held with the picks and committed together once the
+            # flush has succeeded; see _finalise_parquet.
+            return
 
         self.db.insert_many_ignore_duplicates(
             "picks_record",

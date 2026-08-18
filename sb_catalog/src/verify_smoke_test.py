@@ -12,7 +12,7 @@ Usage (from inside the container, or anywhere with database access):
 
     python -m src.verify_smoke_test \
         --db_uri "$DB_URI" --database quakescope_smoke \
-        --stations CI.CLC..,CI.TOW2..,CI.SRT.. \
+        --stations CI.CLC.,CI.TOW2.,CI.SRT. \
         --start 2019.187 --end 2019.188
 
 Exit status is 0 when every check passes and 1 otherwise, so it can gate a
@@ -23,6 +23,8 @@ import argparse
 import datetime
 import logging
 import sys
+
+from typing import Optional
 
 from .utils import SeisBenchDatabase, parse_year_day
 
@@ -77,8 +79,12 @@ def verify(
     start: datetime.date,
     end: datetime.date,
     expect_classifier: bool,
+    run_id: Optional[str] = None,
 ) -> int:
     check = Check()
+    # Counts are meaningless if the database holds more than one run, which is
+    # the normal state of a smoke-test database that has been re-used.
+    scope = {"rid": run_id} if run_id else {}
     days = (end - start).days
     picks = db.database["picks"]
     classifies = db.database["classifies"]
@@ -95,7 +101,7 @@ def verify(
     # 2. Pick counts land near what the same weights produce locally.
     for station in stations:
         got = {
-            phase: picks.count_documents({"tid": station, "pha": phase})
+            phase: picks.count_documents({"tid": station, "pha": phase, **scope})
             for phase in ("P", "S")
         }
         expected = REFERENCE.get(station)
@@ -193,9 +199,19 @@ def main() -> None:
         "--end", required=True, type=parse_year_day, help="YYYY.DDD (exclusive)"
     )
     parser.add_argument(
-        "--no-classifier",
+        "--classifier",
         action="store_true",
-        help="Skip classifier checks, for a picking-only smoke test.",
+        help="Also check classifier output. Off by default: the 2026 campaign "
+        "runs without --classifier, so expecting those rows would fail a "
+        "healthy run.",
+    )
+    parser.add_argument(
+        "--run_id",
+        type=str,
+        default=None,
+        help="Restrict counts to one run id. Without it, a database reused "
+        "across runs accumulates picks and the count checks compare against "
+        "the wrong total.",
     )
     args = parser.parse_args()
 
@@ -205,7 +221,9 @@ def main() -> None:
         f"verifying {len(stations)} stations, {args.start} to {args.end}, "
         f"database '{args.database}'"
     )
-    sys.exit(verify(db, stations, args.start, args.end, not args.no_classifier))
+    sys.exit(
+        verify(db, stations, args.start, args.end, args.classifier, args.run_id)
+    )
 
 
 if __name__ == "__main__":

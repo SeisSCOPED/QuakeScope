@@ -121,15 +121,17 @@ instead of just a red status in the console.
      python -m src.verify_smoke_test \
        --db_uri "$DB_URI" --database quakescope_smoke \
        --stations CI.CLC.,CI.TOW2.,CI.SRT. \
-       --start 2019.187 --end 2019.188 \
-       --no-classifier
+       --start 2019.187 --end 2019.188
    ```
 
    Every check must pass. Exit status is 0 or 1, so this can gate a script.
 
-> Station strings differ between the two commands: `--stations` for picking
-> takes `NET.STA.LOC.CHA` without the component, while the verifier matches the
-> `tid` field as written to the database. Copy them as printed above.
+> Station identifiers are easy to get wrong and fail silently rather than
+> loudly. `--stations` for picking takes `NET.STA.LOC.CHA` without the
+> component; the verifier and `station_ids` match the `tid`/`id` field as
+> written to the database, which is `NET.STA.LOC`. An empty location is one
+> trailing dot, not two. A mismatch matches zero documents and reports a clean
+> run as a failure.
 
 ## Option B — a small Fargate cluster
 
@@ -146,12 +148,15 @@ and VPC networking — none of which Option A touches.
    db = SeisBenchDatabase(DB_URI, "quakescope_smoke")
    helper = SubmitHelper(
        start=datetime.date(2019, 7, 6),
-       end=datetime.date(2019, 7, 7),
+       end=datetime.date(2019, 7, 8),      # exclusive, and the day loop needs
+                                           # more than one day to emit a job
        extent=None,
        network="CI",
        db=db,
        region="us-east-2",
-       station_ids=["CI.CLC..", "CI.TOW2..", "CI.SRT.."],
+       # These must match the `id` field in the stations collection, which is
+       # NET.STA.LOC - a trailing dot for an empty location, not two.
+       station_ids=["CI.CLC.", "CI.TOW2.", "CI.SRT."],
        station_group_size=3,      # one job, so a failure is unambiguous
        day_group_size=1,
        model="PhaseNet",

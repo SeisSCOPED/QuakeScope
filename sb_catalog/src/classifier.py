@@ -267,26 +267,40 @@ class QuakeXNet(WaveformModel):
         label would discard the margin between classes, and that margin is what
         distinguishes a confident call from a coin flip.
         """
-        # Select by channel rather than trusting trace order.
-        prob = {
-            label: annotations.select(channel=f"*_{label}")[0].data
-            for label in self.labels
-        }
-        reference = annotations.select(channel=f"*_{self.labels[0]}")[0]
-        times = [reference.stats.starttime + dt for dt in reference.times()]
-        stacked = np.vstack([prob[label] for label in self.labels])
-        winners = np.argmax(stacked, axis=0)
-
+        # A day-long stream with gaps annotates into several segments per
+        # label, so take them segment by segment rather than assuming one.
+        # Selecting by channel avoids relying on trace order.
         reported = [c for c in self.labels if c != "no"]
-        return [
-            {
-                "start": times[i],
-                "label": self.labels[w],
-                **{c: float(prob[c][i]) for c in reported},
-            }
-            for i, w in enumerate(winners)
-            if self.labels[w] != "no"
-        ]
+        out = []
+        for reference in annotations.select(channel=f"*_{self.labels[0]}"):
+            segment = {}
+            for label in self.labels:
+                match = [
+                    tr
+                    for tr in annotations.select(channel=f"*_{label}")
+                    if tr.stats.starttime == reference.stats.starttime
+                    and tr.stats.npts == reference.stats.npts
+                ]
+                if not match:
+                    break
+                segment[label] = match[0].data
+            if len(segment) != len(self.labels):
+                continue        # incomplete segment, nothing to argmax over
+
+            times = [reference.stats.starttime + dt for dt in reference.times()]
+            winners = np.argmax(
+                np.vstack([segment[label] for label in self.labels]), axis=0
+            )
+            out += [
+                {
+                    "start": times[i],
+                    "label": self.labels[w],
+                    **{c: float(segment[c][i]) for c in reported},
+                }
+                for i, w in enumerate(winners)
+                if self.labels[w] != "no"
+            ]
+        return out
 
     def compute_spectrogram(
         self,
