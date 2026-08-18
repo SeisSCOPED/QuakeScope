@@ -1,3 +1,4 @@
+import warnings
 from collections import defaultdict
 from typing import Optional
 
@@ -6,8 +7,18 @@ import obspy
 import seisbench.util as sbu
 from joblib import Parallel, delayed
 
+# IASPEI-standard Wood-Anderson: T0 = 0.8 s, damping h = 0.7, static gain 2080,
+# applied to ground VELOCITY (one zero at the origin). The poles are
+# -h*w0 +- i*w0*sqrt(1-h^2) with w0 = 2*pi/0.8.
+#
+# These were previously [-6.283 +- 4.7124j], which is h = 0.8 - Richter's
+# original damping, but paired with IASPEI's 2080 gain rather than Richter's
+# 2800, i.e. a mix of two conventions. Switching to the IASPEI pair raises
+# amplitudes by a near-uniform 0.033 ML (measured on five CI stations,
+# station-to-station spread 0.010 ML) and makes this catalog comparable to
+# other ML catalogs, including Denolle-Lab/cascadia_obs_ensemble.
 WOOD_ANDERSON = {
-    "poles": [-6.283 + 4.7124j, -6.283 - 4.7124j],
+    "poles": [-5.49779 - 5.60886j, -5.49779 + 5.60886j],
     "zeros": [0 + 0j],
     "gain": 1.0,
     "sensitivity": 2080,
@@ -24,7 +35,9 @@ class AmplitudeExtractor:
     :param slack: Additional time in seconds included for removing/simulating response and detrending.
     :param response_removal_args: Additional arguments for removing the response.
                                   Passed directly to obspy's `remove_response` function.
-                                  By default, uses `{"water_level": 20, "pre_filt": [0.02, 0.05, 40, 45]}`.
+                                  By default, uses `{"water_level": 20, "pre_filt": [0.1, 0.2, 40, 45]}`.
+                                  The low corner must be a period the deconvolved
+                                  window can resolve - see the note below.
     :param components: Components to take into account.
     :param raw_highpass: Corner frequency in Hz of the high-pass filter applied
                          before measuring the raw amplitude. Suppresses microseism
@@ -52,10 +65,31 @@ class AmplitudeExtractor:
         if response_removal_args is None:
             self.response_removal_args = {
                 "water_level": 20,
-                "pre_filt": [0.02, 0.05, 40, 45],
+                "pre_filt": [0.1, 0.2, 40, 45],
             }
         else:
             self.response_removal_args = response_removal_args
+
+        # The deconvolved window is time_before + time_after + 2 * slack seconds.
+        # A pre_filt low corner of f Hz asks the deconvolution to resolve a 1/f
+        # second period; below ~3 cycles that returns ringing rather than signal.
+        # This is harmless for the Wood-Anderson amplitude itself, because the
+        # WA simulation is a sharp bandpass near 1 Hz that discards the
+        # long-period noise - it is a trap only if this class is ever reused to
+        # measure a displacement (Mw) amplitude, where the error reached 12x in
+        # the equivalent Cascadia code. Warn rather than fail.
+        pre_filt = self.response_removal_args.get("pre_filt")
+        if pre_filt:
+            window = self.time_before + self.time_after + 2 * self.slack
+            longest_period = 1.0 / pre_filt[0]
+            if window < 3 * longest_period:
+                warnings.warn(
+                    f"Deconvolution window is {window:g} s but pre_filt starts at "
+                    f"{pre_filt[0]:g} Hz ({longest_period:g} s period); at least "
+                    f"{3 * longest_period:g} s is needed. Raise `slack` or the "
+                    f"pre_filt low corner.",
+                    stacklevel=2,
+                )
 
     def extract_amplitudes(
         self, stream: obspy.Stream, picks: sbu.PickList, inventory: obspy.Inventory
@@ -153,7 +187,7 @@ class AmplitudeExtractor:
             # Remove response and simulate Wood-Anderson
             try:
                 large_window.remove_response(sub_inv, **self.response_removal_args)
-            except:  # No response information
+            except Exception:  # No response information
                 return np.nan
             large_window.simulate(paz_simulate=WOOD_ANDERSON)
         elif self.raw_highpass is not None:

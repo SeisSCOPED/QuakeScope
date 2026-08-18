@@ -143,6 +143,13 @@ flowchart LR
 > against it. Note the picking job definition **no longer hardcodes**
 > `--classifier` and must be re-registered.
 
+> **Amplitudes changed convention.** The Wood-Anderson constants were a mix of
+> the Richter and IASPEI standards and are now IASPEI throughout, which shifts
+> ML by a near-uniform +0.033 relative to the 2025 catalog. See
+> [../amplitude_conventions.md](../amplitude_conventions.md) for what
+> `amplitude` and `raw_amplitude` mean and why the deconvolution window is
+> short — it is safe for Wood-Anderson and would not be for a Mw amplitude.
+
 ---
 
 ## A note on screenshots
