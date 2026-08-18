@@ -138,7 +138,10 @@ flowchart LR
 > 6.5x larger than Parquet for the same picks, and the unique index on `picks`
 > becomes the throughput bottleneck. See
 > [12_output_storage.md](12_output_storage.md) for the measurements and the
-> recommended S3/Parquet layout.
+> recommended S3/Parquet layout, and
+> [13_parquet_workflow.md](13_parquet_workflow.md) for running the campaigns
+> against it. Note the picking job definition **no longer hardcodes**
+> `--classifier` and must be re-registered.
 
 ---
 

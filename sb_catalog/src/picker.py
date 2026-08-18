@@ -16,6 +16,7 @@ from bson import ObjectId
 
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
+from .parquet_writer import ParquetPickWriter
 from .s3_helper import S3DataSource
 from .utils import SeisBenchDatabase, parse_year_day
 
@@ -104,6 +105,15 @@ def main() -> None:
         help="Append the classifier to the picking job.",
     )
     parser.add_argument(
+        "--parquet_uri",
+        type=str,
+        default=None,
+        help="S3 prefix for Parquet output, e.g. s3://bucket/quakescope2026. "
+        "When set, picks and classifications are written there instead of into "
+        "the picks/classifies collections; station metadata and picks_record "
+        "still use the database.",
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="Enable additional debug output."
     )
     args = parser.parse_args()
@@ -152,6 +162,7 @@ def main() -> None:
         pick_queue_size=args.pick_queue_size,
         extent=extent,
         classifier=args.classifier,
+        parquet_uri=args.parquet_uri,
     )
 
     if args.command == "pick":
@@ -182,8 +193,17 @@ class S3MongoSBBridge:
         pick_queue_size: Optional[int] = None,
         extent: Optional[tuple[float, float, float, float]] = None,
         classifier: Optional[bool] = False,
+        parquet_uri: Optional[str] = None,
     ):
         self.extent = extent
+        # When set, bulk picks go to Parquet on S3 instead of into the
+        # database. Station metadata and picks_record stay in the database:
+        # they are small and want point lookups. See
+        # docs/rerun_2026/12_output_storage.md.
+        # Batch always supplies the parameter, so an empty string is how "no
+        # Parquet output" arrives from a job definition.
+        self.parquet_uri = parquet_uri or None
+        self._parquet = None
 
         # model preparation
         if model is not None:
@@ -228,6 +248,17 @@ class S3MongoSBBridge:
                 weight_version=self.model.weights_version,
             )
         return self._run_id
+
+    @property
+    def parquet(self) -> Optional[ParquetPickWriter]:
+        """Parquet writer for this job, created once the run_id exists."""
+        if self.parquet_uri is None:
+            return None
+        if self._parquet is None:
+            self._parquet = ParquetPickWriter(
+                root=self.parquet_uri, run_id=str(self.run_id)
+            )
+        return self._parquet
 
     @staticmethod
     def create_model(
@@ -314,6 +345,11 @@ class S3MongoSBBridge:
         task_db = self._write_picks_to_db(picks_queue)
 
         await asyncio.gather(task_load, task_pick, task_db)
+
+        if self._parquet is not None:
+            # Written at the end because the file boundary is the job, not the
+            # station-day; see parquet_writer for why that matters.
+            await asyncio.to_thread(self._parquet.close)
 
     async def _load_data(
         self,
@@ -463,7 +499,16 @@ class S3MongoSBBridge:
         Converts picks into records that can be submitted to MongoDB and writes them.
         Populates the `picks`, `classifies`, and `picks_record` collection.
         """
-        if len(picks) > 0:
+        writer = self.parquet
+        if writer is not None:
+            # Bulk output goes to Parquet. picks_record below still goes to the
+            # database, because the resume logic needs point lookups and the
+            # record table is ~2.6 GB against ~3 TB of picks.
+            writer.add(
+                picks, amplitudes, raw_amplitudes, classifies, station, day, channel
+            )
+
+        if writer is None and len(picks) > 0:
             self.db.insert_many_ignore_duplicates(
                 "picks",
                 [
@@ -483,7 +528,7 @@ class S3MongoSBBridge:
                 ],
             )
 
-        if len(classifies) > 0:
+        if writer is None and len(classifies) > 0:
             self.db.insert_many_ignore_duplicates(
                 "classifies",
                 [

@@ -48,6 +48,7 @@ class SubmitHelper:
         day_group_size: int = 20,
         model: str = "PhaseNet",
         weight: str = "instance",
+        parquet_uri: str = "",
         station_ids: list = None,
     ):
         self.start = start
@@ -62,12 +63,14 @@ class SubmitHelper:
         self.day_group_size = day_group_size
         self.model = model
         self.weight = weight
+        self.parquet_uri = parquet_uri
         self.client = boto3.client("batch", config=Config(region_name=region))
         self.shared_parameters = {
             "db_uri": self.db.db_uri,
             "database": self.db.database.name,
             "model": self.model,
             "weight": self.weight,
+            "parquet_uri": self.parquet_uri,
         }
 
         self._environ_kv = [{"name": k, "value": v} for k, v in self.environ.items()]
