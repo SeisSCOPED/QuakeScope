@@ -151,6 +151,7 @@ That reading is an artefact of the threshold, not a property of the weights.</p>
   <tbody>
     <tr><td>Ridgecrest</td><td>0.56</td><td>0.53</td><td>0.76</td><td>0.20</td><td>274</td></tr>
     <tr><td>Mendocino 2024</td><td>0.61</td><td>0.68</td><td>0.73</td><td>0.56</td><td>111</td></tr>
+    <tr><td>San Simeon</td><td>0.79</td><td>0.74</td><td>0.95</td><td>0.79</td><td>19</td></tr>
     <tr><td>Monte Cristo</td><td>0.42</td><td>0.50</td><td>0.67</td><td>0.50</td><td>12</td></tr>
   </tbody>
 </table>
@@ -254,9 +255,12 @@ does not — same events, same waveforms, cut differently. It is deferred for th
   <strong>Recall is measured against analyst picks, which are not exhaustive.</strong>
   Unmatched model picks are reported as <em>extra detections</em>, never as false
   positives — in a dense sequence most of them are real earthquakes nobody had time
-  to work through. Sample sizes differ by more than an order of magnitude between
-  sequences, and San Simeon has almost no analyst S at all (two picks, a 2003
-  cataloging practice). Read the analyst column alongside every recall.
+  to work through. The reference is built from arrivals attached to published
+  origins, merged across SCEDC and NCEDC and restricted to manually reviewed
+  picks; the report's provenance section covers what the catalogs do and do not
+  record. Sample sizes still differ by more than an order of magnitude between
+  sequences — San Simeon rests on 19 S picks against Ridgecrest's 274 — so read
+  the analyst column alongside every recall.
 </div>
 
 <h2>Reproducing</h2>

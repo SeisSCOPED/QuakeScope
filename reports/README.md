@@ -92,7 +92,14 @@ detections*, never as false positives, because in a dense sequence most of them
 are real earthquakes nobody had time to work through. Deciding which is which
 needs association across stations.
 
-Sample sizes differ by more than an order of magnitude between sequences, and
-San Simeon has almost no analyst S at all — two picks, a 2003 cataloging
-practice rather than anything about the data. The `analyst` column in every
-table is the sample size and should be read alongside the recall.
+The reference is not a pick archive — no such service exists. It is the set of
+arrivals attached to published origins, so a pick counts only because an analyst
+made it *and* a location used it. The sequence comparison merges SCEDC and NCEDC
+(they locate the same California sequence with different station sets) and keeps
+only manually reviewed picks; its provenance section covers what the catalogs
+record, which is the operating agency rather than any individual analyst.
+
+Sample sizes still differ by more than an order of magnitude between sequences —
+San Simeon rests on 19 analyst S picks where Ridgecrest has 274. The `analyst`
+column in every table is the sample size and should be read alongside the
+recall.
