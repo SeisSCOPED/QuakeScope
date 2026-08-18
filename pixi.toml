@@ -23,6 +23,7 @@ ipywidgets = ">=8.0.0"
 ipykernel = ">=6.20.0"
 tqdm = ">=4.65.0"
 requests = ">=2.31.0"
+pyarrow = ">=14"
 
 [pypi-dependencies]
 seisbench = ">=0.3.5"

@@ -133,6 +133,13 @@ flowchart LR
 - [ ] F2. Weekly: Cost Explorer.
 - [ ] F3. When done: stop the EC2 controller, scale the compute environment to 0, snapshot the database. Troubleshooting reference: [07_troubleshooting.md](07_troubleshooting.md).
 
+> **Output format is under review.** At the launch's measured scale — about
+> 52 million station-days and order 10^10 picks — DocumentDB storage is roughly
+> 6.5x larger than Parquet for the same picks, and the unique index on `picks`
+> becomes the throughput bottleneck. See
+> [12_output_storage.md](12_output_storage.md) for the measurements and the
+> recommended S3/Parquet layout.
+
 ---
 
 ## A note on screenshots
