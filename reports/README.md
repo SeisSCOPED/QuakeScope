@@ -94,12 +94,15 @@ needs association across stations.
 
 The reference is not a pick archive — no such service exists. It is the set of
 arrivals attached to published origins, so a pick counts only because an analyst
-made it *and* a location used it. The sequence comparison merges SCEDC and NCEDC
-(they locate the same California sequence with different station sets) and keeps
-only manually reviewed picks; its provenance section covers what the catalogs
+made it *and* a location used it. Which earthquakes count is fixed by the team's
+curated reviewed-event lists in `docs/rerun_2026/comcat_reviewed_*.csv`, and
+arrivals for those events are harvested from every archive that located them —
+SCEDC and NCEDC solve the same California earthquake with different station
+sets, and ComCat carries only the authoritative solution. Only manually reviewed
+picks are kept. The provenance section of that report covers what the catalogs
 record, which is the operating agency rather than any individual analyst.
 
 Sample sizes still differ by more than an order of magnitude between sequences —
-San Simeon rests on 19 analyst S picks where Ridgecrest has 274. The `analyst`
+San Simeon rests on 16 analyst S picks where Ridgecrest has 298. The `analyst`
 column in every table is the sample size and should be read alongside the
 recall.
