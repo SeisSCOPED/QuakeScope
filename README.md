@@ -43,6 +43,8 @@ pixi run smoke-test
 | [docs/phasenet_v7_model_description.md](docs/phasenet_v7_model_description.md) | Model architecture & benchmarks |
 | [docs/smoke_test_workflow.md](docs/smoke_test_workflow.md) | Validation workflow |
 | [docs/rerun_2026/15_monitoring.md](docs/rerun_2026/15_monitoring.md) | Cost alerts and emergency stop |
+| [notebooks/5_submit_job_parquet.ipynb](notebooks/5_submit_job_parquet.ipynb) | Launch a Fargate campaign with Parquet output (no DocumentDB) |
+| [notebooks/6_check_parquet.ipynb](notebooks/6_check_parquet.ipynb) | Query the Parquet catalogue |
 | [reports/](reports/) | Rendered benchmark reports, published at [seisscoped.org/QuakeScope](https://seisscoped.org/QuakeScope/) |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security assessment |
 

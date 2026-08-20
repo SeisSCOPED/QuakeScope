@@ -180,6 +180,13 @@ process sweep shows memory pressure.
 
 ## 6. Reading the output
 
+Two notebooks do all of this interactively:
+[`notebooks/5_submit_job_parquet.ipynb`](../../notebooks/5_submit_job_parquet.ipynb)
+launches a campaign on Fargate with no DocumentDB, and
+[`notebooks/6_check_parquet.ipynb`](../../notebooks/6_check_parquet.ipynb)
+queries the result. They are the Parquet counterparts of notebooks 3 and 4,
+which remain for the 2025 database path.
+
 ### 6a. The 2025 catalog, in DocumentDB
 
 ```python
