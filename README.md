@@ -42,8 +42,59 @@ pixi run smoke-test
 | [docs/rerun_2026/README.md](docs/rerun_2026/README.md) | Production runbook |
 | [docs/phasenet_v7_model_description.md](docs/phasenet_v7_model_description.md) | Model architecture & benchmarks |
 | [docs/smoke_test_workflow.md](docs/smoke_test_workflow.md) | Validation workflow |
+| [docs/rerun_2026/15_monitoring.md](docs/rerun_2026/15_monitoring.md) | Cost alerts and emergency stop |
 | [reports/](reports/) | Rendered benchmark reports, published at [seisscoped.org/QuakeScope](https://seisscoped.org/QuakeScope/) |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security assessment |
+
+## Cost monitoring
+
+Campaigns run on Spot instances that are easy to leave running. Two layers watch
+for that; neither is on by default.
+
+**What is running right now**, from your laptop:
+
+```bash
+pixi run -e cloud watch      # instances, spot vs on-demand, $/hr, $/month
+```
+
+Read-only, and it prints the stop commands for whatever it finds.
+
+**Hourly alerts by email**, via GitHub Actions
+([`.github/workflows/aws-watch.yml`](.github/workflows/aws-watch.yml)). Three
+things must all be true, and none is automatic:
+
+1. **The workflow must be on the default branch.** GitHub runs `schedule:`
+   triggers *only* from the default branch; on a feature branch it never fires.
+2. **Credentials must be set** — repository variable `AWS_WATCH_ROLE_ARN` (OIDC,
+   preferred, no stored keys) or the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+   secrets. The IAM policy is describe-only.
+3. **You must watch the repo**, since the alert is an issue comment and GitHub
+   turns that into email.
+
+Test it without waiting an hour:
+
+```bash
+gh workflow run aws-watch.yml
+```
+
+It does **not** email hourly. One issue is the dashboard, its body updates
+silently, and a comment — which notifies — is posted only when the state
+changes: idle → running, a new warning, or all-clear.
+
+**Turning it off**, at the level you want:
+
+```bash
+gh workflow disable aws-watch.yml     # stop entirely (enable to resume)
+```
+
+To keep the dashboard but stop the email, unsubscribe from that one issue. To
+silence all repo email, set the repo to *Participating and @mentions*. To pause,
+drop the `schedule:` block and keep `workflow_dispatch`.
+
+Add an **AWS Budgets** daily alert as an independent backstop — it fires even if
+Actions, the credentials, or the repo are broken. Setup, the IAM policy and the
+emergency-stop sequence are in
+[docs/rerun_2026/15_monitoring.md](docs/rerun_2026/15_monitoring.md).
 
 ## Key Features
 

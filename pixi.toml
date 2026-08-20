@@ -54,6 +54,8 @@ cloud = ["cpu"]
 dev = ["cpu", "dev"]
 
 [tasks]
+watch = "python scripts/aws_watch.py"
+watch-md = "python scripts/aws_watch.py --format markdown"
 smoke-test = "jupyter notebook tutorials/phasenet_smoke_test_ridgecrest.ipynb"
 compare-models = "jupyter notebook tutorials/compare_phasenet_models.ipynb"
 lab = "jupyter lab"
