@@ -16,9 +16,14 @@ from obspy.clients.fdsn.header import FDSNNoDataException
 from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING
+from .profiling import stage
 from .utils import SeisBenchDatabase
 
-EARTHSCOPE_S3_ACCESS_POINT = os.environ["EARTHSCOPE_S3_ACCESS_POINT"]
+# Default to empty rather than KeyError at import: parameters.py has always
+# defaulted this to "" for campaigns that never touch EarthScope, and the
+# module is imported by every picking job regardless of archive.
+EARTHSCOPE_S3_ACCESS_POINT = os.environ.get("EARTHSCOPE_S3_ACCESS_POINT", "")
+ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 
 logger = logging.getLogger("picker")
 
@@ -84,12 +89,23 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         }
 
         self.ttl_threshold = datetime.timedelta(minutes=5)
-        self.credential = self.get_es_credential()
         self.fs = {
             "scedc": S3FileSystem(anon=True),
             "ncedc": S3FileSystem(anon=True),
         }
-        self.set_es_filesystem()
+        # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
+        # credential exchange entirely when the campaign has not been configured
+        # for EarthScope, so a public-bucket run neither stalls nor fails on it.
+        self.earthscope_enabled = bool(EARTHSCOPE_S3_ACCESS_POINT)
+        self.credential = None
+        if self.earthscope_enabled:
+            self.credential = self.get_es_credential()
+            self.set_es_filesystem()
+        else:
+            logger.info(
+                "EARTHSCOPE_S3_ACCESS_POINT is unset - EarthScope access disabled, "
+                "using the public SCEDC/NCEDC buckets only"
+            )
 
     def get_prefix(self, net, year, day) -> str:
         return self.helpers[self.get_data_center(net)].get_prefix(net, year, day)
@@ -109,17 +125,30 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         """
         Set 5 minutes buffer time to update credential
         """
-        while True:
+        last = None
+        for attempt in range(1, ES_CREDENTIAL_ATTEMPTS + 1):
             try:
                 with EarthScopeClient() as client:
                     return client.user.get_aws_credentials(
                         ttl_threshold=self.ttl_threshold
                     )
-            except:
+            except Exception as exc:
+                last = exc
                 logger.warning(
-                    f"EarthScope credential client might be busy. Sleep for 5 seconds and retry."
+                    f"EarthScope credential client might be busy "
+                    f"({attempt}/{ES_CREDENTIAL_ATTEMPTS}): {type(exc).__name__}. "
+                    f"Sleeping 5 seconds."
                 )
                 time.sleep(5)
+        # Fail rather than retry forever. An unbounded loop here never completes
+        # and never errors, so a Spot worker holds its shard until the lease
+        # expires and the next worker inherits the same hang.
+        raise RuntimeError(
+            f"Could not obtain EarthScope credentials after "
+            f"{ES_CREDENTIAL_ATTEMPTS} attempts. Set ES_OAUTH2__REFRESH_TOKEN and "
+            f"EARTHSCOPE_S3_ACCESS_POINT, or restrict the campaign to the public "
+            f"SCEDC/NCEDC buckets."
+        ) from last
 
     def set_es_filesystem(self):
         self.fs["earthscope"] = S3FileSystem(
@@ -129,6 +158,10 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         )
 
     def update_es_filesystem(self):
+        # No-op when EarthScope was never configured: self.credential is None and
+        # dereferencing it would AttributeError on the first refresh check.
+        if not getattr(self, "earthscope_enabled", True) or self.credential is None:
+            return
         if (
             self.credential.expiration - datetime.datetime.now(tz=datetime.timezone.utc)
         ) < self.ttl_threshold:
@@ -202,7 +235,12 @@ class S3DataSource:
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
                 try:
-                    avail_uri[net] += fs.ls(prefix)
+                    # One LIST per day per network. A SCEDC day prefix holds
+                    # ~4,000 objects, so this is not free and is paid again for
+                    # every day in the shard.
+                    with stage("s3.list"):
+                        listing = fs.ls(prefix)
+                    avail_uri[net] += listing
                 except FileNotFoundError:
                     logger.debug(f"Path does not exist {prefix}")
                     pass
@@ -287,13 +325,20 @@ class S3DataSource:
         while True:
             fs = self.s3helper.get_filesystem(net)
             try:
-                bytes_mb = fs.info(uri)["size"] / 1024**2
+                # Separately timed: this is a HEAD round trip before every GET,
+                # which is pure latency and doubles the request count.
+                with stage("s3.head"):
+                    size = fs.info(uri)["size"]
+                bytes_mb = size / 1024**2
                 if self.limit_mb is not None and bytes_mb > self.limit_mb:
                     logger.warning(f"mSEED is too big (%.3f MB): %s" % (bytes_mb, uri))
                     return obspy.Stream()
                 else:
-                    buff = io.BytesIO(fs.read_bytes(uri))
-                    return obspy.read(buff)
+                    with stage("s3.get", unit=size, unit_name="bytes"):
+                        raw = fs.read_bytes(uri)
+                    buff = io.BytesIO(raw)
+                    with stage("mseed.parse", unit=size, unit_name="bytes"):
+                        return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
                     logger.warning(f"Not authorized to access this resource: {uri}")

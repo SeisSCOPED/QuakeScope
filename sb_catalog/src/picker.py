@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import functools
 import logging
+import sys
 import time
 from typing import Optional
 
@@ -17,6 +18,7 @@ from bson import ObjectId
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
 from .parquet_writer import ParquetPickWriter
+from .profiling import stage
 from .s3_helper import S3DataSource
 from .utils import SeisBenchDatabase, parse_year_day
 
@@ -27,11 +29,23 @@ def main() -> None:
     """
     This main function serves as the entry point to all functionality available in the script.
     """
+    # `work` delegates to the v3 queue worker. The container's ENTRYPOINT is
+    # fixed at `python -m src.picker`, and AWS Batch's containerProperties has no
+    # entryPoint field, so on Fargate this subcommand is the only way to reach
+    # the worker without publishing a second image. Dispatched before argparse
+    # because the worker takes a completely different set of options - notably
+    # no --db_uri, since v3 has no database.
+    if len(sys.argv) > 1 and sys.argv[1] == "work":
+        from .worker import main as worker_main
+
+        return worker_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
         type=str,
-        help="Subroutine to execute. See below for available functions.",
+        help="Subroutine to execute. See below for available functions. "
+        "Use `work` to run the v3 S3-queue worker instead of a single job.",
     )
     parser.add_argument(
         "--db_uri", type=str, required=True, help="URI of the MongoDB cluster."
@@ -194,6 +208,7 @@ class S3MongoSBBridge:
         extent: Optional[tuple[float, float, float, float]] = None,
         classifier: Optional[bool] = False,
         parquet_uri: Optional[str] = None,
+        job_id: Optional[str] = None,
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -202,7 +217,11 @@ class S3MongoSBBridge:
         # docs/rerun_2026/12_output_storage.md.
         # Batch always supplies the parameter, so an empty string is how "no
         # Parquet output" arrives from a job definition.
-        self.parquet_uri = parquet_uri or None
+        self.parquet_uri = parquet_uri
+        # Names the Parquet object. Without it ParquetPickWriter falls back to
+        # HOSTNAME, and every shard a node runs writes the SAME key inside a
+        # (network, year, month) partition - silently overwriting the last.
+        self.job_id = job_id or None
         self._parquet = None
 
         # model preparation
@@ -256,7 +275,7 @@ class S3MongoSBBridge:
             return None
         if self._parquet is None:
             self._parquet = ParquetPickWriter(
-                root=self.parquet_uri, run_id=str(self.run_id)
+                root=self.parquet_uri, run_id=str(self.run_id), job_id=self.job_id
             )
         return self._parquet
 
@@ -426,22 +445,33 @@ class S3MongoSBBridge:
                 )
             else:
                 # do picking
-                stream_annotations = await asyncio.to_thread(
-                    self.model.classify, stream
-                )
-                # extract amplitudes
-                stream_amplitudes = await asyncio.to_thread(
-                    self.amp_extor.extract_amplitudes,
-                    stream,
-                    stream_annotations.picks,
-                    self.s3.inventory,
-                )
+                def _classify():
+                    with stage("model.classify"):
+                        return self.model.classify(stream)
+
+                stream_annotations = await asyncio.to_thread(_classify)
+                n_picks = len(stream_annotations.picks)
+
+                # extract amplitudes. Timed against PICK COUNT, not station-days:
+                # this pass runs once per pick and pick counts vary ~4x between an
+                # ordinary day and a mainshock day, so per-station-day timing hides
+                # how it actually scales.
+                def _amps():
+                    with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
+                        return self.amp_extor.extract_amplitudes(
+                            stream, stream_annotations.picks, self.s3.inventory
+                        )
+
+                stream_amplitudes = await asyncio.to_thread(_amps)
+
                 # extract raw amplitudes around each pick
-                stream_raw_amplitudes = await asyncio.to_thread(
-                    self.amp_extor.extract_raw_amplitudes,
-                    stream,
-                    stream_annotations.picks,
-                )
+                def _raw_amps():
+                    with stage("amp.raw", unit=n_picks, unit_name="pick"):
+                        return self.amp_extor.extract_raw_amplitudes(
+                            stream, stream_annotations.picks
+                        )
+
+                stream_raw_amplitudes = await asyncio.to_thread(_raw_amps)
 
                 # classifier
                 if self.classifier and (channel in ["BH", "HH"]):
