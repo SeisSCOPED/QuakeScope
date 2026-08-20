@@ -10,6 +10,7 @@ no endpoint to keep alive:
         shards.jsonl              the work queue            (new)
         claims/<shard_id>.json    who is working on what    (new)
         complete/<shard_id>.json  what finished             (was: picks_record)
+        progress/<shard_id>.json  mid-shard checkpoints     (new)
         manifests/<job_id>.json   what each job wrote       (ParquetPickWriter)
         runs/<run_id>.json        provenance                (was: sb_runs)
         picks/network=/year=/month=/*.parquet
@@ -248,10 +249,7 @@ class S3CampaignState:
         record = self._get_json(self._key("progress", f"{shard_id}.json"))
         if not record:
             return set()
-        return {
-            (r["tid"], r["yr"], r["doy"], r["cha"])
-            for r in record.get("records", [])
-        }
+        return {tuple(e) for e in record.get("done", [])}
 
     def write_progress(self, shard_id: str, records: list[dict]) -> None:
         """Record durable progress mid-shard.
@@ -260,10 +258,15 @@ class S3CampaignState:
         returned. Written the other way round, a resume would skip station-days
         whose picks were never stored - the same ordering trap as `complete`.
         """
+        # Identity only. The full records carry npks/nclfs/rid, which the final
+        # manifest needs but a resume does not, and this object is rewritten at
+        # every checkpoint - so carrying them would triple an O(n^2) write for
+        # no benefit.
+        done = [[r["tid"], r["yr"], r["doy"], r["cha"]] for r in records]
         self._put_json(
             self._key("progress", f"{shard_id}.json"),
             {"shard_id": shard_id, "worker": self.worker_id,
-             "updated": _utcnow(), "n": len(records), "records": records},
+             "updated": _utcnow(), "n": len(done), "done": done},
         )
 
     def complete(self, shard_id: str, manifest: dict) -> str:
