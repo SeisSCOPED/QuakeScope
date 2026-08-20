@@ -87,6 +87,13 @@ Three things must all be true, and none of them is automatic:
 gh api repos/SeisSCOPED/QuakeScope/subscription -q .subscribed
 ```
 
+Until one of these is set the workflow still runs on schedule, but **skips
+cleanly** rather than failing: it writes what to configure into the run summary
+and exits successfully. That is deliberate — an hourly job that fails hourly
+emails you hourly, which trains you to filter exactly the notifications this
+exists to deliver, and a real AWS problem then looks identical to an unconfigured
+one.
+
 Verify it works without waiting an hour — run it by hand:
 
 ```bash

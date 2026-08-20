@@ -43,16 +43,49 @@ jobs:
 
       - run: pip install --quiet boto3
 
+      # Skip cleanly when no credentials are configured, rather than failing.
+      # An hourly job that fails hourly sends a failure email every hour, which
+      # trains you to filter exactly the notifications this exists to deliver -
+      # and it is indistinguishable from a real AWS problem.
+      - name: Check credentials are configured
+        id: creds
+        env:
+          ROLE: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$ROLE" ]; then
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ -n "$KEY" ]; then
+            echo "mode=keys" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            {
+              echo "## AWS watch is not configured yet"
+              echo
+              echo "This workflow ran but has no AWS credentials, so it checked"
+              echo "nothing. It is not broken - it has never been switched on."
+              echo
+              echo "Set **one** of these, then it starts reporting hourly:"
+              echo
+              echo '- repository **variable** `AWS_WATCH_ROLE_ARN` (OIDC, preferred - no stored keys), or'
+              echo '- repository **secrets** `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`'
+              echo
+              echo "The describe-only IAM policy is in \`docs/rerun_2026/15_monitoring.md\`."
+              echo "To stop these runs instead: \`gh workflow disable aws-watch.yml\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::AWS watch has no credentials configured; skipping. See the run summary."
+          fi
+
       # Prefer OIDC: no long-lived credentials in the repo at all.
       - name: Configure AWS (OIDC)
-        if: vars.AWS_WATCH_ROLE_ARN != ''
+        if: steps.creds.outputs.mode == 'oidc'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
           aws-region: us-west-2
 
       - name: Configure AWS (access keys)
-        if: vars.AWS_WATCH_ROLE_ARN == ''
+        if: steps.creds.outputs.mode == 'keys'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -61,6 +94,7 @@ jobs:
 
       - name: Scan
         id: scan
+        if: steps.creds.outputs.mode != 'none'
         run: |
           python scripts/aws_watch.py --format markdown > report.md || true
           # Running or not decides whether this is an alert or an all-clear.
@@ -77,6 +111,7 @@ jobs:
           cat report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update the dashboard issue
+        if: steps.creds.outputs.mode != 'none'
         uses: actions/github-script@v7
         env:
           RUNNING: ${{ steps.scan.outputs.running }}
