@@ -1,6 +1,5 @@
 # Cloud-native Machine Learning workflow for earthquake event detection and phase picking
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 
 A cloud-native workflow for automated seismic phase picking and earthquake detection using deep learning, deployed on AWS with containerized models and managed infrastructure.
 
@@ -43,6 +42,8 @@ pixi run smoke-test
 | [docs/phasenet_v7_model_description.md](docs/phasenet_v7_model_description.md) | Model architecture & benchmarks |
 | [docs/smoke_test_workflow.md](docs/smoke_test_workflow.md) | Validation workflow |
 | [docs/rerun_2026/15_monitoring.md](docs/rerun_2026/15_monitoring.md) | Cost alerts and emergency stop |
+| [notebooks/5_submit_job_parquet.ipynb](notebooks/5_submit_job_parquet.ipynb) | Launch a Fargate campaign with Parquet output (no DocumentDB) |
+| [notebooks/6_check_parquet.ipynb](notebooks/6_check_parquet.ipynb) | Query the Parquet catalogue |
 | [reports/](reports/) | Rendered benchmark reports, published at [seisscoped.org/QuakeScope](https://seisscoped.org/QuakeScope/) |
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | Security assessment |
 
@@ -108,6 +109,21 @@ emergency-stop sequence are in
 - 🔍 **Monitored**: CloudWatch dashboards and SNS alerts for job tracking
 
 ## Architecture
+
+Two deployment paths are supported, and they differ in more than plumbing:
+
+| | v2 — AWS Batch on Fargate Spot | v3 — SkyPilot Spot + S3 queue |
+|---|---|---|
+| Proven at | the 2025 petabyte campaign | two shards end to end |
+| State | DocumentDB (VPC-bound) | S3 objects, no database |
+| Submission from | an EC2 controller inside the VPC | anywhere |
+| Notebooks | [3](notebooks/3_submit_job.ipynb), [4](notebooks/4_check_database.ipynb) | [5](notebooks/5_submit_job_parquet.ipynb), [6](notebooks/6_check_parquet.ipynb) |
+
+Both write picks as Parquet on S3. The diagram below is the v2 path; for v3 see
+[14_skypilot.md](docs/rerun_2026/14_skypilot.md), and
+[16_skypilot_vs_fargate.md](docs/rerun_2026/16_skypilot_vs_fargate.md) for the
+cost comparison.
+
 
 ```
 Continuous Waveforms (SCEDC/NCEDC S3)

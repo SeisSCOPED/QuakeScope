@@ -143,6 +143,11 @@ flowchart LR
 > against it. Note the picking job definition **no longer hardcodes**
 > `--classifier` and must be re-registered.
 
+> **v3 runs on SkyPilot, not Batch.** Fargate Spot, the job definitions and
+> DocumentDB are replaced by SkyPilot managed jobs over an S3 work queue —
+> see [14_skypilot.md](14_skypilot.md). Phases C and D below (DocumentDB,
+> Batch compute environment) do not apply to a v3 campaign.
+
 > **Amplitudes changed convention.** The Wood-Anderson constants were a mix of
 > the Richter and IASPEI standards and are now IASPEI throughout, which shifts
 > ML by a near-uniform +0.033 relative to the 2025 catalog. See

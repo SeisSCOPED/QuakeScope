@@ -9,7 +9,9 @@ WORKDIR /code
 RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # SeisBench
-RUN pip install seisbench pyocto ipython s3fs pymongo boto3==1.35.81 tqdm joblib earthscope-sdk==1.0.0b0
+# pyarrow is required by parquet_writer, which is the v3 output path - without
+# it a picking job ImportErrors before it reads a byte.
+RUN pip install seisbench pyocto ipython s3fs pymongo boto3==1.35.81 tqdm joblib earthscope-sdk==1.0.0b0 pyarrow
 
 # get AWS DocumentDB public key
 RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem

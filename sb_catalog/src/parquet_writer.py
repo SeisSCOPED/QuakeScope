@@ -39,7 +39,11 @@ from typing import Any, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+import fsspec
 import s3fs
+
+from .profiling import stage
 
 logger = logging.getLogger("picker")
 
@@ -108,7 +112,15 @@ class ParquetPickWriter:
         self.job_id = job_id or self._infer_job_id()
         self.compression = compression
         self.flush_threshold = flush_threshold
-        self.fs = s3fs.S3FileSystem(**(storage_options or {}))
+        # Pick the filesystem from the URI scheme rather than assuming S3, so a
+        # local root works for tests and dry runs - which _ensure_parent already
+        # claimed to support, but could not, because this was hardcoded.
+        if self.root.startswith("s3://"):
+            self.fs = s3fs.S3FileSystem(**(storage_options or {}))
+        else:
+            self.fs = fsspec.filesystem(
+                fsspec.utils.get_protocol(self.root), **(storage_options or {})
+            )
 
         self._picks: dict[tuple, list] = defaultdict(list)
         self._classifies: dict[tuple, list] = defaultdict(list)
@@ -116,6 +128,8 @@ class ParquetPickWriter:
         self._part_seq: dict[tuple, int] = defaultdict(int)
         self.n_picks = 0
         self.n_classifies = 0
+        # Object keys written by this job, so readers never have to LIST.
+        self._written: list[dict] = []
 
     @staticmethod
     def _infer_job_id() -> str:
@@ -219,14 +233,55 @@ class ParquetPickWriter:
         suffix = f"-{seq:03d}.parquet" if seq else ".parquet"
         path = self._partition_path(kind, key, suffix)
 
-        table = pa.Table.from_pylist(rows, schema=schema)
+        # Encode and upload are timed apart: one is CPU on the worker, the other
+        # is network to S3, and they scale with different things. The comparison
+        # against DocumentDB's per-station-day insert_many needs both.
+        with stage("parquet.encode", unit=len(rows), unit_name="row"):
+            table = pa.Table.from_pylist(rows, schema=schema)
         self._ensure_parent(path)
-        with self.fs.open(path, "wb") as fh:
-            pq.write_table(
-                table, fh, compression=self.compression, use_dictionary=True
-            )
+        with stage("parquet.put", unit=len(rows), unit_name="row"):
+            with self.fs.open(path, "wb") as fh:
+                pq.write_table(
+                    table, fh, compression=self.compression, use_dictionary=True
+                )
         logger.info(f"Wrote {len(rows):>8} {kind} rows -> {path}")
+        # Record what was written, with the partition key and row count. This is
+        # what lets a reader locate a job's output with GETs alone: without it
+        # the only way to find these objects is to LIST the partition, because
+        # the file name carries a content hash and a flush sequence number that
+        # a reader cannot reconstruct.
+        network, year, month = key
+        self._written.append({
+            "kind": kind, "path": path, "rows": len(rows),
+            "network": network, "year": year, "month": month,
+        })
         buffers[key] = []
+
+    def checkpoint(self) -> list[dict]:
+        """Flush every buffered partition and report what is now durable.
+
+        Exists so a preempted shard does not start over. Picks are buffered
+        until :meth:`close`, so without this a Spot interruption twelve hours
+        into a shard loses twelve hours of work. Flushing periodically bounds
+        that loss to the checkpoint interval.
+
+        Returns the station-day-channel records covered by everything written so
+        far. The caller records them **after** this returns, never before: the
+        ordering is what stops a resume skipping station-days whose picks were
+        never actually written.
+        """
+        for key in list(self._picks):
+            self._write_partition("picks", key, PICK_SCHEMA, self._picks)
+        for key in list(self._classifies):
+            self._write_partition(
+                "classifies", key, CLASSIFY_SCHEMA, self._classifies
+            )
+        return list(self._records)
+
+    @property
+    def pending_records(self) -> int:
+        """Station-day-channels handled so far, flushed or not."""
+        return len(self._records)
 
     def close(self) -> dict:
         """Write everything still buffered, plus a manifest for the job."""
@@ -244,6 +299,7 @@ class ParquetPickWriter:
             "n_classifies": self.n_classifies,
             "station_days": len(self._records),
             "written_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "files": self._written,
             "records": self._records,
         }
         # One manifest per job, flat rather than partitioned: it describes the
