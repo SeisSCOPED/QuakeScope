@@ -24,6 +24,10 @@ one worker process, `worker --profile`:
 | s3.head | ~0 | ~0 | objects |
 | *unaccounted* | 0.4 s (0.7%) | | |
 
+Measured before the numpy work on the per-pick amplitude path; the
+head-to-head in section 2 supersedes the absolute numbers, though the
+proportions hold.
+
 Three conclusions, and they drive everything below.
 
 **The workload is CPU-bound, not I/O-bound.** Every S3 and parsing stage
@@ -84,13 +88,71 @@ us-east-2, on the quota you already hold, unless the EC2 quota increase lands
 per vCPU-hour but whether 12,000 vCPU of headroom is worth more than a ~10%
 hourly saving that depends on two prerequisites.
 
-### What is not yet measured
+### Head-to-head: the same shard on both platforms
 
-A true head-to-head is blocked: the published image is built from `main`, so it
-still crashes on `EARTHSCOPE_S3_ACCESS_POINT` at import and has no `pyarrow`.
-Fargate probes exited 1 for exactly that reason. Once PR #27 merges and Actions
-rebuilds, `quakescope_v3_bench` (already registered) runs the identical worker
-via `python -m src.picker work`, and the same shard can be timed on both.
+Run after the v3 image was rebuilt, which is what previously made this
+impossible — the published image crashed on `EARTHSCOPE_S3_ACCESS_POINT` at
+import and had no `pyarrow`, so Fargate probes exited 1 within seconds.
+
+Shard `2019188-2019189-0abee934e908`, 6,697 picks, 8 vCPU, one worker process,
+identical image (`ghcr.io/seisscoped/quakescope:32c8321`) and identical code:
+
+| stage | EC2 Spot (us-west-2) | Fargate Spot (us-east-2) | ratio |
+|---|--:|--:|--:|
+| amp.wood_anderson | 25.45 s | 20.48 s | 0.80x |
+| **model.classify** | 24.05 s | **7.23 s** | **0.30x** |
+| amp.raw | 2.35 s | 2.00 s | 0.85x |
+| s3.get | 1.17 s | 2.26 s | 1.93x |
+| mseed.parse | 0.27 s | 0.27 s | 1.00x |
+| parquet encode + put | 0.05 s | 0.36 s | 7.2x |
+| **wall clock** | **53.71 s** | **33.72 s** | **0.63x** |
+
+**Fargate ran the identical shard 37% faster**, almost entirely in inference:
+7.2 s against 24.1 s. Same vCPU count, same image, same code, so the likeliest
+explanation is a newer CPU generation behind Fargate than the `c6i.2xlarge`
+SkyPilot selected — but this is **one sample on each side and should be
+confirmed before it is relied on.** It matters because it inverts the price
+comparison: at $0.0148/vCPU-hr and 0.63x the runtime, Fargate is *cheaper per
+station-day* than EC2 Spot at $0.0133, not merely more available.
+
+**Cross-region reads cost about one second per station-day.** S3 throughput
+halved — 46.6 MB/s reading `scedc-pds` from the same region against 24.1 MB/s
+from us-east-2 — but that is +1.1 s of a 33.7 s shard. This settles the
+locality question: the workload is CPU-bound, so running where the Fargate
+quota is costs roughly 3%, not a redesign.
+
+Output verified rather than assumed: 29,906 picks over four shards,
+`remaining: 0`, amplitudes populated on 29,852 rows. Fargate cold start was
+66 s, consistent with the 61 s median measured earlier.
+
+### Conclusion
+
+**Fargate Spot, in us-east-2.** It wins on every axis measured:
+
+| | Fargate Spot | EC2 Spot via SkyPilot |
+|---|---|---|
+| Spot quota, us-east-2 | **12,000 vCPU**, already granted | 256 vCPU |
+| Cold start | **66 s** | ~3 min |
+| Wall clock, same shard | **33.7 s** | 53.7 s |
+| Idle cost | none — the task ends | jobs controller persists, on-demand |
+| Proven at scale | the 2025 petabyte campaign | two shards |
+
+The v3 worker runs there unmodified, through `python -m src.picker work`.
+
+**What would change this:** an EC2 Spot quota increase in us-east-2 plus an
+arm64 image, which together would make Graviton reachable at $0.0133/vCPU-hr.
+Worth revisiting only if the inference gap above turns out to be measurement
+noise.
+
+### Still unmeasured
+
+- **Repeat runs.** A 3.3x inference difference from n=1 on each side is too
+  load-bearing to accept as-is.
+- **Processes per vCPU.** Every benchmark so far used one process on an 8 vCPU
+  box, so most of the machine was idle. This swings campaign cost about 4x and
+  is an hour's work to settle.
+- **The 2025 baseline.** Cost Explorer is blocked on this account by an
+  organisation SCP, so "match or beat 2025" needs a billing-console export.
 
 ---
 
