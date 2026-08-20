@@ -1,0 +1,139 @@
+name: AWS activity watch
+
+# Hourly report of what is running on AWS, what it costs, and how to stop it.
+#
+# Cost Explorer lags about a day, which is too slow to catch the three ways a
+# Spot campaign quietly overspends: an instance left up, a jobs controller that
+# outlives its jobs, and a managed job silently satisfied on-demand at ~3x the
+# Spot price. This runs in CI rather than on a laptop so it keeps watching when
+# the laptop is closed.
+#
+# Notification model: ONE issue is kept as the live dashboard. Its body is
+# rewritten every hour, which is silent. A comment - which does email everyone
+# subscribed - is posted only when the state CHANGES (idle -> running, or new
+# warnings). Otherwise an hourly job would train you to ignore it.
+#
+# Setup: see docs/rerun_2026/15_monitoring.md. Needs either
+#   - AWS_WATCH_ROLE_ARN (preferred; GitHub OIDC, no stored keys), or
+#   - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY secrets (read-only IAM user).
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # hourly, off the hour to avoid the cron stampede
+  workflow_dispatch:          # and on demand, for "what is running right now?"
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write             # required for OIDC
+
+concurrency:
+  group: aws-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet boto3
+
+      # Prefer OIDC: no long-lived credentials in the repo at all.
+      - name: Configure AWS (OIDC)
+        if: vars.AWS_WATCH_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Configure AWS (access keys)
+        if: vars.AWS_WATCH_ROLE_ARN == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Scan
+        id: scan
+        run: |
+          python scripts/aws_watch.py --format markdown > report.md || true
+          # Running or not decides whether this is an alert or an all-clear.
+          if grep -q "No instances running" report.md; then
+            echo "running=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "running=true" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -q "^### Warnings" report.md; then
+            echo "warned=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "warned=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the dashboard issue
+        uses: actions/github-script@v7
+        env:
+          RUNNING: ${{ steps.scan.outputs.running }}
+          WARNED: ${{ steps.scan.outputs.warned }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('report.md', 'utf8');
+            const running = process.env.RUNNING === 'true';
+            const warned = process.env.WARNED === 'true';
+            const TITLE = 'AWS activity dashboard';
+            const LABEL = 'aws-watch';
+
+            const found = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue label:${LABEL}`,
+            });
+            let issue = found.data.items[0];
+
+            const stamp = new Date().toISOString();
+            const full = `${body}\n\n---\n_Updated ${stamp} by ` +
+              `[aws-watch](../actions/workflows/aws-watch.yml). ` +
+              `Run it on demand from the Actions tab._`;
+
+            if (!issue) {
+              if (!running) return;               // nothing to report, no issue yet
+              issue = (await github.rest.issues.create({
+                ...context.repo, title: TITLE, body: full, labels: [LABEL],
+              })).data;
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number,
+                body: ':rotating_light: AWS resources are running. Details in the issue body.',
+              });
+              return;
+            }
+
+            // Body updates are silent; comments notify. Only comment on a
+            // state change, so an hourly job does not become background noise.
+            const wasRunning = !/No instances running/.test(issue.body || '');
+            const wasWarned = /^### Warnings/m.test(issue.body || '');
+            await github.rest.issues.update({
+              ...context.repo, issue_number: issue.number, body: full,
+              state: running ? 'open' : 'closed',
+            });
+
+            if (running && !wasRunning) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number,
+                body: ':rotating_light: **AWS resources started running.**\n\n' + body,
+              });
+            } else if (running && warned && !wasWarned) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number,
+                body: ':warning: **New warning from the AWS watch.**\n\n' + body,
+              });
+            } else if (!running && wasRunning) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: issue.number,
+                body: ':white_check_mark: All AWS resources are stopped. Closing.',
+              });
+            }
