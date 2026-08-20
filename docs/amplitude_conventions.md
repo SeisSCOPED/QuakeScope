@@ -30,33 +30,46 @@ amplitudes by a near-uniform **+0.033 ML** (station-to-station spread 0.010),
 so 2025 ML values are directly comparable after adding that constant. The point
 of the change is comparability with other ML catalogs, not accuracy.
 
-## Why the deconvolution window is short — and when it stops being safe
+## The deconvolution runs once per station, on the whole trace
 
-The response is removed on a 33 s window, while the default `pre_filt` low
-corner asks for a 5–10 s period. That is comfortable for Wood-Anderson and
-would be badly wrong for a displacement amplitude.
+The response is removed **once per station**, over whatever span the stream
+covers — typically a full day — and each pick's measurement window is then
+sliced out of the deconvolved trace.
 
-The reason is that the Wood-Anderson simulation is itself a sharp bandpass near
-1 Hz, so it discards the long-period deconvolution noise a short window
-contaminates. Measured: varying the padding 30× (10 s → 300 s) moves the
-Wood-Anderson amplitude by **0.077 ML total**. The same test on a 0.05–2 Hz
-displacement amplitude in the equivalent Cascadia code moved it by **up to 12×,
-≈1.8 Mw units**, worst at the lowest-amplitude stations — a magnitude-dependent
-distortion no linear calibration removes
-(Denolle-Lab/cascadia_obs_ensemble#19).
+It previously ran once per *pick*, on a 33 s window: roughly 6,700
+deconvolutions for a single busy station-day, each recomputing the same transfer
+function. Hoisting it is 5.3x faster, but the reason to do it is correctness.
 
-So: **do not reuse `AmplitudeExtractor` for a displacement or Mw amplitude
-without raising `slack`.** The rule is that the deconvolved window must span at
-least ~3 cycles of the longest period in the passband; 0.05 Hz needs ≥ 60–100 s,
-not 33 s. The constructor emits a `UserWarning` when a supplied `pre_filt`
-violates this, which is why the default `pre_filt` is `[0.1, 0.2, 40, 45]`
-rather than the `[0.02, 0.05, 40, 45]` used in 2025 — the old value asked for a
-50 s period from 33 s of data. Switching it changes amplitudes by
-**+0.0002 ML**, i.e. nothing; it removes an inconsistency rather than a bias.
+**A 33 s window was not a reliable measurement.** For the pick at
+2019-07-06T03:16:17 on `CI.CLC`, the old window returned 0.170 while every other
+window — symmetric 33 s, the same shape doubled, 300 s, 3600 s — converges on
+0.00045. The old asymmetric `-13/+20 s` window was ill-conditioned there, and
+shifting it by a fraction of a second moved the answer by 380x. About 5% of
+picks were affected. This is the same failure as
+[Denolle-Lab/cascadia_obs_ensemble#19](https://github.com/Denolle-Lab/cascadia_obs_ensemble/issues/19):
+a short deconvolution window is not a measurement.
 
-`slack` stays at 10 s deliberately. Raising it to 30 s removes about 0.03 ML of
-residual window scatter at roughly 2.2× the FFT cost per pick — not a trade
-worth making on a per-pick step at order 10^10 picks.
+Across 508 real picks the median ratio to the old implementation is 1.0001
+(+0.0001 ML), with 94% within 5%; the disagreements are the ill-conditioned
+cases, where the new value is the correct one.
+
+### Two consequences worth knowing
+
+**The taper is specified in seconds, not as a fraction.** obspy tapers 5% by
+default, which on a day-long trace is 72 minutes at each end and would silently
+null the amplitude of every pick near a day boundary. `taper_seconds` (default
+60) keeps it fixed regardless of trace length.
+
+**Picks inside a taper return NaN.** The taper drives the signal smoothly to
+zero, so a measurement taken there is wrong rather than imprecise — a pick at a
+trace edge measured 200x low before this. Missing is honest; suppressed is not.
+It costs about 0.1% of picks on a day-long trace, at the day boundaries and
+beside gaps.
+
+The `pre_filt` low corner no longer has to fit inside a short window. What is
+still checked is that the *measurement* window can hold the periods being
+measured: a 13 s window cannot represent a 50 s period however well the trace
+was deconvolved, and the constructor warns when it cannot.
 
 ## Known gaps
 
