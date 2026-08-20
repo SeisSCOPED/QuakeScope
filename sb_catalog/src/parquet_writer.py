@@ -257,6 +257,32 @@ class ParquetPickWriter:
         })
         buffers[key] = []
 
+    def checkpoint(self) -> list[dict]:
+        """Flush every buffered partition and report what is now durable.
+
+        Exists so a preempted shard does not start over. Picks are buffered
+        until :meth:`close`, so without this a Spot interruption twelve hours
+        into a shard loses twelve hours of work. Flushing periodically bounds
+        that loss to the checkpoint interval.
+
+        Returns the station-day-channel records covered by everything written so
+        far. The caller records them **after** this returns, never before: the
+        ordering is what stops a resume skipping station-days whose picks were
+        never actually written.
+        """
+        for key in list(self._picks):
+            self._write_partition("picks", key, PICK_SCHEMA, self._picks)
+        for key in list(self._classifies):
+            self._write_partition(
+                "classifies", key, CLASSIFY_SCHEMA, self._classifies
+            )
+        return list(self._records)
+
+    @property
+    def pending_records(self) -> int:
+        """Station-day-channels handled so far, flushed or not."""
+        return len(self._records)
+
     def close(self) -> dict:
         """Write everything still buffered, plus a manifest for the job."""
         for key in list(self._picks):

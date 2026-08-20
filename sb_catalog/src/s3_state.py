@@ -238,6 +238,34 @@ class S3CampaignState:
         self._put_json(key, record)          # unconditional: we won the stale race
         return True
 
+    def read_progress(self, shard_id: str) -> set[tuple]:
+        """Station-day-channels of this shard already written and recorded.
+
+        Returned as `(tid, yr, doy, cha)` tuples. A resumed shard skips these
+        instead of starting over, which is what keeps a preemption from costing
+        the whole shard - about twelve hours at the default grouping.
+        """
+        record = self._get_json(self._key("progress", f"{shard_id}.json"))
+        if not record:
+            return set()
+        return {
+            (r["tid"], r["yr"], r["doy"], r["cha"])
+            for r in record.get("records", [])
+        }
+
+    def write_progress(self, shard_id: str, records: list[dict]) -> None:
+        """Record durable progress mid-shard.
+
+        Only ever called *after* the Parquet flush that covers these records has
+        returned. Written the other way round, a resume would skip station-days
+        whose picks were never stored - the same ordering trap as `complete`.
+        """
+        self._put_json(
+            self._key("progress", f"{shard_id}.json"),
+            {"shard_id": shard_id, "worker": self.worker_id,
+             "updated": _utcnow(), "n": len(records), "records": records},
+        )
+
     def complete(self, shard_id: str, manifest: dict) -> str:
         """Mark a shard done. Written only after its Parquet is durable."""
         key = self._key("complete", f"{shard_id}.json")

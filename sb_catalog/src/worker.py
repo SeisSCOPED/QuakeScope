@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import Optional
 
 import pandas as pd
 
@@ -51,9 +52,11 @@ class S3StateAdapter:
     is not part of a v3 picking campaign.
     """
 
-    def __init__(self, state: S3CampaignState, stations: pd.DataFrame):
+    def __init__(self, state: S3CampaignState, stations: pd.DataFrame,
+                 done: Optional[set] = None):
         self.state = state
         self._stations = stations
+        self.done = done or set()
         self.picks_record: list[dict] = []
         self.db_uri = state.root          # provenance strings expect these
         self.database = None
@@ -65,14 +68,20 @@ class S3StateAdapter:
         return self.state.get_stations(extent=extent, network=network)
 
     def get_picks_record(self, station, day, channel, key: dict = {}):
-        """Always None: resume is per shard in v3, not per channel-day.
+        """Whether this station-day-channel is already done, from the shard's
+        checkpointed progress.
 
-        A shard only runs when it has no manifest, and a manifest is only written
-        after its Parquet is durable, so nothing inside a running shard has been
-        committed. Answering None avoids ~800 S3 HEAD requests per shard to learn
-        something the queue already knows.
+        Answered from a set loaded once when the shard was claimed, so this
+        costs nothing per call - the alternative would be ~800 S3 HEADs per
+        shard. An empty set (a shard starting fresh) makes every answer None and
+        the whole shard runs, which is the common case.
+
+        This is what makes a preemption cheap: without it a resumed shard redoes
+        every station-day from the beginning, about twelve hours at the default
+        grouping.
         """
-        return None
+        entry = (station, day.year, int(day.strftime("%j")), channel)
+        return {"_id": entry} if entry in self.done else None
 
     def write_run_data(self, **kwargs) -> str:
         run_id = str(uuid.uuid4())
@@ -127,7 +136,17 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
     from .s3_helper import S3DataSource
     from .utils import parse_year_day
 
-    db = S3StateAdapter(state, stations)
+    done = state.read_progress(shard["shard_id"])
+    if done:
+        logger.info(
+            f"Resuming {shard['shard_id']}: {len(done)} station-day-channels "
+            f"already written, skipping them"
+        )
+    db = S3StateAdapter(state, stations, done=done)
+
+    def _checkpoint(records: list[dict]) -> None:
+        # Called only after the Parquet flush covering these records returned.
+        state.write_progress(shard["shard_id"], records)
     # S3DataSource wants dates, not the "%Y.%j" strings the queue carries, and
     # treats `end` as exclusive - the planner writes it that way.
     s3 = S3DataSource(
@@ -148,6 +167,8 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         pick_queue_size=args.pick_queue_size,
         extent=None,
         classifier=False,          # the classifier is out for 2026
+        checkpoint_every=args.checkpoint_every,
+        on_checkpoint=_checkpoint,
         parquet_uri=args.parquet_uri or state.uri(),
         # One Parquet object per shard. Anything less specific collides inside a
         # (network, year, month) partition when a node runs many shards.
@@ -302,6 +323,12 @@ def main(argv=None):
                          "Set above the longest expected shard runtime.")
     ap.add_argument("--max-shards", default=0, type=int, help="Stop after N (0 = drain)")
     ap.add_argument("--max-failures", default=0, type=int, help="Stop after N failures")
+    ap.add_argument("--checkpoint-every", default=40, type=int,
+                    help="Flush Parquet and record progress every N "
+                         "station-day-channels. Bounds what a Spot preemption "
+                         "costs: at the default 40 stations x 20 days a shard is "
+                         "~12 h, so without this a preemption discards all of "
+                         "it. 0 disables checkpointing.")
     ap.add_argument("--profile", action="store_true",
                     help="Report a per-stage timing breakdown after each shard: "
                          "S3 list/head/get, mSEED parse, inference, both amplitude "

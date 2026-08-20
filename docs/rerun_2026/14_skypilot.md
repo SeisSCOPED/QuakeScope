@@ -63,7 +63,13 @@ Three mechanisms, in order of who catches what:
 2. **SIGTERM release.** Preemption gives about two minutes' notice. The worker
    releases its in-flight claim and exits, so that shard is available again
    immediately rather than after the lease.
-3. **Lease expiry.** For a node killed outright with no warning, a claim older
+3. **Checkpointing.** Picks are buffered until the job ends, so without this a
+   preemption twelve hours into a shard discards twelve hours of work. The
+   worker flushes Parquet and records progress every `--checkpoint-every`
+   station-day-channels (default 40), and a resumed shard skips what is already
+   written. The order is fixed and matters: flush first, record second - the
+   reverse would let a resume skip station-days whose picks were never stored.
+4. **Lease expiry.** For a node killed outright with no warning, a claim older
    than `--lease-hours` (default 6) with no manifest is reclaimable. Set this
    above the longest expected shard runtime, or live shards will be stolen and
    done twice.

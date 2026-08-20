@@ -5,7 +5,7 @@ import functools
 import logging
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import obspy
@@ -209,6 +209,8 @@ class S3MongoSBBridge:
         classifier: Optional[bool] = False,
         parquet_uri: Optional[str] = None,
         job_id: Optional[str] = None,
+        checkpoint_every: int = 0,
+        on_checkpoint: Optional[Any] = None,
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -217,11 +219,21 @@ class S3MongoSBBridge:
         # docs/rerun_2026/12_output_storage.md.
         # Batch always supplies the parameter, so an empty string is how "no
         # Parquet output" arrives from a job definition.
-        self.parquet_uri = parquet_uri
+        # `or None` matters: Batch always supplies the parameter, so "no Parquet
+        # output" arrives as an empty string, and the writer would otherwise be
+        # constructed with an empty root.
+        self.parquet_uri = parquet_uri or None
         # Names the Parquet object. Without it ParquetPickWriter falls back to
         # HOSTNAME, and every shard a node runs writes the SAME key inside a
         # (network, year, month) partition - silently overwriting the last.
-        self.job_id = job_id or None
+        self.job_id = job_id
+        # Flush and record progress every N station-day-channels, so a Spot
+        # preemption costs at most that much rather than the whole shard.
+        # 0 disables it, which is the right default for the database path where
+        # every station-day is committed as it completes anyway.
+        self.checkpoint_every = int(checkpoint_every or 0)
+        self.on_checkpoint = on_checkpoint
+        self._next_checkpoint = self.checkpoint_every
         self._parquet = None
 
         # model preparation
@@ -593,11 +605,30 @@ class S3MongoSBBridge:
             )
 
         if writer is not None:
-            # In Parquet mode the picks are buffered until the job ends, so
-            # committing picks_record here would let a Spot interruption strand
-            # station-days that are marked done but were never written. The
-            # records are held with the picks and committed together once the
-            # flush has succeeded; see _finalise_parquet.
+            # In Parquet mode the picks are buffered, so committing picks_record
+            # here would let a Spot interruption strand station-days that are
+            # marked done but were never written. Records are committed only
+            # after a flush succeeds - either at a checkpoint below, or in
+            # _finalise_parquet at the end of the job.
+            #
+            # Checkpointing exists so a preemption does not discard the whole
+            # shard: at 40 stations x 20 days a shard runs about twelve hours,
+            # and without this every one of those hours is lost. Flush first,
+            # then report, never the reverse.
+            if (
+                self.checkpoint_every
+                and self.on_checkpoint is not None
+                and writer.pending_records >= self._next_checkpoint
+            ):
+                records = writer.checkpoint()
+                self.on_checkpoint(records)
+                self._next_checkpoint = (
+                    writer.pending_records + self.checkpoint_every
+                )
+                logger.info(
+                    f"Checkpointed {len(records)} station-day-channels; a "
+                    f"preemption now costs at most {self.checkpoint_every}"
+                )
             return
 
         self.db.insert_many_ignore_duplicates(
