@@ -1,6 +1,6 @@
 [workspace]
 name = "quakescope"
-version = "2.0.0"
+version = "3.0.0"
 description = "Machine learning seismic phase picking at cloud scale"
 authors = ["Yiyu Ni <niyiyu@uw.edu>", "Jannes Munchmeyer <munchmej@univ-grenoble-alpes.fr>", "Marine Denolle <mdenolle@uw.edu>"]
 channels = ["conda-forge", "pytorch", "nvidia"]
@@ -42,6 +42,11 @@ platforms = ["linux-64", "win-64"]
 pytorch = ">=2.1"
 pytorch-cuda = "==11.8"
 
+[feature.deploy.pypi-dependencies]
+# SkyPilot provisions and recovers the Spot workers. Pinned to the AWS extra;
+# the jobs controller is what gives managed jobs their preemption recovery.
+skypilot = { version = ">=0.10", extras = ["aws"] }
+
 [feature.dev.dependencies]
 pytest = ">=7.0"
 black = ">=23.0"
@@ -52,6 +57,11 @@ tutorials = ["cpu"]
 tutorials-gpu = ["gpu"]
 cloud = ["cpu"]
 dev = ["cpu", "dev"]
+deploy = ["deploy"]
+
+[feature.deploy.tasks]
+plan = "python -m sb_catalog.src.shard_planner"
+progress = "python -c \"import sys;from sb_catalog.src.s3_state import S3CampaignState;print(S3CampaignState(sys.argv[1]).progress())\""
 
 [tasks]
 watch = "python scripts/aws_watch.py"

@@ -1,0 +1,45 @@
+# Plan a campaign's work queue. Cheap, short-lived, on-demand - this writes
+# shards.jsonl and exits, and must finish before any worker starts.
+#
+#   sky launch -c qs-plan skypilot/plan.yaml --down \
+#       --env CAMPAIGN=s3://quakescope-picks-2026/scedc \
+#       --env START=2019.001 --env END=2019.365 --env NETWORK=CI \
+#       --env STATIONS=s3://quakescope-picks-2026/stations.parquet
+
+name: quakescope-plan
+
+resources:
+  infra: aws/us-west-2
+  cpus: 2+
+  memory: 8+
+  use_spot: false        # minutes of work; not worth a preemption
+
+envs:
+  # Read at import by s3_helper. Empty is correct for campaigns on the
+  # public SCEDC/NCEDC buckets; set both for the EarthScope archive.
+  EARTHSCOPE_S3_ACCESS_POINT: ""
+  ES_OAUTH2__REFRESH_TOKEN: ""
+  CAMPAIGN: ""
+  START: ""
+  END: ""
+  NETWORK: ""
+  EXTENT: ""
+  STATIONS: ""
+
+workdir:
+  url: https://github.com/SeisSCOPED/QuakeScope.git
+  ref: main
+
+setup: |
+  curl -fsSL https://pixi.sh/install.sh | sh
+  export PATH="$HOME/.pixi/bin:$PATH"
+  cd ~/sky_workdir && pixi install --environment cloud
+
+run: |
+  export PATH="$HOME/.pixi/bin:$PATH"
+  cd ~/sky_workdir
+  ARGS="--campaign ${CAMPAIGN} --start ${START} --end ${END}"
+  [ -n "${NETWORK}" ]  && ARGS="${ARGS} --network ${NETWORK}"
+  [ -n "${EXTENT}" ]   && ARGS="${ARGS} --extent ${EXTENT}"
+  [ -n "${STATIONS}" ] && ARGS="${ARGS} --stations ${STATIONS}"
+  pixi run -e cloud python -m sb_catalog.src.shard_planner ${ARGS}

@@ -1,0 +1,19 @@
+# Copy to ~/.sky/config.yaml. Controller settings are NOT read from a task or
+# project YAML - SkyPilot only honours them here.
+#
+# The reason this file exists: `sky down --all` does not terminate the managed
+# jobs controller. It reports success and leaves an on-demand instance running,
+# which on a Spot campaign is the most expensive thing to forget. Observed
+# directly - after cancelling every job and running `sky down --all`, an
+# on-demand m6i.xlarge controller was still up at $0.192/hour.
+
+jobs:
+  controller:
+    autostop:
+      # Terminate, do not stop. `down: false` (the default) leaves a stopped
+      # instance that still bills its EBS volume and still shows up as a leak.
+      down: true
+      idle_minutes: 15
+      # Wait for both jobs and SSH sessions to be idle, so a controller is never
+      # torn down while a campaign is still submitting to it.
+      wait_for: jobs_and_ssh
