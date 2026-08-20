@@ -37,11 +37,6 @@ keywords:
   - aws
   - containerization
 
-identifiers:
-  - description: "Zenodo archive DOI (primary)"
-    type: doi
-    value: "10.5281/zenodo.XXXXXXX"  # To be updated after Zenodo upload
-
 date-released: 2026-08-18
 version: "3.0.0"
 

@@ -18,7 +18,8 @@ class FakeS3:
         self.conditional_puts = 0
         self.rejected = 0
 
-    def put_object(self, Bucket, Key, Body, ContentType=None, IfNoneMatch=None):
+    def put_object(self, Bucket, Key, Body, ContentType=None, IfNoneMatch=None,
+                   IfMatch=None):
         with self.lock:
             if IfNoneMatch is not None:
                 self.conditional_puts += 1
@@ -27,15 +28,27 @@ class FakeS3:
                 if Key in self.obj:
                     self.rejected += 1
                     raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
+            if IfMatch is not None:
+                # Compare-and-swap: succeed only if the object is unchanged.
+                self.conditional_puts += 1
+                if self._etag(Key) != IfMatch:
+                    self.rejected += 1
+                    raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
             self.obj[Key] = Body if isinstance(Body, bytes) else Body.encode()
             return {}
+
+    def _etag(self, Key):
+        import hashlib
+        if Key not in self.obj:
+            return None
+        return '"%s"' % hashlib.md5(self.obj[Key]).hexdigest()
 
     def get_object(self, Bucket, Key):
         with self.lock:
             if Key not in self.obj:
                 raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
             import io
-            return {"Body": io.BytesIO(self.obj[Key])}
+            return {"Body": io.BytesIO(self.obj[Key]), "ETag": self._etag(Key)}
 
     def head_object(self, Bucket, Key):
         with self.lock:
@@ -105,6 +118,29 @@ def test_claim_protocol():
     fake.obj[key] = json.dumps(stale).encode()
     print("PASS  stale claim reclaimed after preemption" if other.claim("s0007")
           else "FAIL: stale claim not reclaimed")
+
+    # ---- 4b. many workers see the same stale claim at once ----------------------
+    # Copilot caught this: the takeover used to be an unconditional PUT, so every
+    # worker that observed staleness "won" and they all ran the same shard.
+    key = st._key("claims", "s0010.json")
+    d = json.loads(fake.obj[key])
+    d["claimed"] = (datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(hours=9)).isoformat()
+    fake.obj[key] = json.dumps(d).encode()
+
+    winners = []
+    def steal(w):
+        s = S3CampaignState("s3://bkt/campaign", client=fake)
+        s.worker_id = f"thief{w}"
+        if s.claim("s0010"):
+            with lock:
+                winners.append(w)
+    ts = [threading.Thread(target=steal, args=(i,)) for i in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    print(f"PASS  8 workers raced one stale claim -> {len(winners)} winner(s)"
+          if len(winners) == 1 else
+          f"FAIL: {len(winners)} workers all took the same stale shard")
+    assert len(winners) == 1
 
     # ---- 5. stale claim WITH a manifest is finished work, not reclaimable --------
     st.complete("s0008", {"picks": 1234})

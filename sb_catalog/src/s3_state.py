@@ -120,11 +120,45 @@ class S3CampaignState:
             raise
 
     def _get_json(self, key: str) -> Optional[dict]:
+        obj, _ = self._get_json_etag(key)
+        return obj
+
+    def _get_json_etag(self, key: str) -> tuple[Optional[dict], Optional[str]]:
+        """The object and its ETag, for compare-and-swap on an existing key."""
         try:
-            return json.loads(self.s3.get_object(Bucket=self.bucket, Key=key)["Body"].read())
+            r = self.s3.get_object(Bucket=self.bucket, Key=key)
+            return json.loads(r["Body"].read()), r.get("ETag")
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-                return None
+                return None, None
+            raise
+
+    def _replace_json(self, key: str, obj: dict, etag: str) -> bool:
+        """Overwrite a key only if it still holds `etag`.
+
+        The compare-and-swap half of the claim protocol. Taking over a stale
+        claim with a plain PUT looks safe but is not: two workers that observe
+        the same stale claim at the same moment would both succeed, both believe
+        they own the shard, and both write the same Parquet key - one silently
+        overwriting the other. IfMatch makes the takeover a single winner.
+        """
+        try:
+            self.s3.put_object(
+                Bucket=self.bucket, Key=key,
+                Body=json.dumps(obj, indent=2).encode(),
+                ContentType="application/json",
+                IfMatch=etag,
+            )
+            return True
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("PreconditionFailed", "ConditionalRequestConflict"):
+                return False        # someone else took it first
+            if code == "NotImplemented":
+                raise RuntimeError(
+                    "This S3 endpoint does not support conditional overwrite "
+                    "(IfMatch), so a stale claim cannot be taken over safely."
+                ) from exc
             raise
 
     def _exists(self, key: str) -> bool:
@@ -218,8 +252,10 @@ class S3CampaignState:
 
         # A claim exists. It is only ours to take if it went stale without ever
         # producing a manifest - which is what a Spot preemption leaves behind.
-        existing = self._get_json(key)
-        if existing is None:
+        # The ETag is captured here so the takeover below can be a
+        # compare-and-swap rather than a blind overwrite.
+        existing, etag = self._get_json_etag(key)
+        if existing is None or etag is None:
             return False
         if self.is_complete(shard_id):
             return False
@@ -236,7 +272,13 @@ class S3CampaignState:
         )
         record["reclaimed_from"] = existing.get("worker")
         record["reclaimed_after_hours"] = round(age_h, 2)
-        self._put_json(key, record)          # unconditional: we won the stale race
+        # Compare-and-swap, not a plain PUT. Two workers can observe the same
+        # stale claim in the same instant; without IfMatch both would succeed and
+        # both would run the shard, writing the same Parquet key. Whoever loses
+        # the swap simply moves to the next shard.
+        if not self._replace_json(key, record, etag):
+            logger.info(f"Lost the race to reclaim {shard_id}; leaving it")
+            return False
         return True
 
     def read_progress(self, shard_id: str) -> set[tuple]:
