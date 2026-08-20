@@ -1,0 +1,171 @@
+cff-version: 1.2.0
+title: "QuakeScope: Machine Learning-based Seismic Phase Picking at Cloud Scale"
+abstract: >
+  A cloud-native workflow for automated seismic phase picking and earthquake
+  detection using deep learning (PhaseNet v7), deployed on AWS with containerized
+  models, elastic computing (Batch/Fargate), and managed database (DocumentDB).
+  Includes tools for model validation, cloud monitoring, and earthquake association.
+
+authors:
+  - family-names: Ni
+    given-names: Yiyu
+    affiliation: "Department of Earth and Space Sciences, University of Washington"
+    email: niyiyu@uw.edu
+    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+
+  - family-names: Munchmeyer
+    given-names: Jannes
+    affiliation: "Institut des Sciences de la Terre, Université Grenoble Alpes"
+    email: munchmej@univ-grenoble-alpes.fr
+    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+
+  - family-names: Denolle
+    given-names: Marine A.
+    affiliation: "Department of Earth and Space Sciences, University of Washington"
+    email: mdenolle@uw.edu
+    orcid: "https://orcid.org/0000-0002-5146-5518"
+
+license: "MIT"
+repository-code: "https://github.com/SeisSCOPED/QuakeScope"
+keywords:
+  - seismology
+  - machine-learning
+  - deep-learning
+  - phase-picking
+  - earthquake-detection
+  - cloud-computing
+  - aws
+  - containerization
+
+identifiers:
+  - description: "Zenodo archive DOI (primary)"
+    type: doi
+    value: "10.5281/zenodo.XXXXXXX"  # To be updated after Zenodo upload
+
+date-released: 2026-01-01
+version: "2.0.0"
+
+references:
+  - authors:
+      - family-names: Ni
+        given-names: Yiyu
+      - family-names: Denolle
+        given-names: Marine A.
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Wang
+        given-names: Yiyu
+      - family-names: Feng
+        given-names: Kuan-Fu
+      - family-names: Suarez
+        given-names: Carlos G. J.
+      - family-names: Thomas
+        given-names: Amanda M.
+      - family-names: Trabant
+        given-names: Chad
+      - family-names: Hamilton
+        given-names: Aaron
+      - family-names: Mencin
+        given-names: David
+    title: "A Review of Cloud Computing and Storage in Seismology"
+    journal: "Geophysical Journal International"
+    year: 2025
+    volume: "243"
+    issue: "1"
+    pages: "ggaf322"
+    doi: "10.1093/gji/ggaf322"
+    type: journal-article
+
+  - authors:
+      - family-names: Ni
+        given-names: Yiyu
+      - family-names: Denolle
+        given-names: Marine A.
+      - family-names: Thomas
+        given-names: Amanda M.
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Hamilton
+        given-names: Aaron
+      - family-names: Wang
+        given-names: Yiyu
+      - family-names: Bachelot
+        given-names: Loïc
+      - family-names: Trabant
+        given-names: Chad
+      - family-names: Mencin
+        given-names: David
+    title: "A Global-scale Database of Seismic Phases from Cloud-based Picking at Petabyte Scale"
+    journal: "Seismica"
+    year: 2025
+    volume: "4"
+    issue: "2"
+    doi: "10.26443/seismica.v4i2.1738"
+    type: journal-article
+
+  - authors:
+      - family-names: Zhu
+        given-names: Weiqiang
+      - family-names: Beroza
+        given-names: Gregory C.
+    title: "PhaseNet: a deep-neural-network-based seismic arrival time picking method"
+    journal: "Geophysical Journal International"
+    year: 2019
+    volume: 216
+    issue: "1"
+    pages: "261--273"
+    doi: "10.1093/gji/ggy423"
+    type: journal-article
+
+  - authors:
+      - family-names: Woollam
+        given-names: Jack
+      - family-names: Münchmeyer
+        given-names: Jannes
+      - family-names: Tilmann
+        given-names: Frederik
+      - family-names: Rietbrock
+        given-names: Andreas
+      - family-names: Lange
+        given-names: Dietrich
+      - family-names: Bornstein
+        given-names: Thomas
+      - family-names: Diehl
+        given-names: Tobias
+      - family-names: Giunchi
+        given-names: Carlo
+      - family-names: Haslinger
+        given-names: Florian
+      - family-names: Jozinović
+        given-names: Dario
+      - family-names: Michelini
+        given-names: Alberto
+      - family-names: Saul
+        given-names: Joachim
+      - family-names: Soto
+        given-names: Hugo
+    title: "SeisBench—A Toolbox for Machine Learning in Seismology"
+    journal: "Seismological Research Letters"
+    year: 2022
+    volume: 93
+    issue: 3
+    pages: "1695–1709"
+    doi: "10.1785/0220210324"
+    type: journal-article
+
+related-resources:
+  - description: "PhaseNet on GitHub"
+    type: repository
+    url: "https://github.com/coreseismic/PhaseNet"
+
+  - description: "SeisBench documentation"
+    type: documentation
+    url: "https://seisbench.readthedocs.io/"
+
+  - description: "PyOcto earthquake associator"
+    type: repository
+    url: "https://github.com/aur-archive/pyocto"
+
+  - description: "Southern California Earthquake Data Center (SCEDC)"
+    type: repository
+    url: "https://scedc.caltech.edu"

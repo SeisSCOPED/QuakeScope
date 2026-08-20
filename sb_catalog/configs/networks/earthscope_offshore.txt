@@ -1,0 +1,33 @@
+# EarthScope networks that are majority ocean-bottom.
+# Classified from station elevation: at least three stations deeper than
+# 50 m below sea level and at least half the network submarine, surveyed
+# across the Cascadia, California, Alaska, Atlantic, Gulf and Hawaii
+# margins on 2026-08. Pick these with an ocean-bottom weight.
+#
+# 26 networks
+1V
+2D
+2F
+3A
+7A
+7D
+7K
+7S
+9A
+9R
+NV
+OO
+X6
+X9
+XJ
+XO
+XZ
+YN
+YO
+YR
+YS
+Z5
+Z6
+ZF
+ZS
+ZU

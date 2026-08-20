@@ -1,11 +1,31 @@
 # 02 — Installing the new weights and building the container
 
-**Where the best weights come from** (verified July 2026):
+> **The classifier is deferred for the 2026 campaign** — see the
+> [runbook](README.md). This page stays accurate for its weights and for the
+> container build; just do not pass `--classifier` when submitting.
 
-- **QuakeXNet**: `sb_catalog/models/v3/quakexnet/base.pt.v1` in this repo is
-  already the latest version — byte-identical to the `base.pt.v3` published
-  in `Akashkharita/pnw_seismic_event_detection` (Dec 2025). Nothing to do
-  unless a newer retrain lands.
+**Where the best weights come from** (verified August 2026):
+
+- **QuakeXNet**: `sb_catalog/models/v3/quakexnet/base.pt.v1` is the current model —
+  SHA-256 verified against `base.pt.v3` in
+  `Akashkharita/pnw_seismic_event_detection`. It has been **re-saved with CPU
+  storage**, because as published it carries CUDA tags and cannot load under
+  the image's CPU-only PyTorch. Tensor values are unchanged.
+- **Phase picker**: the champion of the `Denolle-Lab/phasenet-retrain`
+  project is experiment **v7** (jma_wc fine-tune; P-MAE 0.340 s, recall
+  0.853, MCC 0.760 — but note it trades recall against its own parent, see
+  [`../phasenet_v7_model_description.md`](../phasenet_v7_model_description.md)).
+  **Already converted and committed** as
+  `sb_catalog/models/v3/phasenet/quakescope2026.{pt,json}.v1`, from
+  `phasenet_jma_wc_ft_v7.pt` at the root of the phasenet-retrain repo. To
+  regenerate after a retrain, convert it with
+  [sb_catalog/models/v3/phasenet/convert_checkpoint.py](../../sb_catalog/models/v3/phasenet/convert_checkpoint.py)
+  and commit the resulting pair here (step 2 below).
+
+Two models get new weights:
+
+1. **QuakeXNet** — the event classifier (`sb_catalog/src/classifier.py`).
+2. **A SeisBench phase picker** (PhaseNet-family) — does the P/S picking.
 
 Both are baked into the Docker image at build time, and the image is built
 **automatically by GitHub Actions** every time you push to `main`
@@ -34,7 +54,7 @@ Two cases:
 - **The new weights are published in the SeisBench repository** (i.e.
   `sbm.PhaseNet.from_pretrained("<name>")` works on your laptop): nothing to
   add to the repo. You will just pass `--weight <name>` at submission time.
-  Caveat: every container downloads the weight at startup, so saving it into
+  Caveat: every container downloads the weight at startup, so baking it into
   the image (next bullet) is still kinder to the SeisBench servers when you
   run hundreds of jobs.
 - **The weights are files you were handed** (the likely case): put them in
@@ -46,7 +66,8 @@ Two cases:
   ```
 
   (If no `.json` metadata file was provided, create one containing the same
-  metadata structure as other SeisBench PhaseNet weights export both files with
+  metadata structure as other SeisBench PhaseNet weights — ask the student who
+  trained it to export both files with
   `model.save(path)` / or verify with `sbm.PhaseNet.load(...)`.)
 
   The Dockerfile copies this folder into `/root/.seisbench/models/v3/phasenet/`

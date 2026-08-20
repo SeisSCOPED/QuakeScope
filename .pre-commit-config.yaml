@@ -3,7 +3,11 @@ repos:
   rev: v4.3.0
   hooks:
   - id: check-added-large-files
-    args: ['--maxkb=1000']
+    # Model weights live in sb_catalog/models/v3/ because the Dockerfile bakes
+    # them into the image. The largest today is
+    # phasenet/quakescope2026.pt.v1 at ~4.2 MB, well over the default 1 MB cap,
+    # so this raises the limit to match what the repo actually ships.
+    args: ['--maxkb=5000']
   - id: check-toml
   - id: check-json
 # Hook shows incompatibility with ipynb files

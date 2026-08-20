@@ -1,0 +1,47 @@
+name: Publish reports to GitHub Pages
+
+# The reports are pre-rendered HTML committed under reports/. This workflow
+# only publishes them, so it needs no Python, no data access, and no model
+# weights - re-running a notebook is a deliberate local act, not something CI
+# does on every push.
+on:
+  push:
+    branches:
+      - main
+      - rerun-2026-prep
+    paths:
+      - "reports/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it midway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload reports directory
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

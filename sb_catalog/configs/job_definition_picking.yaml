@@ -3,6 +3,10 @@ type: container
 parameters: # Defaults, overwritten at submission time
   model: PhaseNet
   weight: instance
+  # Empty means "write picks to the database". Set to an S3 prefix to emit
+  # Parquet instead - see docs/rerun_2026/12_output_storage.md.
+  parquet_uri: ''
+
 containerProperties:
   image: ghcr.io/seisscoped/quakescope:latest
   jobRoleArn: '' # [REQUIRED] The Amazon Resource Name (ARN) of the IAM role that the container can assume for AWS permissions.
@@ -23,7 +27,8 @@ containerProperties:
   - Ref::model
   - "--weight"
   - Ref::weight
-  - "--classifier"
+  - "--parquet_uri"
+  - Ref::parquet_uri
   - "--debug"
   resourceRequirements: # The type and amount of resources to assign to a container.
   - value: '8'

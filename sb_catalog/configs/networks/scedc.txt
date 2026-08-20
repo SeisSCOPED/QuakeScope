@@ -1,0 +1,5 @@
+# SCEDC networks - onshore southern California.
+# Read from the scedc-pds bucket.
+#
+# 1 networks
+CI

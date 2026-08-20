@@ -1,9 +1,27 @@
 # QuakeScope 2026 re-run — master runbook
 
-Goal: re-run the QuakeScope picking + classification workflow with **new
-QuakeXNet weights** and **new SeisBench phase-picker weights** over three
-archives — **NCEDC**, **SCEDC**, and **EarthScope S3** — using AWS Batch on
-Fargate Spot, writing picks to DocumentDB.
+Goal: re-run the QuakeScope **picking** workflow with the **v7 phase-picker
+weights** (`quakescope2026`) over three archives — **NCEDC**, **SCEDC**, and
+**EarthScope S3** — using AWS Batch on Fargate Spot, writing picks to
+DocumentDB.
+
+> **Scope decision, 2026-08-17: the classifier is deferred for this run.**
+> Submit picking jobs **without** `--classifier`. QuakeXNet stays in the image
+> and everything below about its weights remains accurate, but it will not
+> write labels into the 2026 catalog.
+>
+> The reason is generalization, not a defect. The model was trained on Pacific
+> Northwest data, and out-of-region testing showed it is strongly dependent on
+> where the arrival sits in the analysis window — agreement on a fixed set of
+> Alaska events runs from 78% down to 16% on window placement alone, and the
+> pipeline currently slides windows blindly with a 50 s stride. That is fixable
+> and worth fixing, but not before a campaign. See
+> [`../quakexnet_generalization_plan.md`](../quakexnet_generalization_plan.md)
+> for the measurements and the plan, and
+> [Akashkharita/pnw_seismic_event_detection#2](https://github.com/Akashkharita/pnw_seismic_event_detection/issues/2)
+> for the upstream discussion.
+>
+> Picking is unaffected and proceeds as planned.
 
 This folder is written for someone returning to AWS after a long break. Follow
 the checklist top to bottom; each step links to a detailed guide. The
@@ -73,7 +91,7 @@ flowchart LR
 
 ### Phase B — New weights + container (½ day) → [02_weights_and_container.md](02_weights_and_container.md)
 
-- [ ] B1. Drop the new QuakeXNet weights into `sb_catalog/models/quakexnet/` (replace `base.pt.v1`).
+- [ ] B1. Drop the new QuakeXNet weights into `sb_catalog/models/v3/quakexnet/` (replace `base.pt.v1`).
 - [ ] B2. Drop the new phase-picker weights into `sb_catalog/models/v3/phasenet/` as `<name>.pt.v1` + `<name>.json.v1` — all of them, if running several pickers (OBS / general / California): see [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
 - [ ] B3. Push to `main`; the GitHub Action builds `ghcr.io/seisscoped/quakescope`.
 - [ ] B4. (Recommended) Test the image locally on one station-day.
@@ -96,10 +114,16 @@ flowchart LR
 
 ### Phase E — Smoke test, then scale (1 day + campaign) → [05_submitting_jobs.md](05_submitting_jobs.md)
 
+- [ ] E0. Run the **tier-2 smoke test** — three stations, one day, checked against
+      values measured locally → [10_tier2_smoke_test.md](10_tier2_smoke_test.md).
+      Do this before E2: it separates "the infrastructure is wrong" from "the
+      models are wrong", and it is an hour rather than a campaign.
 - [ ] E1. Get a fresh **EarthScope token** (needed only for the EarthScope archive).
 - [ ] E2. Submit **one small test job** (a few stations, a few days, one per archive).
 - [ ] E3. Verify picks arrive in the new database and `sb_runs` records the new weight names (notebook 4).
 - [ ] E4. Submit the real campaigns, archive by archive, year block by year block.
+      The five-campaign split, network lists, weights and order are in
+      [11_launch_plan.md](11_launch_plan.md).
 - [ ] E5. Running different weights on different station sets (OBS picker, general picker, California picker)? Partition the networks and submit one campaign per weight → [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
 - [ ] E6. Stakeholder run with the original PhaseNet on a defined station set (western states), isolated from the science run → [09_western_states_run.md](09_western_states_run.md).
 
@@ -108,6 +132,23 @@ flowchart LR
 - [ ] F1. Daily: Batch console (running/failed counts), CloudWatch logs for failures, pick counts in the DB.
 - [ ] F2. Weekly: Cost Explorer.
 - [ ] F3. When done: stop the EC2 controller, scale the compute environment to 0, snapshot the database. Troubleshooting reference: [07_troubleshooting.md](07_troubleshooting.md).
+
+> **Output format is under review.** At the launch's measured scale — about
+> 52 million station-days and order 10^10 picks — DocumentDB storage is roughly
+> 6.5x larger than Parquet for the same picks, and the unique index on `picks`
+> becomes the throughput bottleneck. See
+> [12_output_storage.md](12_output_storage.md) for the measurements and the
+> recommended S3/Parquet layout, and
+> [13_parquet_workflow.md](13_parquet_workflow.md) for running the campaigns
+> against it. Note the picking job definition **no longer hardcodes**
+> `--classifier` and must be re-registered.
+
+> **Amplitudes changed convention.** The Wood-Anderson constants were a mix of
+> the Richter and IASPEI standards and are now IASPEI throughout, which shifts
+> ML by a near-uniform +0.033 relative to the 2025 catalog. See
+> [../amplitude_conventions.md](../amplitude_conventions.md) for what
+> `amplitude` and `raw_amplitude` mean and why the deconvolution window is
+> short — it is safe for Wood-Anderson and would not be for a Mw amplitude.
 
 ---
 

@@ -1,0 +1,11 @@
+# NCEDC networks - onshore northern California and Nevada.
+# Read from the ncedc-pds bucket.
+#
+# 7 networks
+BG
+BK
+BP
+NC
+PG
+UL
+WR

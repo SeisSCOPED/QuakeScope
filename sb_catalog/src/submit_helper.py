@@ -48,6 +48,7 @@ class SubmitHelper:
         day_group_size: int = 20,
         model: str = "PhaseNet",
         weight: str = "instance",
+        parquet_uri: str = "",
         station_ids: list = None,
     ):
         self.start = start
@@ -62,12 +63,14 @@ class SubmitHelper:
         self.day_group_size = day_group_size
         self.model = model
         self.weight = weight
+        self.parquet_uri = parquet_uri
         self.client = boto3.client("batch", config=Config(region_name=region))
         self.shared_parameters = {
             "db_uri": self.db.db_uri,
             "database": self.db.database.name,
             "model": self.model,
             "weight": self.weight,
+            "parquet_uri": self.parquet_uri,
         }
 
         self._environ_kv = [{"name": k, "value": v} for k, v in self.environ.items()]
@@ -253,6 +256,13 @@ def main():
         "--database", type=str, default="tutorial", help="MongoDB database name."
     )
     parser.add_argument(
+        "--parquet_uri",
+        type=str,
+        default="",
+        help="S3 prefix for Parquet output, e.g. s3://bucket/campaign. Empty "
+        "writes picks into the database instead.",
+    )
+    parser.add_argument(
         "--region", type=str, default="us-east-2", help="Working region on AWS."
     )
     parser.add_argument(
@@ -311,6 +321,7 @@ def main():
         environ=environ,
         model=args.model,
         weight=args.weight,
+        parquet_uri=args.parquet_uri,
         station_ids=station_ids,
     )
     helper.submit_jobs(args.command)

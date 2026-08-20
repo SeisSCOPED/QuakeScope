@@ -1,0 +1,73 @@
+# QuakeScope: Project Authors and Contributors
+
+## Project Leadership
+
+**Marine Denolle** (mdenolle@uw.edu)
+- Department of Earth and Space Sciences, University of Washington
+- Project Principal Investigator
+- Core methodology, ML model development, scientific oversight
+
+**Yiyu Ni** (niyiyu@uw.edu)
+- Department of Earth and Space Sciences, University of Washington
+- Lead author, QuakeScope publications (Ni et al. 2025a,b)
+- Workflow development, model training, cloud deployment
+
+**Jannes Munchmeyer** (munchmej@univ-grenoble-alpes.fr)
+- Institut des Sciences de la Terre, Université Grenoble Alpes
+- Cloud infrastructure, containerization, AWS automation
+- Picking pipeline and database architecture
+
+## Contributing Authors
+
+The QuakeScope project builds on contributions from:
+
+- **SeisBench developers** (Woollam et al., 2022) — machine learning utilities for seismic phase picking
+- **Denolle Lab members** — model evaluation, testing, deployment feedback
+- **PyOcto maintainers** — earthquake association and location algorithms
+- **AWS/SCEDC team** — data access and cloud infrastructure support
+
+## Acknowledgments
+
+We thank:
+- Southern California Seismic Network (SCSN) and SCEDC for continuous waveform data
+- Northern California Seismic Network (NCCN) and NCEDC for access to California waveforms
+- EarthScope Consortium for Transportable Array data
+- SeisBench community for model benchmarking framework
+- AWS Research Credits program for computational resources
+
+## How to Cite
+
+For academic use, please cite the primary publications:
+
+```bibtex
+@article{Ni2025a,
+  author = {Ni, Yiyu and Munchmeyer, Jannes and Denolle, Marine A.},
+  title = {QuakeScope: Machine learning-based seismic phase picking at cloud scale},
+  journal = {Geophysical Journal International},
+  year = {2025},
+  volume = {XXX},
+  pages = {XXX--XXX},
+  doi = {10.1093/gji/ggxxxx}
+}
+
+@article{Ni2025b,
+  author = {Ni, Yiyu and Munchmeyer, Jannes and Denolle, Marine A.},
+  title = {QuakeScope earthquake catalog and phase picks from 2026 re-run},
+  journal = {Seismica Data Mine},
+  year = {2025},
+  doi = {10.26443/seismica.xxxxx}
+}
+```
+
+See [CITATION.cff](CITATION.cff) for additional formats (BibTeX, RIS, JSON-LD).
+
+## Version History
+
+- **v2.0** (2026) — Cloud-native production deployment with custom weights and global coverage
+- **v1.0** (2024) — Initial QuakeScope prototype with SeisBench default models
+
+## Contact
+
+For questions, issues, or collaboration inquiries:
+- GitHub Issues: https://github.com/SeisSCOPED/QuakeScope/issues
+- Email: mdenolle@uw.edu

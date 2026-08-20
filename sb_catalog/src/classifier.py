@@ -234,13 +234,73 @@ class QuakeXNet(WaveformModel):
     ) -> torch.Tensor:
         return torch.softmax(batch, dim=-1)
 
+    def _predictions_to_stream(self, prediction):
+        """Guard the single-window case in SeisBench >= 0.11.
+
+        The base implementation squeezes each (samples, channel) slice before
+        trimming NaN edges. A stream short enough to yield exactly one
+        prediction window leaves the sample axis with length one, so the
+        squeeze collapses it to a 0-d array and ``get_edge_indices`` raises
+        ``ValueError: array must be 1-dimensional``. Day-long production
+        streams are unaffected; short windows - smoke tests, single-event
+        snippets - hit it every time.
+
+        Duplicating the lone window keeps that axis alive, then the copy is
+        trimmed back off, so the returned stream is what the caller expects.
+        """
+        data = np.asarray(prediction.data)
+        if data.shape[0] != 1:
+            return super()._predictions_to_stream(prediction)
+
+        doubled = prediction._replace(data=np.repeat(data, 2, axis=0))
+        stream = super()._predictions_to_stream(doubled)
+        for trace in stream:
+            trace.data = trace.data[:1]
+        return stream
+
     def classify_aggregate(self, annotations, argdict) -> list:
-        window_labels = np.argmax(np.array(annotations), axis=0)
+        """One record per window whose most likely class is not noise.
 
-        lb = [self.labels[i] for i in window_labels]
-        t = [annotations[0].stats.starttime + i for i in annotations[0].times()]
+        Each record carries the window time and the probability of every
+        non-noise class, which is the shape ``picker._write_single_picklist_to_db``
+        writes into the ``classifies`` collection. Returning only the winning
+        label would discard the margin between classes, and that margin is what
+        distinguishes a confident call from a coin flip.
+        """
+        # A day-long stream with gaps annotates into several segments per
+        # label, so take them segment by segment rather than assuming one.
+        # Selecting by channel avoids relying on trace order.
+        reported = [c for c in self.labels if c != "no"]
+        out = []
+        for reference in annotations.select(channel=f"*_{self.labels[0]}"):
+            segment = {}
+            for label in self.labels:
+                match = [
+                    tr
+                    for tr in annotations.select(channel=f"*_{label}")
+                    if tr.stats.starttime == reference.stats.starttime
+                    and tr.stats.npts == reference.stats.npts
+                ]
+                if not match:
+                    break
+                segment[label] = match[0].data
+            if len(segment) != len(self.labels):
+                continue        # incomplete segment, nothing to argmax over
 
-        return [i for i in zip(lb, t) if i[0] != "no"]
+            times = [reference.stats.starttime + dt for dt in reference.times()]
+            winners = np.argmax(
+                np.vstack([segment[label] for label in self.labels]), axis=0
+            )
+            out += [
+                {
+                    "start": times[i],
+                    "label": self.labels[w],
+                    **{c: float(segment[c][i]) for c in reported},
+                }
+                for i, w in enumerate(winners)
+                if self.labels[w] != "no"
+            ]
+        return out
 
     def compute_spectrogram(
         self,
