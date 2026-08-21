@@ -51,6 +51,47 @@ and 176,679 shards, about $19,700 of planned compute. The excess was not free �
 every phantom station-day still costs an S3 listing before the picker discovers
 there is nothing there. Fixed, and the fix is what the numbers above reflect.
 
+## Blocker: EarthScope access is not working
+
+**86.7% of the western-states stations are served by EarthScope** — 20,900 of
+24,111, across the temporary deployments (`XD`, `ZI`, `ZG`, `1D`, …) that
+dominate the set. Only 2,095 route to NCEDC and 1,116 to SCEDC.
+
+Two separate things are missing, and both are outside this repository:
+
+**1. The account cannot assume the S3 role.** A live credential exchange from
+this machine returns:
+
+```
+UnauthorizedError: {"detail":"You are not allowed to assume role 's3-miniseed'"}
+```
+
+The EarthScope login itself is fine — the SDK returns the profile for
+`mdenolle@uw.edu` — so this is an entitlement on EarthScope's side, not an
+expired token. **EarthScope data services have to grant the `s3-miniseed`
+role.**
+
+**2. `EARTHSCOPE_S3_ACCESS_POINT` has never been set.** It is `""` in every
+commit in the repository's history, which is correct — it is account-specific
+and belongs in the controller's `parameters.py`, not in git. Per
+[05_submitting_jobs.md](05_submitting_jobs.md) it looks like
+`es-miniseed-<...>-s3alias`, and the value should exist in the 2025 campaign's
+notes.
+
+Until both are resolved:
+
+- **Campaign 5 (western states)** can only cover the 3,211 SCEDC/NCEDC
+  stations — 13% of the intended deliverable.
+- **Campaigns 3 and 4** (EarthScope onshore and offshore, 45.1M station-days,
+  52% of the launch) cannot run at all.
+- **Campaigns 1 and 2** (SCEDC, NCEDC — 7.0M station-days) are unaffected and
+  could run tomorrow.
+
+A campaign that needs EarthScope now **fails at shard startup** with the station
+count and the networks involved, rather than raising `KeyError('earthscope')`
+once per station. That was the previous behaviour, and it read like a defect in
+the reader rather than a misconfigured campaign.
+
 ## Two decisions that are not ours
 
 **1. The weight substitution is stakeholder-facing.**

@@ -118,6 +118,16 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def get_filesystem(self, net):
         dc = self.get_data_center(net)
         if dc == "earthscope":
+            if not self.earthscope_enabled:
+                # Without this the lookup below raises KeyError('earthscope')
+                # once per station, which reads like a bug in the reader rather
+                # than a campaign pointed at an archive it cannot reach.
+                raise RuntimeError(
+                    f"Network {net} is served by EarthScope, but "
+                    f"EARTHSCOPE_S3_ACCESS_POINT is not set. Set it and "
+                    f"ES_OAUTH2__REFRESH_TOKEN, or restrict this campaign to "
+                    f"networks held by SCEDC and NCEDC."
+                )
             self.update_es_filesystem()
         return self.fs[dc]
 
@@ -203,6 +213,11 @@ class S3DataSource:
         self.s3helper = CompositeS3ObjectHelper()
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
+        # Fail before reading anything if this shard needs an archive the job
+        # cannot reach. Discovering it station by station means a campaign that
+        # is 87% EarthScope fails 87% of its work one station at a time.
+        self._check_archives_reachable()
+
         self.meta = self.db.get_station_metadata(
             self.stations, {"_id": 0, "id": 1, "channels": 1}
         ).set_index("id")
@@ -210,6 +225,26 @@ class S3DataSource:
 
         self.inventory = self._get_inventory()
         logger.info(f"Done preparing inventory for the assigned stations")
+
+    def _check_archives_reachable(self) -> None:
+        """Refuse to start a shard whose archive is not configured."""
+        needed = {self.s3helper.get_data_center(n) for n in self.networks}
+        if "earthscope" in needed and not self.s3helper.earthscope_enabled:
+            es_nets = sorted(
+                n for n in self.networks
+                if self.s3helper.get_data_center(n) == "earthscope"
+            )
+            n_sta = sum(
+                1 for s in self.stations if s.split(".")[0] in set(es_nets)
+            )
+            raise RuntimeError(
+                f"{n_sta} of {len(self.stations)} stations in this shard are "
+                f"served by EarthScope ({len(es_nets)} networks: "
+                f"{','.join(es_nets[:6])}{'...' if len(es_nets) > 6 else ''}), "
+                f"but EARTHSCOPE_S3_ACCESS_POINT is unset. Set it together with "
+                f"ES_OAUTH2__REFRESH_TOKEN, or plan the campaign over "
+                f"SCEDC/NCEDC networks only."
+            )
 
     async def load_waveforms(self) -> AsyncIterator[list]:
         """
