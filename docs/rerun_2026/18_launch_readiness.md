@@ -80,6 +80,12 @@ and belongs in the controller's `parameters.py`, not in git. Per
 `es-miniseed-<...>-s3alias`, and the value should exist in the 2025 campaign's
 notes.
 
+**Partial relief:** EarthScope's sponsored open-data bucket
+`s3://earthscope-geophysical-data` (us-east-2) is anonymous and needs neither
+the role nor the access point — but it holds **8 networks**, covering 1,392 of
+the 20,902 EarthScope-routed western stations (6.7%). See
+[19_earthscope_access.md](19_earthscope_access.md).
+
 Until both are resolved:
 
 - **Campaign 5 (western states)** can only cover the 3,211 SCEDC/NCEDC
