@@ -56,7 +56,21 @@ def plan(
     station_group_size: int = STATION_GROUP_SIZE,
     day_group_size: int = DAY_GROUP_SIZE,
 ) -> list[dict]:
-    """Group stations and days exactly as the 2025 Batch campaign did."""
+    """Group stations and days exactly as the 2025 Batch campaign did.
+
+    Stations are planned only for days they were actually operating. Without
+    this the plan is the full station x day cartesian product: for the western
+    states set over 2010-2026 that is 140.9M station-days against 33.8M of real
+    work, a 4.2x overstatement. The excess is not free - each phantom
+    station-day still costs an S3 listing before the picker discovers there is
+    nothing there, and it inflates the queue from ~42k shards to ~177k.
+
+    v2 applied the station-level filter in `submit_helper`
+    (`filter_station_by_start_end_date`); this additionally clips per shard, so
+    a station that operated for 200 days inside a 16-year campaign is planned
+    for 200 days rather than 5,844.
+    """
+    windows = _operating_windows(stations)
     ids = sorted(stations["id"].astype(str))
     days = pd.date_range(start, end, freq="D")       # end inclusive
     shards = []
@@ -69,14 +83,55 @@ def plan(
             # last day of every shard - 1 day in 20 at the default grouping.
             last = days[min(j + day_group_size - 1, len(days) - 1)].date()
             d1 = last + datetime.timedelta(days=1)
+
+            # Only the stations of this group that were live during these days.
+            live = [s for s in group if _overlaps(windows.get(s), d0, d1)]
+            if not live:
+                continue                      # nothing was recording; no shard
             shards.append({
-                "shard_id": shard_id(group, d0, d1),
-                "stations": group,
+                "shard_id": shard_id(live, d0, d1),
+                "stations": live,
                 "start": f"{d0:%Y.%j}",
                 "end": f"{d1:%Y.%j}",
-                "n_station_days": len(group) * (d1 - d0).days,
+                "n_station_days": sum(
+                    _overlap_days(windows.get(s), d0, d1) for s in live
+                ),
             })
     return shards
+
+
+def _operating_windows(stations: pd.DataFrame) -> dict:
+    """{station id: (start, end)} from the metadata, where it is present.
+
+    A station with unparseable or missing dates is planned for the whole
+    campaign rather than dropped: missing metadata should cost a wasted listing,
+    never a silently missing station.
+    """
+    if not {"start_date", "end_date"} <= set(stations.columns):
+        return {}
+    out = {}
+    for sid, s, e in zip(stations["id"].astype(str),
+                         stations["start_date"], stations["end_date"]):
+        try:
+            out[sid] = (parse_year_day(str(s)), parse_year_day(str(e)))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _overlaps(window, d0: datetime.date, d1: datetime.date) -> bool:
+    if window is None:
+        return True                           # unknown window: plan it
+    s, e = window
+    return s < d1 and e >= d0
+
+
+def _overlap_days(window, d0: datetime.date, d1: datetime.date) -> int:
+    if window is None:
+        return (d1 - d0).days
+    s, e = window
+    lo, hi = max(s, d0), min(e, d1 - datetime.timedelta(days=1))
+    return max((hi - lo).days + 1, 0)
 
 
 def main(argv=None):
