@@ -167,8 +167,8 @@ ENTRYPOINT ["python", "-m", "sb_catalog.src.picking"]
 
 ```bash
 export MODEL_NAME="quakescope2026"        # Custom v7 weights
-export P_THRESHOLD="0.3"                 # PhaseNet P detection threshold
-export S_THRESHOLD="0.3"                 # PhaseNet S detection threshold
+export P_THRESHOLD="0.2"                 # PhaseNet P detection threshold
+export S_THRESHOLD="0.2"                 # PhaseNet S detection threshold
 export DATABASE_URL="mongodb+srv://..."  # DocumentDB connection
 export DATABASE_NAME="quakescope_2026"   # Database name
 export S3_BUCKET="scedc-pds"            # Data source

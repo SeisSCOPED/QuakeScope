@@ -164,6 +164,18 @@ station was left without a pickable channel.
 Unchanged from 2025: waveforms that are empty, embargoed, or carry more than
 50 gaps per component are skipped (`picker.py`, `len(stream_c) > 150`).
 
+## Pick threshold
+
+**`p_threshold = s_threshold = 0.2`** for every 2026 campaign — the default in
+`worker.py` and `picker.py`, so a launch that passes no threshold argument gets
+it. The launch notebook passes none.
+
+Not to be confused with the **0.3 used across the benchmark notebooks**
+(`tutorials/`, `reports/`). That is a *shared comparison* threshold, chosen so
+weight sets are ranked at one operating point; the published figures and their
+narrative depend on it. Changing the production threshold does not change it,
+and it should not be edited to match.
+
 ## Weight per campaign
 
 | campaign | weight | why |
