@@ -45,6 +45,8 @@ decisions below.
 Cross-checked: the planner's 33,796,194 against an independent sum of clipped
 operating windows at 33,776,383 — 0.06% apart.
 
+These are station-days, and with one channel per station they are also band-days, which is what the cost scales with. Before the channel policy the same campaign was 42.7M band-days.
+
 **This estimate was 4.2× higher three hours ago.** The planner built the full
 station × day cartesian product, ignoring operating windows: 140.9M station-days
 and 176,679 shards, about $19,700 of planned compute. The excess was not free —
@@ -141,9 +143,10 @@ Listed because they are what would move the numbers above, not as caveats.
 - **Processes per vCPU.** Every benchmark used one process on an eight-vCPU
   box. This swings the cost estimate about 4× in either direction and is an
   hour of work to settle. It is the single highest-value measurement left.
-- **Bands per station.** The picker runs on every band a station carries —
-  2.83× on SCEDC, including 1 Hz channels that cannot be picked at all. The
-  one-band policy is agreed but not implemented.
+- ~~Bands per station.~~ **Resolved.** One channel code per station-location,
+  by the hard-coded order in `constants.CHANNEL_PRIORITY` — see
+  [17](17_launch_conventions.md). Western goes from 30,453 band-days to 24,111
+  (1.26×); the saving is larger on the permanent-network campaigns.
 - **The 2025 baseline.** Cost Explorer is blocked on this account by an
   organisation SCP, so "match or beat 2025" has no measured baseline. A
   billing-console export would settle it.
