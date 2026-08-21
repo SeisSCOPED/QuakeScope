@@ -112,6 +112,58 @@ empty, so you choose how many workers to run rather than submitting one job per
 unit of work. `maxvCpus` on the compute environment (4000) binds before the
 account quota (12,000), and is the number to raise first.
 
+## Channels: one code per station-location
+
+The 2025 study processed `EH? HH? BH? HN? EP? DP? EL? SL? SH? CN?`, recording
+each location code and channel type separately. **2026 keeps the location-code
+separation but picks one channel code per station-location**, always with all
+available components (`Z N E 1 2`).
+
+Picking every band duplicates the same ground motion at different sampling
+rates — 2.83× on SCEDC's permanent stations, 1.26× across the western set — and
+sweeps in bands like `LH` at 1 Hz that cannot produce a usable arrival at all.
+
+The order is **hard-coded** in `constants.CHANNEL_PRIORITY`, not derived at read
+time. SEED band codes carry standard sampling-rate ranges, so the ranking is a
+property of the code; rediscovering it per station-day would cost a metadata
+lookup to re-derive a constant.
+
+Ordered by |standard rate − 100 Hz|, since PhaseNet resamples to 100 Hz:
+
+| | code | typical rate | \|Δ100\| |
+|--:|---|--:|--:|
+| 1 | `HH` | 100 | 0 |
+| 2 | `EH` | 100 | 0 |
+| 3 | `EP` | 100 | 0 |
+| 4 | `EL` | 100 | 0 |
+| 5 | `HN` | 100 | 0 |
+| 6 | `SH` | 50 | 50 |
+| 7 | `SL` | 50 | 50 |
+| 8 | `BH` | 40 | 60 |
+| 9 | `DP` | 250 | 150 |
+| 10 | `CN` | 250 | 150 |
+
+Ties inside the 100 Hz group break on instrument code, by signal quality for
+small events: high-gain seismometer (`H`) > geophone (`P`) > low-gain (`L`) >
+accelerometer (`N`). Accelerometers do not clip on large events but have poor
+SNR on the small ones that dominate a catalogue.
+
+**Two orderings are debatable and were left as the rule states:**
+
+- `HN` (100 Hz accelerometer) outranks `BH` (40 Hz broadband). Better for large
+  events, worse for small. It affects **10 of 24,111** western-states stations —
+  those carrying both and no 100 Hz high-gain channel.
+- `BH` (40 Hz) outranks `DP` (250 Hz). Downsampling 250→100 is lossless across
+  the picking band while upsampling 40→100 is not, so `DP` is arguably the
+  better choice; |Δ100| says otherwise. Stations carrying both are rare.
+
+Chosen channels across the western set: `DP` 8,548, `HN` 5,128, `EH` 4,354,
+`HH` 2,396, `BH` 1,430, `EP` 1,355, `EL` 530, `SH` 294, `CN` 75, `SL` 1. No
+station was left without a pickable channel.
+
+Unchanged from 2025: waveforms that are empty, embargoed, or carry more than
+50 gaps per component are skipped (`picker.py`, `len(stream_c) > 150`).
+
 ## Weight per campaign
 
 | campaign | weight | why |

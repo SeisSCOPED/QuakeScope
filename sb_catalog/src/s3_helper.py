@@ -15,7 +15,7 @@ from earthscope_sdk import EarthScopeClient
 from obspy.clients.fdsn.header import FDSNNoDataException
 from s3fs import S3FileSystem
 
-from .constants import NETWORK_MAPPING
+from .constants import NETWORK_MAPPING, select_channel
 from .profiling import stage
 from .utils import SeisBenchDatabase
 
@@ -249,7 +249,26 @@ class S3DataSource:
                     raise e
 
             for station in self.stations:
-                all_channels = self.meta.loc[station, "channels"].split(",")
+                # One channel code per station-location, chosen by the fixed
+                # order in constants.CHANNEL_PRIORITY. Picking every band a
+                # station carries duplicates the same ground motion at different
+                # sampling rates: 2.83x the inference on SCEDC's permanent
+                # stations, and it includes bands like LH at 1 Hz that cannot
+                # produce a usable arrival at all. Location codes stay separate,
+                # as in the 2025 study - they are genuinely different sensors.
+                offered = self.meta.loc[station, "channels"].split(",")
+                channel = select_channel(offered)
+                if channel is None:
+                    logger.info(
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} "
+                        f"< no pickable channel among {','.join(offered)}"
+                    )
+                    continue
+                all_channels = [channel]
+                if len(offered) > 1:
+                    logger.debug(
+                        f"{station}: picking {channel} of {','.join(offered)}"
+                    )
                 check = {
                     cha: self.db.get_picks_record(
                         station, day, cha, {"_id": 1}
@@ -259,7 +278,7 @@ class S3DataSource:
                 # if all channel got results
                 if all(check.values()):
                     logger.info(
-                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at all {self.meta.loc[station, 'channels']} channel"
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
                     )
                     continue
 

@@ -454,3 +454,68 @@ NETWORK_MAPPING = {
     "ZY": "earthscope",
     "ZZ": "earthscope",
 }
+
+
+# ---------------------------------------------------------------- channels
+#
+# One channel code per station-location, chosen by a fixed order rather than by
+# inspecting sampling rates at read time. SEED band codes carry a standard rate
+# range, so the ordering is a property of the code and can be decided once here;
+# reading it per station-day would cost a metadata lookup per station-day to
+# rediscover a constant.
+#
+# The set is the one the 2025 study processed: EH, HH, BH, HN, EP, DP, EL, SL,
+# SH, CN. Ordering is by |standard rate - 100 Hz|, because PhaseNet resamples to
+# 100 Hz and a channel already near it needs the least resampling.
+#
+#   band  SEED range        typical    |d 100|
+#   H     80-250 Hz         100            0
+#   E     80-250 Hz         100            0
+#   S     10-80 Hz           50           50
+#   B     10-80 Hz           40           60
+#   D     250-1000 Hz       250          150
+#   C     250-1000 Hz       250          150
+#
+# Ties inside the 100 Hz group are broken by instrument code, on signal quality
+# for small events: high-gain seismometer (H) > geophone (P) > low-gain (L) >
+# accelerometer (N). Accelerometers do not clip on large events but have poor
+# SNR on the small ones that dominate a catalogue.
+#
+# Two orderings here are debatable, both rare, both left as the rule states:
+#   * HN (100 Hz accelerometer) outranks BH (40 Hz broadband). Better for large
+#     events, worse for small. Affects 10 of 24,111 western-states stations -
+#     those with HN and BH and no 100 Hz high-gain channel.
+#   * BH (40 Hz) outranks DP (250 Hz). Downsampling 250 -> 100 is lossless for
+#     the picking band while upsampling 40 -> 100 is not, so DP is arguably the
+#     better pick; |d 100| says otherwise. Stations carrying both are rare.
+CHANNEL_PRIORITY = [
+    "HH",   # 100 Hz, high-gain seismometer
+    "EH",   # 100 Hz, high-gain short-period
+    "EP",   # 100 Hz, geophone (nodal)
+    "EL",   # 100 Hz, low-gain
+    "HN",   # 100 Hz, accelerometer
+    "SH",   #  50 Hz, high-gain short-period
+    "SL",   #  50 Hz, low-gain short-period
+    "BH",   #  40 Hz, high-gain broadband
+    "DP",   # 250 Hz, geophone (nodal)
+    "CN",   # 250 Hz, accelerometer
+]
+
+CHANNEL_PRIORITY_INDEX = {c: i for i, c in enumerate(CHANNEL_PRIORITY)}
+
+
+def select_channel(available):
+    """The one channel code to pick on, from those a station offers.
+
+    `available` is any iterable of two-character band codes. Codes outside
+    CHANNEL_PRIORITY are ignored - the 2025 study defined the set, and picking
+    on an LH or VH channel at 1 Hz or below would not produce usable arrivals.
+    Returns None when a station offers nothing pickable, which the caller should
+    treat as "skip this station" rather than as an error.
+    """
+    ranked = sorted(
+        (c for c in {str(x).strip() for x in available}
+         if c in CHANNEL_PRIORITY_INDEX),
+        key=lambda c: CHANNEL_PRIORITY_INDEX[c],
+    )
+    return ranked[0] if ranked else None
