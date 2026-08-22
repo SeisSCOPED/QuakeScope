@@ -23,6 +23,14 @@ from .utils import SeisBenchDatabase
 # defaulted this to "" for campaigns that never touch EarthScope, and the
 # module is imported by every picking job regardless of archive.
 EARTHSCOPE_S3_ACCESS_POINT = os.environ.get("EARTHSCOPE_S3_ACCESS_POINT", "")
+
+# EarthScope's sponsored open-data bucket serves a subset of networks with no
+# credentials at all (docs.earthscope.org/sponsored-open-data). Pointing the
+# access point at it and still exchanging credentials fails for anyone without
+# the s3-miniseed role - which is everyone it is meant to help - so recognise
+# it and read anonymously instead. Same region as the compute, so those reads
+# are not cross-region either.
+EARTHSCOPE_OPEN_DATA_BUCKET = "earthscope-geophysical-data"
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 
 logger = logging.getLogger("picker")
@@ -97,8 +105,18 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # credential exchange entirely when the campaign has not been configured
         # for EarthScope, so a public-bucket run neither stalls nor fails on it.
         self.earthscope_enabled = bool(EARTHSCOPE_S3_ACCESS_POINT)
+        self.earthscope_anonymous = (
+            EARTHSCOPE_S3_ACCESS_POINT.strip("/").split("/")[0]
+            == EARTHSCOPE_OPEN_DATA_BUCKET
+        )
         self.credential = None
-        if self.earthscope_enabled:
+        if self.earthscope_anonymous:
+            self.fs["earthscope"] = S3FileSystem(anon=True)
+            logger.info(
+                f"EarthScope open data ({EARTHSCOPE_OPEN_DATA_BUCKET}) - reading "
+                f"anonymously; no credentials required"
+            )
+        elif self.earthscope_enabled:
             self.credential = self.get_es_credential()
             self.set_es_filesystem()
         else:
@@ -170,6 +188,8 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def update_es_filesystem(self):
         # No-op when EarthScope was never configured: self.credential is None and
         # dereferencing it would AttributeError on the first refresh check.
+        if getattr(self, "earthscope_anonymous", False):
+            return                            # anonymous: nothing to renew
         if not getattr(self, "earthscope_enabled", True) or self.credential is None:
             return
         if (
