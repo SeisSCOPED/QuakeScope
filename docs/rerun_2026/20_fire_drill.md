@@ -32,9 +32,17 @@ firedrill/runs/4b3ac226-4128-459e-a287-909043ce1bd9.json
 the 75 NaN are picks whose window fell inside the taper, which is the designed
 behaviour rather than a failure.
 
-**Four of the six stations produced picks.** `CI.GPO.` and `CI.JRC.` produced
-none. Not investigated — worth a look before the real SCEDC campaign, since
-"no data" and "silently skipped" look identical from the outside.
+**Four of the six stations produced picks**, and the other two are explained.
+`CI.GPO.` and `CI.JRC.` have no objects in `scedc-pds` for either day — checked
+`HH` *and* `BH`, all three components, both days: nothing. They were not
+recording, or SCEDC holds nothing for them.
+
+This was worth checking rather than assuming, because the channel is chosen from
+the *metadata* band list, not from what is present on the day. A station whose
+preferred band happened to be missing while a lower-priority band had data would
+be silently dropped, and would look exactly like this. That is not what happened
+here — neither band exists — but the failure mode is real and is the thing to
+re-check if a campaign returns fewer stations than expected.
 
 ## The checks that matter
 
