@@ -1,110 +1,95 @@
-# 19 — EarthScope access: what is reachable without credentials
+# 19 — EarthScope access: two tiers, open data first
 
-Written after testing, not reading. Every claim below was run from a laptop with
-no EarthScope role granted.
+**Resolved.** The blocker recorded in [18](18_launch_readiness.md) was a
+**renamed role**, not a missing entitlement.
 
-## The sponsored open-data bucket is public, and it is in our region
-
-```bash
-aws s3 ls --no-sign-request s3://earthscope-geophysical-data/miniseed/
+```
+$ pixi run -e cloud python scripts/check_earthscope_access.py
+[1] open data   : OK, 8 networks, no credentials (AK, II, IU, N4, PB, TA, UU, UW)
+[2] identity    : mdenolle@uw.edu
+[3] role        : OK 's3-miniseed-v2', expires 2026-08-29 04:39:58+00:00
+[4] access point: OK, earthscope-mseed-v2-4fdodyzpsz8u8u... (11 objects in ZI/2019/187)
 ```
 
-**`earthscope-geophysical-data`, us-east-2, anonymous.** No `s3-miniseed` role,
-no access-point alias, no credential exchange. It is also the *same region as the
-Fargate quota*, so those reads are not cross-region — unlike `scedc-pds`
-(us-west-2) and `ncedc-pds` (us-east-1).
+## What was actually wrong
 
-Layout matches what `EarthScopeS3ObjectHelper` already builds:
+`s3-miniseed` is retired. Asking for it returns
+
+```
+UnauthorizedError: You are not allowed to assume role 's3-miniseed'
+```
+
+which reads as an entitlement the account lacks, and sent us to EarthScope
+support. The role is **`s3-miniseed-v2`**, and it was available the whole time.
+The regression test asserts the name for that reason.
+
+## Two archives behind one data-centre name
+
+Per [the SDK tutorial](https://docs.earthscope.org/sdk/s3-direct-access-tutorial):
+
+| tier | bucket | networks | credentials |
+|---|---|---|---|
+| **Open Data** | `earthscope-geophysical-data` | `AK II IU N4 PB TA UU UW` | **none** |
+| Repository | `earthscope-mseed-v2-…-s3alias` | everything else | `s3-miniseed-v2`, us-east-2 |
+
+**Open Data is preferred wherever it serves the network.** A campaign over those
+networks then cannot fail on an expired token, a renamed role, or a support
+ticket — which is exactly how this blocker arose. It is also anonymous, so
+workers need no secret in their environment.
+
+The access-point alias is **published in that tutorial**, so it is now a default
+in `s3_helper.py` rather than a value to recover from a previous campaign's
+notes. Override with `EARTHSCOPE_S3_ACCESS_POINT` if EarthScope issues another.
+
+Both tiers use the identical layout, so only the bucket differs:
 
 ```
 miniseed/<NET>/<YEAR>/<DAY>/<STA>.<NET>.<YEAR>.<DAY>
 ```
 
-Verified end to end: obspy reads `UW/2019/187/RATT.UW.2019.187` (52 MB,
-214 traces, 100 Hz `HH?` present) straight from the anonymous filesystem.
+## The naming bug this exposed
 
-## But it is eight networks, not all of them
-
-```
-AK  II  IU  N4  PB  TA  UU  UW
-```
-
-Against the western-states campaign:
-
-| | stations | networks |
-|---|--:|--:|
-| EarthScope-routed | 20,902 | 115 |
-| in the public bucket | **1,392** | 7 |
-| still need credentials | **19,510** | 108 |
-
-So this is **6.7% of the EarthScope-routed western stations**. It is a real
-unblock for `UW`, `UU` and `TA` — and `UW` alone is most of the Washington set —
-but it does not replace the role grant. The temporary deployments that dominate
-the western list (`XD`, `ZI`, `ZG`, `1D`, …) are not in it; `miniseed/XD/` does
-not exist.
-
-**The blocker in [18](18_launch_readiness.md) stands for 93% of the affected
-stations.**
-
-## The access point could not be recovered from local notes
-
-Searched: every commit on every branch (`""` in all of them), the working tree,
-stashes, `~/Downloads`, `~/Desktop`, `~/.aws`, `~/.earthscope`, and both shell
-histories. Nothing. It is not on this machine, so it has to come from the 2025
-controller instance or from EarthScope directly.
-
-## The discover API does not help S3 lookups
-
-`GET /beta/discover/datasource/stream` returns, per the OpenAPI spec:
+The two buckets do **not** name objects identically:
 
 ```
-description  edid  station  station_edid  stream_type
-facility  software  label  sample_interval  names
+open data   ALCT.UW.2019.187        <- no version
+restricted  ADO.CI.2019.187#2       <- version suffix
 ```
 
-**No object keys, no prefixes, no time ranges, no availability.** It is a
-catalogue of what streams exist, not an index of where bytes are, so it cannot
-replace a LIST or a GET. `sample_interval` is the one field of interest, and the
-channel policy in [17](17_launch_conventions.md) deliberately avoids needing it:
-the band code already implies the rate, so looking it up per station-day would
-cost a network round trip to re-derive a constant.
+`get_basename` returned `f"{sta}.{net}.{year}.{day}#."`, a regexp **requiring**
+the `#`. Against Open Data it matched nothing — and matched nothing *silently*,
+because a station with no matching object is indistinguishable from a station
+that was not recording. Every Open Data station would have been skipped with no
+error at all.
 
-(The SDK's `list_stream_datasources` also returns 422 on the obvious parameter
-forms; not worth debugging for a call we do not want.)
-
-## The optimisation that does exist: skip the LIST
-
-`s3_helper.py` lists the whole `<NET>/<YEAR>/<DAY>/` prefix and regex-matches,
-because the 2025 code found a **version number** in the object name:
+It now accepts both forms, anchored so `RATT` cannot match `RATTX`:
 
 ```python
-# earthscope object name has version number
-uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
+rf"{re.escape(f'{sta}.{net}.{year}.{day}')}(#.*)?$"
 ```
 
-In this bucket there is no version suffix — names are exactly
-`<STA>.<NET>.<YEAR>.<DAY>`, and a `head-object` on a constructed key succeeds
-without any LIST. That makes the key deterministic and the LIST unnecessary.
+## Credentials are acquired lazily
 
-Two reasons not to act on it yet:
+A campaign that only touches Open Data never calls the credential exchange, so
+it cannot be delayed or failed by it. `_check_archives_reachable` still fails
+fast — but only when the shard actually contains restricted networks, and it now
+names the role and the access point instead of raising `KeyError('earthscope')`
+once per station.
 
-1. The LIST is **already amortised** — one per network-day, shared by every
-   station of that network in that day. A 40-station shard over 20 days costs 20
-   LISTs for 800 station-days. This is not where the time goes.
-2. The credentialed access point may still carry version suffixes, which is
-   presumably why the regex exists. Changing the reader on the evidence of the
-   public bucket alone would be fixing one archive by breaking another.
+## SDK version
 
-Worth revisiting once the profile in
-[16](16_skypilot_vs_fargate.md) attributes real time to stage 1.
+The tutorial's `get_boto3_session(role=...)` (refreshable, and the recommended
+form) and the `network=`/`year=` scoped credentials need **SDK ≥ 1.4**; the
+pinned environment has **1.3.0**, whose `get_aws_credentials(role=...)` is
+sufficient — it is what produced the output above.
 
-## What to ask EarthScope for
+Upgrading to 1.8.0 is **blocked**: it pulls `aioboto3`, which conflicts with the
+pinned `aiobotocore==3.8.0`. Not worth destabilising the environment before
+launch, since unscoped v2 credentials already read every network tested,
+including temporary ones (`ZI`). Revisit after the campaign.
 
-> Please grant `mdenolle@uw.edu` the `s3-miniseed` role, and confirm the S3
-> access-point alias for our account.
+## Effect on the western campaign
 
-Check the state at any time with:
-
-```bash
-pixi run -e cloud python scripts/check_earthscope_access.py
-```
+Of 20,902 EarthScope-routed stations, 1,392 are on Open Data networks and 19,510
+are restricted. **Both tiers now work**, so the campaign is no longer limited to
+the 3,211 SCEDC/NCEDC stations.

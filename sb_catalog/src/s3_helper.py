@@ -31,6 +31,26 @@ EARTHSCOPE_S3_ACCESS_POINT = os.environ.get("EARTHSCOPE_S3_ACCESS_POINT", "")
 # it and read anonymously instead. Same region as the compute, so those reads
 # are not cross-region either.
 EARTHSCOPE_OPEN_DATA_BUCKET = "earthscope-geophysical-data"
+
+# Networks served by the Open Data Program. Anonymous, global, no role.
+# docs.earthscope.org/sdk/s3-direct-access-tutorial
+EARTHSCOPE_OPEN_DATA_NETWORKS = frozenset(
+    {"AK", "II", "IU", "N4", "PB", "TA", "UU", "UW"}
+)
+
+# Everything else lives behind a credentialed S3 access point. The alias is
+# published in the tutorial above, so it is a default rather than a secret to
+# be recovered from a previous campaign's notes; override it if EarthScope
+# issues a different one.
+EARTHSCOPE_RESTRICTED_ACCESS_POINT = os.environ.get(
+    "EARTHSCOPE_S3_ACCESS_POINT",
+    "earthscope-mseed-v2-4fdodyzpsz8u8uyi3pa9qsw9oid1suse2a-s3alias",
+)
+
+# The v1 role is retired: it answers "You are not allowed to assume role
+# 's3-miniseed'" even for accounts in good standing, which reads like a
+# permissions problem rather than a renamed role.
+EARTHSCOPE_ROLE = os.environ.get("EARTHSCOPE_ROLE", "s3-miniseed-v2")
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 
 logger = logging.getLogger("picker")
@@ -75,11 +95,31 @@ class NCEDCS3ObjectHelper(S3ObjectHelper):
 
 
 class EarthScopeS3ObjectHelper(S3ObjectHelper):
+    """Two buckets, identical layout, different access.
+
+    Open Data is preferred wherever it serves the network: it needs no
+    credentials, so it cannot fail on an expired token or a role that was never
+    granted, and it is not scoped to a region.
+    """
+
+    @staticmethod
+    def is_open_data(net) -> bool:
+        return net in EARTHSCOPE_OPEN_DATA_NETWORKS
+
+    @classmethod
+    def bucket_for(cls, net) -> str:
+        return (EARTHSCOPE_OPEN_DATA_BUCKET if cls.is_open_data(net)
+                else EARTHSCOPE_RESTRICTED_ACCESS_POINT)
+
     def get_prefix(self, net, year, day) -> str:
-        return f"{EARTHSCOPE_S3_ACCESS_POINT}/miniseed/{net}/{year}/{day}/"
+        return f"{self.bucket_for(net)}/miniseed/{net}/{year}/{day}/"
 
     def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
-        return f"{sta}.{net}.{year}.{day}#."  # as regexp
+        # A regexp, matched against the listing. The restricted access point
+        # appends a version ("ADO.CI.2019.187#2"); Open Data does not
+        # ("ALCT.UW.2019.187"). Requiring the suffix silently matched nothing
+        # on Open Data, so both forms have to be accepted.
+        return rf"{re.escape(f'{sta}.{net}.{year}.{day}')}(#.*)?$"
 
 
 class CompositeS3ObjectHelper(S3ObjectHelper):
@@ -104,26 +144,20 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
         # credential exchange entirely when the campaign has not been configured
         # for EarthScope, so a public-bucket run neither stalls nor fails on it.
-        self.earthscope_enabled = bool(EARTHSCOPE_S3_ACCESS_POINT)
-        self.earthscope_anonymous = (
-            EARTHSCOPE_S3_ACCESS_POINT.strip("/").split("/")[0]
-            == EARTHSCOPE_OPEN_DATA_BUCKET
-        )
+        # Open Data needs nothing, so it is always available.
+        self.fs["earthscope_open"] = S3FileSystem(anon=True)
         self.credential = None
-        if self.earthscope_anonymous:
-            self.fs["earthscope"] = S3FileSystem(anon=True)
-            logger.info(
-                f"EarthScope open data ({EARTHSCOPE_OPEN_DATA_BUCKET}) - reading "
-                f"anonymously; no credentials required"
-            )
-        elif self.earthscope_enabled:
-            self.credential = self.get_es_credential()
-            self.set_es_filesystem()
-        else:
-            logger.info(
-                "EARTHSCOPE_S3_ACCESS_POINT is unset - EarthScope access disabled, "
-                "using the public SCEDC/NCEDC buckets only"
-            )
+
+        # The restricted access point is credentialed lazily: a campaign that
+        # only touches Open Data networks should not fail, or even pause, on a
+        # role it never uses.
+        self.earthscope_restricted_ready = False
+        logger.info(
+            f"EarthScope: open data anonymous for "
+            f"{','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}; "
+            f"all other networks via {EARTHSCOPE_RESTRICTED_ACCESS_POINT} "
+            f"(role {EARTHSCOPE_ROLE}, acquired on first use)"
+        )
 
     def get_prefix(self, net, year, day) -> str:
         return self.helpers[self.get_data_center(net)].get_prefix(net, year, day)
@@ -136,17 +170,13 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def get_filesystem(self, net):
         dc = self.get_data_center(net)
         if dc == "earthscope":
-            if not self.earthscope_enabled:
-                # Without this the lookup below raises KeyError('earthscope')
-                # once per station, which reads like a bug in the reader rather
-                # than a campaign pointed at an archive it cannot reach.
-                raise RuntimeError(
-                    f"Network {net} is served by EarthScope, but "
-                    f"EARTHSCOPE_S3_ACCESS_POINT is not set. Set it and "
-                    f"ES_OAUTH2__REFRESH_TOKEN, or restrict this campaign to "
-                    f"networks held by SCEDC and NCEDC."
-                )
+            if EarthScopeS3ObjectHelper.is_open_data(net):
+                return self.fs["earthscope_open"]
+            if not self.earthscope_restricted_ready:
+                self.credential = self.get_es_credential()
+                self.set_es_filesystem()
             self.update_es_filesystem()
+            return self.fs["earthscope_restricted"]
         return self.fs[dc]
 
     def get_es_credential(self):
@@ -158,7 +188,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             try:
                 with EarthScopeClient() as client:
                     return client.user.get_aws_credentials(
-                        ttl_threshold=self.ttl_threshold
+                        role=EARTHSCOPE_ROLE, ttl_threshold=self.ttl_threshold
                     )
             except Exception as exc:
                 last = exc
@@ -179,19 +209,21 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         ) from last
 
     def set_es_filesystem(self):
-        self.fs["earthscope"] = S3FileSystem(
+        # Access-point requests are only valid in us-east-2; without the pin
+        # s3fs may sign for another region and 400.
+        self.fs["earthscope_restricted"] = S3FileSystem(
             key=self.credential.aws_access_key_id,
             secret=self.credential.aws_secret_access_key,
             token=self.credential.aws_session_token,
+            client_kwargs={"region_name": "us-east-2"},
         )
+        self.earthscope_restricted_ready = True
 
     def update_es_filesystem(self):
         # No-op when EarthScope was never configured: self.credential is None and
         # dereferencing it would AttributeError on the first refresh check.
-        if getattr(self, "earthscope_anonymous", False):
-            return                            # anonymous: nothing to renew
-        if not getattr(self, "earthscope_enabled", True) or self.credential is None:
-            return
+        if self.credential is None:
+            return                            # anonymous or not yet acquired
         if (
             self.credential.expiration - datetime.datetime.now(tz=datetime.timezone.utc)
         ) < self.ttl_threshold:
@@ -247,24 +279,40 @@ class S3DataSource:
         logger.info(f"Done preparing inventory for the assigned stations")
 
     def _check_archives_reachable(self) -> None:
-        """Refuse to start a shard whose archive is not configured."""
-        needed = {self.s3helper.get_data_center(n) for n in self.networks}
-        if "earthscope" in needed and not self.s3helper.earthscope_enabled:
-            es_nets = sorted(
-                n for n in self.networks
-                if self.s3helper.get_data_center(n) == "earthscope"
-            )
-            n_sta = sum(
-                1 for s in self.stations if s.split(".")[0] in set(es_nets)
-            )
+        """Fail before reading anything if this shard needs an archive the job
+        cannot reach.
+
+        Only the restricted access point can fail this way; Open Data needs no
+        credentials. Discovering it station by station means a campaign that is
+        mostly restricted fails most of its work one station at a time, and the
+        error it raised - KeyError, or a role denial buried in a retry loop -
+        read like a defect in the reader.
+        """
+        restricted = sorted(
+            n for n in self.networks
+            if self.s3helper.get_data_center(n) == "earthscope"
+            and not EarthScopeS3ObjectHelper.is_open_data(n)
+        )
+        if not restricted:
+            return
+        try:
+            self.s3helper.get_filesystem(restricted[0])
+        except Exception as exc:
+            n_sta = sum(1 for s in self.stations
+                        if s.split(".")[0] in set(restricted))
             raise RuntimeError(
-                f"{n_sta} of {len(self.stations)} stations in this shard are "
-                f"served by EarthScope ({len(es_nets)} networks: "
-                f"{','.join(es_nets[:6])}{'...' if len(es_nets) > 6 else ''}), "
-                f"but EARTHSCOPE_S3_ACCESS_POINT is unset. Set it together with "
-                f"ES_OAUTH2__REFRESH_TOKEN, or plan the campaign over "
-                f"SCEDC/NCEDC networks only."
-            )
+                f"{n_sta} of {len(self.stations)} stations in this shard are on "
+                f"EarthScope networks that are not in the Open Data Program "
+                f"({len(restricted)}: {','.join(restricted[:6])}"
+                f"{'...' if len(restricted) > 6 else ''}), so they need the "
+                f"'{EARTHSCOPE_ROLE}' role on the {EARTHSCOPE_RESTRICTED_ACCESS_POINT} "
+                f"access point, and it could not be obtained: "
+                f"{type(exc).__name__}: {exc}. Run "
+                f"scripts/check_earthscope_access.py, or plan this campaign over "
+                f"Open Data networks "
+                f"({','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}) plus "
+                f"SCEDC/NCEDC only."
+            ) from exc
 
     async def load_waveforms(self) -> AsyncIterator[list]:
         """
