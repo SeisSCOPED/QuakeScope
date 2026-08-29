@@ -17,7 +17,7 @@ the lease expiry covers it instead.
 There is no database. Station metadata, resume state and provenance all come
 from the campaign prefix - see `s3_state`.
 
-Usage (normally invoked by the SkyPilot template, not by hand):
+Usage (normally invoked by the Batch job definition, not by hand):
     python -m sb_catalog.src.worker \\
         --campaign s3://quakescope-picks-2026/scedc \\
         --weight jma_wc --procs 8
@@ -98,9 +98,10 @@ class S3StateAdapter:
 def _log_instance_lifecycle() -> None:
     """Say whether this node is Spot or on-demand.
 
-    SkyPilot can satisfy a job on-demand without saying so, and a campaign run
-    for Spot pricing should not discover that in Cost Explorer a week later.
-    IMDSv2, short timeout, silent if unavailable (e.g. not on EC2).
+    A campaign budgeted for Spot should not discover it ran on-demand in Cost
+    Explorer a week later. On Fargate this is normally answered by the compute
+    environment (FARGATE_SPOT), so this is a backstop rather than the main
+    signal. IMDSv2, short timeout, silent if unavailable.
     """
     try:
         import urllib.request

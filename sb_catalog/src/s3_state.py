@@ -15,9 +15,9 @@ no endpoint to keep alive:
         runs/<run_id>.json        provenance                (was: sb_runs)
         picks/network=/year=/month=/*.parquet
 
-**Claiming is the part that makes Spot safe.** SkyPilot recovers a preempted
-managed job by relaunching it, so a worker can die mid-shard at any moment and
-another can start on the same queue seconds later. Claims are taken with an S3
+**Claiming is the part that makes Spot safe.** Batch retries a preempted task,
+so a worker can die mid-shard at any moment and another can start on the same
+queue seconds later. Claims are taken with an S3
 conditional write (`IfNoneMatch: "*"`), which fails if the key already exists -
 an atomic compare-and-set, so two workers can never take the same shard. A claim
 carries a timestamp and is reclaimable after `lease_hours` with no manifest,

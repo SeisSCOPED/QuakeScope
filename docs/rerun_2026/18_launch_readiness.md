@@ -100,8 +100,8 @@ machinery for about 7% of the exposure.
 
 Cancelling loses at most 40 station-day-channels per worker: each shard returns
 to the queue and resumes from its last checkpoint. Fargate tasks end with the
-job, so there is no instance to terminate — unlike the SkyPilot path, where the
-jobs controller survives `sky down --all`.
+job, so there is no instance to terminate and nothing that relaunches what you
+cancel.
 
 ```python
 for jid in json.load(open("western_workers.json")):

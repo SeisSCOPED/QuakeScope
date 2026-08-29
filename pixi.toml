@@ -46,9 +46,8 @@ pytorch = ">=2.1"
 pytorch-cuda = "==11.8"
 
 [feature.deploy.pypi-dependencies]
-# SkyPilot provisions and recovers the Spot workers. Pinned to the AWS extra;
+# Campaigns run on AWS Batch over Fargate Spot; boto3 is all that is needed.
 # the jobs controller is what gives managed jobs their preemption recovery.
-skypilot = { version = ">=0.10", extras = ["aws"] }
 
 [feature.dev.dependencies]
 pytest = ">=7.0"

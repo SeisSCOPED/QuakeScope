@@ -4,7 +4,7 @@ What is running on AWS right now, what it is costing, and how to stop it.
 
 Written because a Spot campaign can quietly cost money in three ways that none
 of the usual dashboards make obvious within an hour: an instance that should
-have been torn down, a SkyPilot jobs controller that outlives its jobs, and a
+have been torn down, EC2 running when campaigns should be on Fargate, and a
 managed job silently satisfied on-demand at ~3x the Spot price. Cost Explorer
 lags about a day, which is too slow to catch any of them.
 
@@ -109,7 +109,6 @@ def scan_region(region: str) -> dict:
     for inst in instances:
         tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
         name = tags.get("Name", "")
-        cluster = tags.get("skypilot-cluster-name", "")
         itype = inst["InstanceType"]
         az = inst["Placement"]["AvailabilityZone"]
         is_spot = inst.get("InstanceLifecycle") == "spot"
@@ -129,14 +128,14 @@ def scan_region(region: str) -> dict:
         if cluster and not is_spot:
             warnings.append(
                 f"{inst['InstanceId']} ({name or itype}) is ON-DEMAND but is a "
-                f"SkyPilot instance - roughly 3x the Spot price"
+                f"on-demand instance - roughly 3x the Spot price"
             )
         if "jobs-controller" in name and age_h > STALE_HOURS:
             warnings.append(
                 f"{inst['InstanceId']} is a jobs controller up for {age_h:.1f} h - "
                 f"controllers outlive their jobs and are easy to forget"
             )
-        elif age_h > STALE_HOURS and not name.startswith("sky-jobs-controller"):
+        elif age_h > STALE_HOURS:
             warnings.append(
                 f"{inst['InstanceId']} ({name or itype}) has run {age_h:.1f} h"
             )
@@ -214,24 +213,25 @@ def render(results: list[dict], spot_open: dict, fmt: str) -> str:
 
     L.append(f"{'### ' if md else ''}Emergency stop")
     L.append("")
-    L.append("Kill the jobs controller **first** - its job is relaunching preempted "
-             "workers, so it will resurrect anything you terminate.")
+    L.append("Campaigns run on Fargate Spot via AWS Batch. A cancelled job stops "
+             "for good - the task ends with it, and its shard returns to the "
+             "queue to be resumed later. There is no controller to kill first.")
     L.append("")
     L.append("```bash")
-    L.append("sky jobs cancel --all && sky down --all      # preferred")
+    L.append("# cancel every active job in a queue")
+    L.append("aws batch list-jobs --job-queue <QUEUE> --job-status RUNNING \\")
+    L.append("  --query 'jobSummaryList[].jobId' --output text \\")
+    L.append("  | xargs -n1 -I{} aws batch cancel-job --job-id {} --reason 'operator stop'")
     L.append("")
+    L.append("# or disable the queue so nothing new starts")
+    L.append("aws batch update-job-queue --job-queue <QUEUE> --state DISABLED")
     for r in results:
         if r["instances"]:
-            ids = " ".join(i["id"] for i in r["instances"]
-                           if "jobs-controller" in i["name"])
-            rest = " ".join(i["id"] for i in r["instances"]
-                            if "jobs-controller" not in i["name"])
-            if ids:
-                L.append(f"aws ec2 terminate-instances --region {r['region']} "
-                         f"--instance-ids {ids}   # controller first")
-            if rest:
-                L.append(f"aws ec2 terminate-instances --region {r['region']} "
-                         f"--instance-ids {rest}")
+            ids = " ".join(i["id"] for i in r["instances"])
+            L.append("")
+            L.append(f"# unexpected EC2 in {r['region']} - campaigns do not use EC2")
+            L.append(f"aws ec2 terminate-instances --region {r['region']} "
+                     f"--instance-ids {ids}")
     L.append("```")
     return "\n".join(L)
 

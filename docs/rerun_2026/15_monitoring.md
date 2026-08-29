@@ -4,7 +4,7 @@ Cost Explorer lags about a day. That is too slow to catch the three ways a Spot
 campaign quietly overspends:
 
 1. an instance left running after a test,
-2. a SkyPilot **jobs controller** that outlives the jobs it managed,
+2. **EC2 instances at all** - campaigns run on Fargate, so any EC2 is unexpected,
 3. a managed job silently satisfied **on-demand** at roughly 3× the Spot price —
    which happened during the v3 smoke test and was visible only as
    `InstanceLifecycle` in the EC2 console.

@@ -1,4 +1,15 @@
-# 16 — SkyPilot vs Fargate Spot, and the move to Parquet
+# 16 — Why Fargate, not SkyPilot (decision record)
+
+> **Decided: Fargate Spot.** SkyPilot is no longer used and its config and
+> runbook have been deleted. This document is kept because it is the evidence
+> for that decision, not because either option is still open.
+>
+> The short version: Fargate Spot already holds a 12,000 vCPU quota in us-east-2
+> where SkyPilot's EC2 Spot quota there is 256; Fargate tasks end with the job,
+> whereas SkyPilot's jobs controller survives `sky down --all` and keeps
+> relaunching workers; and on an identical shard Fargate measured 33.7 s against
+> EC2's 53.7 s (n=1, so weak evidence on its own, but it points the same way as
+> the other two).
 
 A cost and bottleneck comparison of the two ways to run a picking campaign, plus
 why the 2025 DocumentDB output became Parquet on S3 and how to read either.
