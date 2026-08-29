@@ -1,7 +1,7 @@
 # 18 — Launch readiness: western states
 
 State of the campaign 5 launch. What is provisioned, what it should cost, what
-is still unknown, and the two decisions that are not ours to make.
+is still unknown, and what has been decided.
 
 Briefing deck for the non-operational audience:
 [seisscoped.org/QuakeScope/launch_2026.html](https://seisscoped.org/QuakeScope/launch_2026.html).
@@ -66,17 +66,17 @@ without an error.
 
 All five campaigns are unblocked.
 
-## Two decisions that are not ours
+## Decisions
 
-**1. The weight substitution is stakeholder-facing.**
-[09](09_western_states_run.md) specifies `instance`;
-[11](11_launch_plan.md) supersedes it with `original`. The evidence for the
-change is strong — on three minutes of Ridgecrest aftershocks at a shared
-threshold, `instance` returns 4 picks where `original` returns 26, a ceiling no
-threshold recovers. But this is a deliverable to an external group, and the
-substitution changes what they receive. **Confirm before the queue is written.**
+**1. Weight: `original`. CONFIRMED 2026-08-29 by M. Denolle.**
+[09](09_western_states_run.md) specified `instance`; [11](11_launch_plan.md)
+superseded it with `original`, and that substitution is now agreed. The evidence
+behind it: on three minutes of Ridgecrest aftershocks at a shared threshold,
+`instance` returns 4 picks where `original` returns 26, a ceiling no threshold
+recovers. `quakescope_2026_western` carries `original` as its default weight, so
+a launch that overrides nothing gets it.
 
-**2. Western is the largest campaign, not the smallest.** 33.8M station-days is
+**2. Still open — western is the largest campaign, not the smallest.** 33.8M station-days is
 65% of the launch total, and it is *additional* work rather than a subset — it
 re-picks CA/NCEDC/SCEDC stations with different weights. v3's largest run to
 date is four shards. SCEDC, at 2.47M station-days, would prove the same

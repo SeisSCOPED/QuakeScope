@@ -188,9 +188,10 @@ and it should not be edited to match.
 [09_western_states_run.md](09_western_states_run.md), which specified
 `instance`.** `instance` has a genuine ceiling on dense near-field aftershock
 sequences: at Ridgecrest it emits 246 S picks with its threshold on the floor
-where the others reach 684 and 832, and no threshold recovers it. Since this is
-a stakeholder deliverable, **confirm the substitution with the stakeholder
-before launching** — it changes what they receive.
+where the others reach 684 and 832, and no threshold recovers it. This is a
+stakeholder deliverable, so the substitution needed their agreement:
+**confirmed 2026-08-29 by M. Denolle.** The `quakescope_2026_western` job
+definition carries `original` as its default weight.
 
 ## Sizing
 

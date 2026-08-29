@@ -93,3 +93,27 @@ including temporary ones (`ZI`). Revisit after the campaign.
 Of 20,902 EarthScope-routed stations, 1,392 are on Open Data networks and 19,510
 are restricted. **Both tiers now work**, so the campaign is no longer limited to
 the 3,211 SCEDC/NCEDC stations.
+
+## Access confirmed for the western campaign (2026-08-29)
+
+The `s3-miniseed-v2` role is granted to `mdenolle`, and it reaches the networks
+western actually needs. Spot-checked the five largest restricted networks in the
+campaign:
+
+| network | stations | years listed |
+|---|--:|--:|
+| `XD` | 5,145 | 20 |
+| `NP` | 3,033 | 22 |
+| `ZI` | 2,183 | 6 |
+| `ZG` | 1,139 | 14 |
+| `1D` | 898 | 5 |
+
+All four temporary networks (`X`, `Z`, `1` prefixes) listed without
+network- or year-scoped credentials, so the scoping the tutorial describes is not
+required for read access with this role.
+
+**The remaining gap is the container, not the account.** A Fargate task has no
+EarthScope login, so the restricted tier needs `ES_OAUTH2__REFRESH_TOKEN`
+supplied to the job — properly via Secrets Manager and
+`containerProperties.secrets`, never baked into a job definition in plaintext.
+SCEDC, NCEDC and the Open Data eight are anonymous and unaffected.
