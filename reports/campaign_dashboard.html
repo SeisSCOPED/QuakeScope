@@ -4,10 +4,12 @@
 <style>
 :root{color-scheme:light;--surface-1:#fcfcfb;--surface-2:#f4f3f0;
 --text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
---series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219}
+--series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219;
+--sea:#f0f4f8;--coast:#9aa5ae;--border-line:#c3cad1}
 @media(prefers-color-scheme:dark){:root:where(:not([data-theme=light])){
 color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
---text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431}}
+--text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431;
+--sea:#20242a;--coast:#5d6771;--border-line:#454e57}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--surface-1);color:var(--text-primary);
 font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -26,6 +28,9 @@ font-variant-numeric:tabular-nums}
 figure{margin:0;background:var(--surface-2);border-radius:9px;padding:12px}
 svg{width:100%;height:auto;display:block}
 .ax{fill:var(--muted);font-size:10.5px}
+.base{fill:none;vector-effect:non-scaling-stroke}
+.base .coast{stroke:var(--coast);stroke-width:1}
+.base .border{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}
 .empty{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);font-size:13px}
@@ -40,14 +45,15 @@ code{font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:4p
 </style>
 <div class="wrap">
 <h1>QuakeScope campaign dashboard</h1>
-<p class="sub">2026-08-30 19:40 UTC · Batch: FAILED 1, SUCCEEDED 1 · rebuilt hourly</p>
+<p class="sub">2026-08-30 20:24 UTC · Batch: FAILED 1, SUCCEEDED 1 · rebuilt hourly</p>
 
 <div class="tiles"><div class="tile"><div class="k">Picks written</div><div class="v">54,854</div><div class="n">summed from shard manifests</div></div><div class="tile"><div class="k">Shards complete</div><div class="v">1 / 255,700</div><div class="n">0.00% of the queue</div></div><div class="tile"><div class="k">Catalogue size</div><div class="v">1 MB</div><div class="n">1 Parquet object</div></div><div class="tile"><div class="k">vCPU in use</div><div class="v">0</div><div class="n">Batch jobs RUNNING now</div></div><div class="tile"><div class="k">vCPU-hours</div><div class="v">1.9</div><div class="n">from job start/stop times</div></div><div class="tile"><div class="k">Spend (estimate)</div><div class="v">$0.03</div><div class="n">vCPU-h x $0.0148/vCPU-h — not a billed figure</div></div></div>
 
 <h2>Picks per station</h2>
-<p class="cap">Position is the station's longitude and latitude; size and shade
-are its pick count. Hover for the station code and count.</p>
-<figure><p class="empty">No picks yet — the map fills in as shards complete.</p></figure>
+<p class="cap">Stations are triangles, positioned by longitude and latitude,
+sized and shaded by pick count. Coastline and state borders are drawn from
+Natural Earth for orientation. Hover a triangle for its code and count.</p>
+<figure><svg viewBox="0 0 760 440" role="img" aria-label="Seismic stations as triangles over a coastline, sized and shaded by pick count"><rect x="46" y="14" width="690" height="386" fill="var(--sea)"/><g class="base"><polyline class="coast" points="311.9,329.9 315.6,332.9 311.9,329.9"/><polyline class="coast" points="353.4,345.9 350.2,343.4 359.9,352.4 353.4,345.9"/><polyline class="coast" points="282.6,293.3 288.3,298.8 293.6,295.3 282.6,293.3"/><polyline class="coast" points="305.8,292.3 296.0,290.3 300.5,295.3 311.1,292.3 305.8,292.3"/><polyline class="coast" points="355.1,325.9 362.0,328.4 351.8,319.8 355.1,325.9"/><polyline class="coast" points="142.2,47.6 174.4,83.2 170.7,93.8 173.6,90.2 190.2,101.8 195.5,86.2 230.5,90.2 198.8,92.8 195.5,95.3 208.6,119.3 193.1,103.3 191.1,116.3 195.5,132.9 219.1,150.9 216.3,177.0 265.9,237.6 266.7,264.7 273.3,270.2 308.7,272.7 327.8,288.3 353.4,292.8 357.5,306.8 370.9,307.8 395.7,328.9 412.4,377.0"/><polyline class="border" points="512.1,244.1 292.8,43.1"/><polyline class="border" points="512.1,244.1 521.9,269.2 531.7,279.2 519.9,291.3 515.8,313.3 508.5,322.9 508.5,335.4 517.8,348.4 515.8,355.4 507.7,357.9"/><polyline class="border" points="512.1,244.1 506.8,193.0 516.2,185.5 529.6,192.0 535.3,184.5 535.3,143.4"/></g><text x="46" y="416" class="ax" text-anchor="middle">-126.1°</text><text x="40" y="404" class="ax" text-anchor="end">31.9°</text><text x="391" y="416" class="ax" text-anchor="middle">-117.6°</text><text x="40" y="211" class="ax" text-anchor="end">35.7°</text><text x="736" y="416" class="ax" text-anchor="middle">-109.1°</text><text x="40" y="18" class="ax" text-anchor="end">39.6°</text><rect x="46" y="14" width="690" height="386" fill="none" stroke="var(--grid)"/><polygon points="382.0,177.9 367.6,202.7 396.3,202.7" fill="#184f95" stroke="var(--surface-2)" stroke-width="1.5" stroke-linejoin="round"><title>JRC2 — 12,737 picks</title></polygon><polygon points="387.1,203.1 372.7,227.9 401.5,227.9" fill="#184f95" stroke="var(--surface-2)" stroke-width="1.5" stroke-linejoin="round"><title>LRL — 12,758 picks</title></polygon><polygon points="400.0,200.8 385.6,225.6 414.4,225.6" fill="#184f95" stroke="var(--surface-2)" stroke-width="1.5" stroke-linejoin="round"><title>CCC — 12,797 picks</title></polygon><polygon points="390.6,184.8 374.9,211.8 406.2,211.8" fill="#104281" stroke="var(--surface-2)" stroke-width="1.5" stroke-linejoin="round"><title>CLC — 16,562 picks</title></polygon></svg></figure>
 
 <h2>Picks per day of data</h2>
 <p class="cap">Picks by the day the waveform covers — not by when the job ran.</p>

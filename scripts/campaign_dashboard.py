@@ -29,6 +29,7 @@ import argparse
 import datetime
 import json
 import math
+import os
 from collections import defaultdict
 
 import boto3
@@ -37,6 +38,9 @@ REGION = "us-east-2"
 BUCKET = "quakescope-picks-2026"
 QUEUE = "niyiyu_earthscope_missing_station"
 FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rate
+
+BASEMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "data", "basemap.json")
 
 SEQ = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
        "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281"]
@@ -127,39 +131,98 @@ def human(n):
     return f"{n:.1f} PB"
 
 
-def svg_map(per_station, coords, w=760, h=420):
+def _basemap(x0, x1, y0, y1, sx, sy):
+    """Coastline and state borders, clipped to the view.
+
+    Precomputed from Natural Earth into scripts/data/basemap.json so the hourly
+    workflow does not need cartopy. Only the segments that intersect the view
+    are emitted, so the page carries a few kilobytes rather than the whole
+    world.
+    """
+    try:
+        with open(BASEMAP) as f:
+            bm = json.load(f)
+    except Exception:
+        return ""                       # no basemap: the map still works
+    out = []
+    for key, cls in (("coast", "coast"), ("states", "border")):
+        for line in bm.get(key, []):
+            seg, run = [], []
+            for lo, la in line:
+                if x0 <= lo <= x1 and y0 <= la <= y1:
+                    run.append(f"{sx(lo):.1f},{sy(la):.1f}")
+                else:
+                    if len(run) > 1:
+                        seg.append(run)
+                    run = []
+            if len(run) > 1:
+                seg.append(run)
+            for r in seg:
+                out.append(f'<polyline class="{cls}" points="{" ".join(r)}"/>')
+    return "".join(out)
+
+
+def svg_map(per_station, coords, w=760, h=440):
+    """Stations as triangles - the seismological convention - over a coastline.
+
+    Triangles also separate the marks from the circles used in the time series,
+    so the two figures are not read as the same kind of thing.
+    """
     pts = [(coords[t][1], coords[t][0], n, coords[t][2])
            for t, n in per_station.items() if t in coords]
     if not pts:
-        return ('<p class="empty">No picks yet — the map fills in as shards '
+        return ('<p class="empty">No picks yet - the map fills in as shards '
                 'complete.</p>')
     lons = [p[0] for p in pts]; lats = [p[1] for p in pts]
     x0, x1 = min(lons), max(lons); y0, y1 = min(lats), max(lats)
-    padx = max((x1 - x0) * .12, .4); pady = max((y1 - y0) * .12, .4)
+    # Pad generously: a tight box around four stations shows no coastline at
+    # all, which defeats the point of having one.
+    # A tight box around a handful of stations contains no coastline at all,
+    # which is the one thing the basemap is there to provide. Enforce a minimum
+    # span so there is always recognisable geography to place them against.
+    MIN_SPAN = 11.0
+    padx = max((x1 - x0) * .35, (MIN_SPAN - (x1 - x0)) / 2, 1.0)
+    pady = max((y1 - y0) * .35, (MIN_SPAN * .7 - (y1 - y0)) / 2, 0.8)
     x0, x1, y0, y1 = x0 - padx, x1 + padx, y0 - pady, y1 + pady
-    mx = max(n for *_, n, _ in [(0, 0, p[2], p[3]) for p in pts])
-    def sx(lo): return 46 + (lo - x0) / (x1 - x0) * (w - 70)
-    def sy(la): return h - 40 - (la - y0) / (y1 - y0) * (h - 70)
+    # Keep degrees square so the coastline is not stretched.
+    ar = math.cos(math.radians((y0 + y1) / 2))
+    plot_w, plot_h = w - 70, h - 54
+    span_x, span_y = (x1 - x0) * ar, (y1 - y0)
+    if span_x / span_y > plot_w / plot_h:
+        extra = (span_x / (plot_w / plot_h) - span_y) / 2
+        y0, y1 = y0 - extra, y1 + extra
+    else:
+        extra = ((span_y * (plot_w / plot_h)) / ar - (x1 - x0)) / 2
+        x0, x1 = x0 - extra, x1 + extra
+    mx = max(p[2] for p in pts)
+
+    def sx(lo): return 46 + (lo - x0) / (x1 - x0) * plot_w
+    def sy(la): return h - 40 - (la - y0) / (y1 - y0) * plot_h
+
     out = [f'<svg viewBox="0 0 {w} {h}" role="img" '
-           f'aria-label="Stations positioned by longitude and latitude, '
-           f'shaded and sized by pick count">']
-    out.append(f'<rect x="46" y="14" width="{w-70}" height="{h-54}" '
-               f'fill="none" stroke="var(--grid)"/>')
-    for f in (0, .25, .5, .75, 1):
-        gx = 46 + f * (w - 70); gy = h - 40 - f * (h - 70)
-        out.append(f'<line x1="{gx:.0f}" y1="14" x2="{gx:.0f}" y2="{h-40}" stroke="var(--grid)"/>')
-        out.append(f'<line x1="46" y1="{gy:.0f}" x2="{w-24}" y2="{gy:.0f}" stroke="var(--grid)"/>')
+           f'aria-label="Seismic stations as triangles over a coastline, '
+           f'sized and shaded by pick count">']
+    out.append(f'<rect x="46" y="14" width="{plot_w}" height="{plot_h}" '
+               f'fill="var(--sea)"/>')
+    out.append(f'<g class="base">{_basemap(x0, x1, y0, y1, sx, sy)}</g>')
+    for f in (0, .5, 1):
+        gx = 46 + f * plot_w; gy = h - 40 - f * plot_h
         out.append(f'<text x="{gx:.0f}" y="{h-24}" class="ax" text-anchor="middle">'
-                   f'{x0+f*(x1-x0):.1f}°</text>')
+                   f'{x0+f*(x1-x0):.1f}\u00b0</text>')
         out.append(f'<text x="40" y="{gy+4:.0f}" class="ax" text-anchor="end">'
-                   f'{y0+f*(y1-y0):.1f}°</text>')
+                   f'{y0+f*(y1-y0):.1f}\u00b0</text>')
+    out.append(f'<rect x="46" y="14" width="{plot_w}" height="{plot_h}" '
+               f'fill="none" stroke="var(--grid)"/>')
     for lo, la, n, code in sorted(pts, key=lambda p: p[2]):
-        r = 5 + 13 * math.sqrt(n / mx)
+        r = 6 + 12 * math.sqrt(n / mx)
         c = SEQ[min(len(SEQ) - 1, int(len(SEQ) * (n / mx) ** .5))]
-        out.append(
-            f'<circle cx="{sx(lo):.1f}" cy="{sy(la):.1f}" r="{r:.1f}" fill="{c}" '
-            f'stroke="var(--surface-1)" stroke-width="2">'
-            f'<title>{code} — {n:,} picks</title></circle>')
+        cx, cy = sx(lo), sy(la)
+        tri = (f"{cx:.1f},{cy-r:.1f} {cx-r*0.87:.1f},{cy+r*0.5:.1f} "
+               f"{cx+r*0.87:.1f},{cy+r*0.5:.1f}")
+        out.append(f'<polygon points="{tri}" fill="{c}" '
+                   f'stroke="var(--surface-2)" stroke-width="1.5" '
+                   f'stroke-linejoin="round">'
+                   f'<title>{code} \u2014 {n:,} picks</title></polygon>')
     out.append('</svg>')
     return "".join(out)
 
@@ -238,10 +301,12 @@ def render(g):
 <style>
 :root{{color-scheme:light;--surface-1:#fcfcfb;--surface-2:#f4f3f0;
 --text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
---series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219}}
+--series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219;
+--sea:#f0f4f8;--coast:#9aa5ae;--border-line:#c3cad1}}
 @media(prefers-color-scheme:dark){{:root:where(:not([data-theme=light])){{
 color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
---text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431}}}}
+--text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431;
+--sea:#20242a;--coast:#5d6771;--border-line:#454e57}}}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--surface-1);color:var(--text-primary);
 font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}}
@@ -260,6 +325,9 @@ font-variant-numeric:tabular-nums}}
 figure{{margin:0;background:var(--surface-2);border-radius:9px;padding:12px}}
 svg{{width:100%;height:auto;display:block}}
 .ax{{fill:var(--muted);font-size:10.5px}}
+.base{{fill:none;vector-effect:non-scaling-stroke}}
+.base .coast{{stroke:var(--coast);stroke-width:1}}
+.base .border{{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}}
 .empty{{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}}
 table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
 th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);font-size:13px}}
@@ -279,8 +347,9 @@ code{{font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:4
 <div class="tiles">{tile_html}</div>
 
 <h2>Picks per station</h2>
-<p class="cap">Position is the station's longitude and latitude; size and shade
-are its pick count. Hover for the station code and count.</p>
+<p class="cap">Stations are triangles, positioned by longitude and latitude,
+sized and shaded by pick count. Coastline and state borders are drawn from
+Natural Earth for orientation. Hover a triangle for its code and count.</p>
 <figure>{svg_map(g['per_station'], g['coords'])}</figure>
 
 <h2>Picks per day of data</h2>
