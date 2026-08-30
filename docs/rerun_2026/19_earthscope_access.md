@@ -117,3 +117,49 @@ EarthScope login, so the restricted tier needs `ES_OAUTH2__REFRESH_TOKEN`
 supplied to the job — properly via Secrets Manager and
 `containerProperties.secrets`, never baked into a job definition in plaintext.
 SCEDC, NCEDC and the Open Data eight are anonymous and unaffected.
+
+## Credentials in the container (2026-08-30)
+
+The refresh token lives in Secrets Manager and is injected as an environment
+variable by Batch, never baked into a job definition:
+
+```
+secret : quakescope/earthscope-refresh-token   (us-east-2)
+policy : QuakeScopeEarthScopeSecretRead on SeisBenchBatchRole, scoped to that ARN
+wiring : containerProperties.secrets -> ES_OAUTH2__REFRESH_TOKEN
+```
+
+Only `quakescope_2026_earthscope:2` and `quakescope_2026_western:2` carry it.
+SCEDC, NCEDC and the Open Data eight are anonymous and do not.
+
+**Verified in a running container.** A job on `ZI` - a restricted network -
+logged:
+
+```
+POST https://login.earthscope.org/oauth/token                "200 OK"
+GET  .../beta/user/credentials/aws/s3-miniseed-v2            "200 OK"
+Load ZI.CAMP.10  2019.187 @ earthscope
+```
+
+Rotation: `es login` on a laptop, then `put-secret-value` with the new token.
+Nothing in the image or the job definition changes.
+
+## Open: EarthScope reads are much slower than SCEDC
+
+The same test then sat on `Load ZI.CAMP.10` for **25 minutes without a further
+log line**, and was cancelled rather than left running. For comparison, the SCEDC
+fire drill did 8 station-days in about 5 minutes.
+
+Not yet diagnosed, and it should be before either EarthScope campaign is
+planned. The likely cause is structural rather than a hang: SCEDC and NCEDC
+store one object per channel, so a station-day fetches only the band it needs,
+while EarthScope stores **one multi-channel object per station-day** that is
+downloaded and parsed in full before `.select()` picks a band out of it. The UW
+sample read earlier held 214 traces across 38 channel codes, of which the picker
+uses three.
+
+If that is the explanation, the one-channel policy saves inference on EarthScope
+but no I/O at all, and the per-band-day cost model in
+[16](16_skypilot_vs_fargate.md) - measured on SCEDC - understates EarthScope by
+a wide margin. That would move the campaign estimates, so it needs a profile
+(`--profile`, stage `s3.get` against bytes transferred) before planning.
