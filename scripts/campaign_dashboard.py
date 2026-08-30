@@ -346,68 +346,79 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
     return out
 
 
-def svg_waveform(ex, w=760, h=150):
-    """One trace with its picks, drawn the way a seismogram is drawn.
+# The waveform panels are raster, so they cannot restyle with the theme the way
+# the SVG figures do. These three are the palette steps that clear 3:1 against
+# BOTH the light card (#f4f3f0) and the dark one (#232322): trace 3.56/3.98,
+# P 3.98/3.56, S 3.50/4.05. The pair also passes the categorical checks
+# (normal-vision dE 32.3, CVD 24.2).
+WAVE_INK = "#808080"
+PHASE_INK = {"P": "#2a78d6", "S": "#d95926"}
 
-    A thin stroked line, not a filled envelope. The first version filled the
-    min/max envelope as a polygon, which renders as a solid grey smear and loses
-    the shape of the arrival entirely - the one thing the figure exists to show.
 
-    Above about two samples per pixel the line is the samples themselves. Denser
-    than that it becomes a min/max zigzag, still stroked, which is what obspy
-    does for the same reason: it preserves peak amplitude where plain
-    subsampling would drop the sharp onset the pick sits on.
+def png_waveform(ex, w=760, h=150, dpi=2):
+    """Render one trace with obspy/matplotlib and return a data URI.
+
+    obspy draws the trace, so the panel is the same plot a seismologist would
+    make at the terminal rather than a reimplementation of one. The figure is
+    transparent, so the card background shows through and the panel sits in
+    either theme; the ink colours are chosen to survive both.
     """
-    d = ex["data"]
-    n = len(d)
-    if not n:
-        return ""
-    amp = max(abs(min(d)), abs(max(d))) or 1.0
-    left, right, top, bot = 8, w - 8, 12, h - 26
-    mid = (top + bot) / 2
-    half = (bot - top) / 2
-    cols = int(right - left)
+    import base64
+    from io import BytesIO
 
-    def y(v):
-        return mid - (v / amp) * half
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import obspy
 
-    if n <= cols * 2:
-        pts = [f"{left + i / (n - 1) * (right - left):.1f},{y(v):.1f}"
-               for i, v in enumerate(d)]
-    else:
-        step = n / cols
-        pts = []
-        for c in range(cols):
-            a = int(c * step); b = max(int((c + 1) * step), a + 1)
-            chunk = d[a:min(b, n)]
-            if not chunk:
-                continue
-            x = left + c
-            lo, hi = min(chunk), max(chunk)
-            # Order the pair so the zigzag never doubles back on itself.
-            first, second = (hi, lo) if c % 2 == 0 else (lo, hi)
-            pts.append(f"{x},{y(first):.1f}")
-            pts.append(f"{x},{y(second):.1f}")
+    tr = obspy.Trace(np.asarray(ex["data"], dtype=float))
+    tr.stats.sampling_rate = ex["rate"]
+    tr.stats.network, tr.stats.station, _ = (ex["tid"].split(".") + [""])[:3]
+    tr.stats.channel = ex["cha"] + "Z"
 
-    o = [f'<svg viewBox="0 0 {w} {h}" role="img" '
-         f'aria-label="{ex["tid"]} {ex["cha"]} vertical-component waveform, '
-         f'{ex["dur"]:.0f} seconds, with {len(ex["marks"])} picks marked">']
-    o.append(f'<line x1="{left}" y1="{mid:.1f}" x2="{right}" y2="{mid:.1f}" '
-             f'stroke="var(--grid)" stroke-width="1"/>')
-    o.append(f'<polyline class="wave" points="{" ".join(pts)}"/>')
-    for sec, pha, conf in ex["marks"]:
-        x = left + (sec / ex["dur"]) * (right - left)
-        col, lab = PHASE.get(pha, ("var(--muted)", pha))
-        o.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{bot}" '
-                 f'stroke="{col}" stroke-width="1.75"/>')
-        o.append(f'<text x="{x+3:.1f}" y="{top+10}" class="ph" fill="{col}">'
-                 f'{lab}&#8202;{conf:.2f}</text>')
-    o.append(f'<text x="{left}" y="{h-8}" class="ax">{ex["start"]} UTC '
-             f'\u00b7 {ex["dur"]:.0f} s \u00b7 {ex["rate"]:.0f} Hz</text>')
-    o.append(f'<text x="{right}" y="{h-8}" class="ax" text-anchor="end">'
-             f'{ex["tid"]}{ex["cha"]}Z</text>')
-    o.append('</svg>')
-    return "".join(o)
+    fig, ax = plt.subplots(figsize=(w / 100, h / 100), dpi=100 * dpi)
+    t = np.arange(tr.stats.npts) / tr.stats.sampling_rate
+    ax.plot(t, tr.data, lw=0.55, color=WAVE_INK, solid_joinstyle="round")
+    amp = float(np.abs(tr.data).max()) or 1.0
+    ax.set_ylim(-amp * 1.12, amp * 1.12)
+    ax.set_xlim(0, ex["dur"])
+    # Picks seconds apart put their labels on top of each other - "P 0.29" and
+    # "S 0.52" overlapped into an unreadable smear on the first render. Step a
+    # label down a row whenever it would start before the previous one ended.
+    LABEL_W = ex["dur"] * 0.085          # roughly the width of "S 0.52"
+    rows, ends = [], []
+    for sec, pha, conf in sorted(ex["marks"]):
+        r = 0
+        while r < len(ends) and sec < ends[r]:
+            r += 1
+        if r == len(ends):
+            ends.append(0.0)
+        ends[r] = sec + LABEL_W
+        rows.append((sec, pha, conf, r))
+    for sec, pha, conf, r in rows:
+        c = PHASE_INK.get(pha, WAVE_INK)
+        ax.axvline(sec, color=c, lw=1.4)
+        ax.text(sec + ex["dur"] * 0.006, amp * (0.99 - 0.19 * r),
+                f"{pha} {conf:.2f}", color=c, fontsize=7.4,
+                fontweight="semibold", va="top")
+    ax.set_yticks([])
+    ax.tick_params(axis="x", labelsize=7, colors=WAVE_INK, length=3, pad=2)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(WAVE_INK)
+    ax.spines["bottom"].set_linewidth(0.6)
+    ax.set_xlabel("seconds", fontsize=7, color=WAVE_INK, labelpad=1)
+    fig.tight_layout(pad=0.3)
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", transparent=True, dpi=100 * dpi)
+    plt.close(fig)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    alt = (f'{ex["tid"]}{ex["cha"]}Z vertical component, {ex["dur"]:.0f} seconds '
+           f'from {ex["start"]} UTC, with {len(ex["marks"])} picks marked')
+    return (f'<img class="wave" alt="{alt}" '
+            f'src="data:image/png;base64,{b64}">')
 
 
 def render(g, examples):
@@ -442,8 +453,13 @@ def render(g, examples):
 
     st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
     if examples:
-        waves = "".join(f'<figure class="wf">{svg_waveform(e)}</figure>'
-                        for e in examples)
+        waves = "".join(
+            f'<figure class="wf">{png_waveform(e)}'
+            f'<figcaption>{e["tid"]}{e["cha"]}Z \u00b7 {e["start"]} UTC \u00b7 '
+            f'{e["rate"]:.0f} Hz \u00b7 '
+            f'{len(e["marks"])} pick{"" if len(e["marks"])==1 else "s"}'
+            f'</figcaption></figure>'
+            for e in examples)
     else:
         waves = ('<p class="empty">No examples yet. They are drawn from picks '
                  'already written to S3, so this fills in once a campaign has '
@@ -484,7 +500,8 @@ svg{{width:100%;height:auto;display:block}}
 .base .coast{{stroke:var(--coast);stroke-width:1}}
 .base .border{{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}}
 .wf{{padding:6px 8px 2px;margin-bottom:8px}}
-.wave{{fill:none;stroke:var(--wave);stroke-width:.9;stroke-linejoin:round;vector-effect:non-scaling-stroke}}
+img.wave{{width:100%;height:auto;display:block}}
+figcaption{{font-size:11.5px;color:var(--muted);padding:0 2px 4px;font-variant-numeric:tabular-nums}}
 .ph{{font-size:10.5px;font-weight:640}}
 .empty{{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}}
 table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
