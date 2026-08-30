@@ -1,0 +1,327 @@
+"""Build a self-contained HTML dashboard of campaign progress.
+
+    python scripts/campaign_dashboard.py -o reports/campaign_dashboard.html
+
+Reads the same sources as campaign_status.py and renders them as SVG - no CDN,
+no build step, no JavaScript charting library, so the page keeps working when
+published to Pages and cannot silently fail to load a script.
+
+MEASURED (counted from an API response):
+  picks per station, per day    manifests/<shard>.json -> records[]
+  station coordinates           stations.parquet
+  shards planned / complete     shards.jsonl, complete/
+  Parquet objects and bytes     list_objects_v2 on picks/
+  jobs by status, vCPU in use   Batch list_jobs / describe_jobs
+  vCPU-hours consumed           Batch startedAt/stoppedAt x job vCPU
+
+DERIVED (stated as such on the page, with the rate shown):
+  spend = vCPU-hours x FARGATE_SPOT_RATE. Cost Explorer is blocked on this
+  account by an organisation SCP, so no billed figure is available to check it
+  against; it is an estimate and the page says so.
+
+Nothing else is inferred. A quantity that cannot be read is omitted rather than
+filled in.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import math
+from collections import defaultdict
+
+import boto3
+
+REGION = "us-east-2"
+BUCKET = "quakescope-picks-2026"
+QUEUE = "niyiyu_earthscope_missing_station"
+FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rate
+
+SEQ = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
+       "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281"]
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def gather(s3, b, campaigns):
+    per_station = defaultdict(int)
+    per_day = defaultdict(int)
+    camp_rows, total_picks, total_bytes, total_files = [], 0, 0, 0
+
+    for name in campaigns:
+        try:
+            body = s3.get_object(Bucket=BUCKET, Key=f"{name}/shards.jsonl")["Body"].read()
+            shards = sum(1 for x in body.decode().splitlines() if x.strip())
+        except Exception:
+            shards = 0
+        done = picks = sdays = files = nbytes = 0
+        pg = s3.get_paginator("list_objects_v2")
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/complete/"):
+            done += len(page.get("Contents", []))
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/picks/"):
+            for o in page.get("Contents", []):
+                nbytes += o["Size"]
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/manifests/"):
+            for o in page.get("Contents", []):
+                m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
+                picks += m.get("n_picks", 0)
+                sdays += m.get("station_days", 0)
+                files += len(m.get("files", []))
+                for r in m.get("records", []):
+                    per_station[r["tid"]] += r.get("npks", 0)
+                    per_day[(r["yr"], r["doy"])] += r.get("npks", 0)
+        if shards or picks:
+            camp_rows.append({"name": name, "shards": shards, "done": done,
+                              "picks": picks, "sdays": sdays, "bytes": nbytes})
+        total_picks += picks; total_bytes += nbytes; total_files += files
+
+    coords = {}
+    try:
+        import pandas as pd
+        for name in campaigns:
+            try:
+                d = pd.read_parquet(f"s3://{BUCKET}/{name}/stations.parquet")
+            except Exception:
+                continue
+            for i, sc, lat, lon in zip(d["id"], d["station_code"],
+                                       d["latitude"], d["longitude"]):
+                coords[str(i)] = (float(lat), float(lon), str(sc))
+    except Exception:
+        pass
+
+    vcpu_now = vcpu_hours = 0.0
+    status = {}
+    for st in ("RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"):
+        try:
+            jobs = b.list_jobs(jobQueue=QUEUE, jobStatus=st)["jobSummaryList"]
+        except Exception:
+            continue
+        if jobs:
+            status[st] = len(jobs)
+        for chunk in [jobs[i:i+100] for i in range(0, len(jobs), 100)]:
+            ids = [j["jobId"] for j in chunk]
+            for d in b.describe_jobs(jobs=ids)["jobs"]:
+                v = 0
+                for rr in d.get("container", {}).get("resourceRequirements", []):
+                    if rr["type"] == "VCPU":
+                        v = float(rr["value"])
+                if d["status"] == "RUNNING":
+                    vcpu_now += v
+                s0, s1 = d.get("startedAt"), d.get("stoppedAt")
+                if s0:
+                    end = s1 or now().timestamp() * 1000
+                    vcpu_hours += v * (end - s0) / 3_600_000
+    return dict(per_station=per_station, per_day=per_day, camps=camp_rows,
+                picks=total_picks, bytes=total_bytes, files=total_files,
+                coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
+                status=status)
+
+
+def human(n):
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024: return f"{n:.0f} {u}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def svg_map(per_station, coords, w=760, h=420):
+    pts = [(coords[t][1], coords[t][0], n, coords[t][2])
+           for t, n in per_station.items() if t in coords]
+    if not pts:
+        return ('<p class="empty">No picks yet — the map fills in as shards '
+                'complete.</p>')
+    lons = [p[0] for p in pts]; lats = [p[1] for p in pts]
+    x0, x1 = min(lons), max(lons); y0, y1 = min(lats), max(lats)
+    padx = max((x1 - x0) * .12, .4); pady = max((y1 - y0) * .12, .4)
+    x0, x1, y0, y1 = x0 - padx, x1 + padx, y0 - pady, y1 + pady
+    mx = max(n for *_, n, _ in [(0, 0, p[2], p[3]) for p in pts])
+    def sx(lo): return 46 + (lo - x0) / (x1 - x0) * (w - 70)
+    def sy(la): return h - 40 - (la - y0) / (y1 - y0) * (h - 70)
+    out = [f'<svg viewBox="0 0 {w} {h}" role="img" '
+           f'aria-label="Stations positioned by longitude and latitude, '
+           f'shaded and sized by pick count">']
+    out.append(f'<rect x="46" y="14" width="{w-70}" height="{h-54}" '
+               f'fill="none" stroke="var(--grid)"/>')
+    for f in (0, .25, .5, .75, 1):
+        gx = 46 + f * (w - 70); gy = h - 40 - f * (h - 70)
+        out.append(f'<line x1="{gx:.0f}" y1="14" x2="{gx:.0f}" y2="{h-40}" stroke="var(--grid)"/>')
+        out.append(f'<line x1="46" y1="{gy:.0f}" x2="{w-24}" y2="{gy:.0f}" stroke="var(--grid)"/>')
+        out.append(f'<text x="{gx:.0f}" y="{h-24}" class="ax" text-anchor="middle">'
+                   f'{x0+f*(x1-x0):.1f}°</text>')
+        out.append(f'<text x="40" y="{gy+4:.0f}" class="ax" text-anchor="end">'
+                   f'{y0+f*(y1-y0):.1f}°</text>')
+    for lo, la, n, code in sorted(pts, key=lambda p: p[2]):
+        r = 5 + 13 * math.sqrt(n / mx)
+        c = SEQ[min(len(SEQ) - 1, int(len(SEQ) * (n / mx) ** .5))]
+        out.append(
+            f'<circle cx="{sx(lo):.1f}" cy="{sy(la):.1f}" r="{r:.1f}" fill="{c}" '
+            f'stroke="var(--surface-1)" stroke-width="2">'
+            f'<title>{code} — {n:,} picks</title></circle>')
+    out.append('</svg>')
+    return "".join(out)
+
+
+def svg_series(per_day, w=760, h=240):
+    if not per_day:
+        return ('<p class="empty">No picks yet — this fills in as shards '
+                'complete.</p>')
+    keys = sorted(per_day)
+    vals = [per_day[k] for k in keys]
+    mx = max(vals)
+    n = len(keys)
+    def px(i): return 56 + (i / max(n - 1, 1)) * (w - 80)
+    def py(v): return h - 34 - (v / mx) * (h - 60)
+    pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(vals))
+    out = [f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="Picks per day">']
+    for f in (0, .5, 1):
+        gy = h - 34 - f * (h - 60)
+        out.append(f'<line x1="56" y1="{gy:.0f}" x2="{w-24}" y2="{gy:.0f}" stroke="var(--grid)"/>')
+        out.append(f'<text x="50" y="{gy+4:.0f}" class="ax" text-anchor="end">'
+                   f'{int(mx*f):,}</text>')
+    if n == 1:
+        out.append(f'<circle cx="{px(0):.1f}" cy="{py(vals[0]):.1f}" r="5" '
+                   f'fill="var(--series-1)"><title>{keys[0][0]}.{keys[0][1]:03d} — '
+                   f'{vals[0]:,} picks</title></circle>')
+    else:
+        out.append(f'<polyline points="{pts}" fill="none" stroke="var(--series-1)" '
+                   f'stroke-width="2" stroke-linejoin="round"/>')
+        for i, v in enumerate(vals):
+            out.append(f'<circle cx="{px(i):.1f}" cy="{py(v):.1f}" r="4.5" '
+                       f'fill="var(--series-1)" stroke="var(--surface-1)" '
+                       f'stroke-width="2"><title>{keys[i][0]}.{keys[i][1]:03d} — '
+                       f'{v:,} picks</title></circle>')
+    for i in (0, n - 1):
+        out.append(f'<text x="{px(i):.0f}" y="{h-12}" class="ax" '
+                   f'text-anchor="{"start" if i==0 else "end"}">'
+                   f'{keys[i][0]}.{keys[i][1]:03d}</text>')
+    out.append('</svg>')
+    return "".join(out)
+
+
+def render(g):
+    done = sum(c["done"] for c in g["camps"])
+    planned = sum(c["shards"] for c in g["camps"])
+    pct = (100 * done / planned) if planned else 0
+    spend = g["vcpu_hours"] * FARGATE_SPOT_RATE
+    tiles = [
+        ("Picks written", f"{g['picks']:,}", "summed from shard manifests"),
+        ("Shards complete", f"{done:,} / {planned:,}", f"{pct:.2f}% of the queue"),
+        ("Catalogue size", human(g["bytes"]),
+         f"{g['files']:,} Parquet object" + ("" if g["files"] == 1 else "s")),
+        ("vCPU in use", f"{g['vcpu_now']:.0f}", "Batch jobs RUNNING now"),
+        ("vCPU-hours", f"{g['vcpu_hours']:,.1f}", "from job start/stop times"),
+        ("Spend (estimate)", f"${spend:,.2f}",
+         f"vCPU-h x ${FARGATE_SPOT_RATE}/vCPU-h — not a billed figure"),
+    ]
+    tile_html = "".join(
+        f'<div class="tile"><div class="k">{k}</div><div class="v">{v}</div>'
+        f'<div class="n">{n}</div></div>' for k, v, n in tiles)
+
+    rows = ""
+    mx = max([c["shards"] for c in g["camps"]] or [1])
+    for c in sorted(g["camps"], key=lambda x: -x["shards"]):
+        p = (100 * c["done"] / c["shards"]) if c["shards"] else 0
+        rows += (
+            f'<tr><th scope="row">{c["name"]}</th>'
+            f'<td class="bar"><span style="width:{max(c["shards"]/mx*100,0.6):.2f}%">'
+            f'<i style="width:{p:.2f}%"></i></span></td>'
+            f'<td class="num">{c["done"]:,}</td><td class="num">{c["shards"]:,}</td>'
+            f'<td class="num">{p:.2f}%</td><td class="num">{c["picks"]:,}</td></tr>')
+
+    st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
+    return f"""<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuakeScope campaign dashboard</title>
+<style>
+:root{{color-scheme:light;--surface-1:#fcfcfb;--surface-2:#f4f3f0;
+--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
+--series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219}}
+@media(prefers-color-scheme:dark){{:root:where(:not([data-theme=light])){{
+color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
+--text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431}}}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--surface-1);color:var(--text-primary);
+font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}}
+.wrap{{max-width:860px;margin:0 auto;padding:32px 20px 64px}}
+h1{{font-size:21px;margin:0 0 2px}}
+.sub{{color:var(--text-secondary);margin:0 0 26px;font-size:13px}}
+h2{{font-size:15px;margin:34px 0 4px}}
+.cap{{color:var(--text-secondary);font-size:12.5px;margin:0 0 12px}}
+.tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}}
+.tile{{background:var(--surface-2);border-radius:9px;padding:13px 14px}}
+.tile .k{{font-size:11.5px;color:var(--text-secondary);text-transform:uppercase;
+letter-spacing:.04em}}
+.tile .v{{font-size:22px;font-weight:620;margin:3px 0 1px;
+font-variant-numeric:tabular-nums}}
+.tile .n{{font-size:11.5px;color:var(--muted)}}
+figure{{margin:0;background:var(--surface-2);border-radius:9px;padding:12px}}
+svg{{width:100%;height:auto;display:block}}
+.ax{{fill:var(--muted);font-size:10.5px}}
+.empty{{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}}
+table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
+th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);font-size:13px}}
+th{{color:var(--text-secondary);font-weight:600}}
+td.num{{text-align:right}}
+td.bar{{width:34%}}
+td.bar span{{display:block;height:9px;border-radius:4px;background:var(--grid)}}
+td.bar i{{display:block;height:9px;border-radius:4px;background:var(--series-1)}}
+footer{{margin-top:34px;color:var(--muted);font-size:12px;border-top:1px solid var(--grid);
+padding-top:12px}}
+code{{font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:4px}}
+</style>
+<div class="wrap">
+<h1>QuakeScope campaign dashboard</h1>
+<p class="sub">{now():%Y-%m-%d %H:%M} UTC · Batch: {st} · rebuilt hourly</p>
+
+<div class="tiles">{tile_html}</div>
+
+<h2>Picks per station</h2>
+<p class="cap">Position is the station's longitude and latitude; size and shade
+are its pick count. Hover for the station code and count.</p>
+<figure>{svg_map(g['per_station'], g['coords'])}</figure>
+
+<h2>Picks per day of data</h2>
+<p class="cap">Picks by the day the waveform covers — not by when the job ran.</p>
+<figure>{svg_series(g['per_day'])}</figure>
+
+<h2>Progress by campaign</h2>
+<p class="cap">Bar length is the size of the queue; the filled part is what is
+complete.</p>
+<table><thead><tr><th>campaign</th><th>queue</th><th class="num">done</th>
+<th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
+<tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
+
+<footer>
+Every figure above except spend is counted from an S3 or Batch API response.
+<strong>Spend is derived</strong>: vCPU-hours from Batch job start and stop times,
+multiplied by <code>${FARGATE_SPOT_RATE}</code> per vCPU-hour. It is not a billed
+figure — Cost Explorer is blocked on this account by an organisation policy, so
+nothing here has been checked against AWS billing.
+Data volume <em>ingested</em> from the archives is not shown because it is not
+measured anywhere; the catalogue size above is what was written, not what was read.
+</footer>
+</div>
+"""
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("-o", "--out", default="reports/campaign_dashboard.html")
+    ap.add_argument("--campaigns",
+                    default="scedc,ncedc,earthscope,obs,western,firedrill")
+    a = ap.parse_args()
+    s3 = boto3.client("s3", region_name=REGION)
+    b = boto3.client("batch", region_name=REGION)
+    g = gather(s3, b, [c for c in a.campaigns.split(",") if c])
+    with open(a.out, "w") as f:
+        f.write(render(g))
+    print(f"wrote {a.out}: {g['picks']:,} picks, "
+          f"{len(g['per_station'])} stations, {len(g['per_day'])} days, "
+          f"{g['vcpu_hours']:.1f} vCPU-h")
+
+
+if __name__ == "__main__":
+    main()

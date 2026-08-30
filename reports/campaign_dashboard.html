@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuakeScope campaign dashboard</title>
+<style>
+:root{color-scheme:light;--surface-1:#fcfcfb;--surface-2:#f4f3f0;
+--text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
+--series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219}
+@media(prefers-color-scheme:dark){:root:where(:not([data-theme=light])){
+color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
+--text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--surface-1);color:var(--text-primary);
+font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:32px 20px 64px}
+h1{font-size:21px;margin:0 0 2px}
+.sub{color:var(--text-secondary);margin:0 0 26px;font-size:13px}
+h2{font-size:15px;margin:34px 0 4px}
+.cap{color:var(--text-secondary);font-size:12.5px;margin:0 0 12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}
+.tile{background:var(--surface-2);border-radius:9px;padding:13px 14px}
+.tile .k{font-size:11.5px;color:var(--text-secondary);text-transform:uppercase;
+letter-spacing:.04em}
+.tile .v{font-size:22px;font-weight:620;margin:3px 0 1px;
+font-variant-numeric:tabular-nums}
+.tile .n{font-size:11.5px;color:var(--muted)}
+figure{margin:0;background:var(--surface-2);border-radius:9px;padding:12px}
+svg{width:100%;height:auto;display:block}
+.ax{fill:var(--muted);font-size:10.5px}
+.empty{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);font-size:13px}
+th{color:var(--text-secondary);font-weight:600}
+td.num{text-align:right}
+td.bar{width:34%}
+td.bar span{display:block;height:9px;border-radius:4px;background:var(--grid)}
+td.bar i{display:block;height:9px;border-radius:4px;background:var(--series-1)}
+footer{margin-top:34px;color:var(--muted);font-size:12px;border-top:1px solid var(--grid);
+padding-top:12px}
+code{font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:4px}
+</style>
+<div class="wrap">
+<h1>QuakeScope campaign dashboard</h1>
+<p class="sub">2026-08-30 19:36 UTC · Batch: FAILED 1, SUCCEEDED 1 · rebuilt hourly</p>
+
+<div class="tiles"><div class="tile"><div class="k">Picks written</div><div class="v">54,854</div><div class="n">summed from shard manifests</div></div><div class="tile"><div class="k">Shards complete</div><div class="v">1 / 255,700</div><div class="n">0.00% of the queue</div></div><div class="tile"><div class="k">Catalogue size</div><div class="v">1 MB</div><div class="n">1 Parquet object</div></div><div class="tile"><div class="k">vCPU in use</div><div class="v">0</div><div class="n">Batch jobs RUNNING now</div></div><div class="tile"><div class="k">vCPU-hours</div><div class="v">1.9</div><div class="n">from job start/stop times</div></div><div class="tile"><div class="k">Spend (estimate)</div><div class="v">$0.03</div><div class="n">vCPU-h x $0.0148/vCPU-h — not a billed figure</div></div></div>
+
+<h2>Picks per station</h2>
+<p class="cap">Position is the station's longitude and latitude; size and shade
+are its pick count. Hover for the station code and count.</p>
+<figure><svg viewBox="0 0 760 420" role="img" aria-label="Stations positioned by longitude and latitude, shaded and sized by pick count"><rect x="46" y="14" width="690" height="366" fill="none" stroke="var(--grid)"/><line x1="46" y1="14" x2="46" y2="380" stroke="var(--grid)"/><line x1="46" y1="380" x2="736" y2="380" stroke="var(--grid)"/><text x="46" y="396" class="ax" text-anchor="middle">-118.2°</text><text x="40" y="384" class="ax" text-anchor="end">35.1°</text><line x1="218" y1="14" x2="218" y2="380" stroke="var(--grid)"/><line x1="46" y1="292" x2="736" y2="292" stroke="var(--grid)"/><text x="218" y="396" class="ax" text-anchor="middle">-117.9°</text><text x="40" y="296" class="ax" text-anchor="end">35.4°</text><line x1="391" y1="14" x2="391" y2="380" stroke="var(--grid)"/><line x1="46" y1="205" x2="736" y2="205" stroke="var(--grid)"/><text x="391" y="396" class="ax" text-anchor="middle">-117.6°</text><text x="40" y="209" class="ax" text-anchor="end">35.7°</text><line x1="564" y1="14" x2="564" y2="380" stroke="var(--grid)"/><line x1="46" y1="118" x2="736" y2="118" stroke="var(--grid)"/><text x="564" y="396" class="ax" text-anchor="middle">-117.3°</text><text x="40" y="122" class="ax" text-anchor="end">36.1°</text><line x1="736" y1="14" x2="736" y2="380" stroke="var(--grid)"/><line x1="46" y1="30" x2="736" y2="30" stroke="var(--grid)"/><text x="736" y="396" class="ax" text-anchor="middle">-117.0°</text><text x="40" y="34" class="ax" text-anchor="end">36.4°</text><circle cx="267.8" cy="137.4" r="16.4" fill="#184f95" stroke="var(--surface-1)" stroke-width="2"><title>JRC2 — 12,737 picks</title></circle><circle cx="338.1" cy="272.6" r="16.4" fill="#184f95" stroke="var(--surface-1)" stroke-width="2"><title>LRL — 12,758 picks</title></circle><circle cx="514.2" cy="260.4" r="16.4" fill="#184f95" stroke="var(--surface-1)" stroke-width="2"><title>CCC — 12,797 picks</title></circle><circle cx="385.0" cy="182.2" r="18.0" fill="#104281" stroke="var(--surface-1)" stroke-width="2"><title>CLC — 16,562 picks</title></circle></svg></figure>
+
+<h2>Picks per day of data</h2>
+<p class="cap">Picks by the day the waveform covers — not by when the job ran.</p>
+<figure><svg viewBox="0 0 760 240" role="img" aria-label="Picks per day"><line x1="56" y1="206" x2="736" y2="206" stroke="var(--grid)"/><text x="50" y="210" class="ax" text-anchor="end">0</text><line x1="56" y1="116" x2="736" y2="116" stroke="var(--grid)"/><text x="50" y="120" class="ax" text-anchor="end">14,654</text><line x1="56" y1="26" x2="736" y2="26" stroke="var(--grid)"/><text x="50" y="30" class="ax" text-anchor="end">29,308</text><polyline points="56.0,49.1 736.0,26.0" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round"/><circle cx="56.0" cy="49.1" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"><title>2019.186 — 25,546 picks</title></circle><circle cx="736.0" cy="26.0" r="4.5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"><title>2019.187 — 29,308 picks</title></circle><text x="56" y="228" class="ax" text-anchor="start">2019.186</text><text x="736" y="228" class="ax" text-anchor="end">2019.187</text></svg></figure>
+
+<h2>Progress by campaign</h2>
+<p class="cap">Bar length is the size of the queue; the filled part is what is
+complete.</p>
+<table><thead><tr><th>campaign</th><th>queue</th><th class="num">done</th>
+<th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
+<tbody><tr><th scope="row">earthscope</th><td class="bar"><span style="width:100.00%"><i style="width:0.00%"></i></span></td><td class="num">0</td><td class="num">153,208</td><td class="num">0.00%</td><td class="num">0</td></tr><tr><th scope="row">western</th><td class="bar"><span style="width:47.32%"><i style="width:0.00%"></i></span></td><td class="num">0</td><td class="num">72,505</td><td class="num">0.00%</td><td class="num">0</td></tr><tr><th scope="row">ncedc</th><td class="bar"><span style="width:9.75%"><i style="width:0.00%"></i></span></td><td class="num">0</td><td class="num">14,941</td><td class="num">0.00%</td><td class="num">0</td></tr><tr><th scope="row">scedc</th><td class="bar"><span style="width:5.53%"><i style="width:0.00%"></i></span></td><td class="num">0</td><td class="num">8,479</td><td class="num">0.00%</td><td class="num">0</td></tr><tr><th scope="row">obs</th><td class="bar"><span style="width:4.29%"><i style="width:0.00%"></i></span></td><td class="num">0</td><td class="num">6,566</td><td class="num">0.00%</td><td class="num">0</td></tr><tr><th scope="row">firedrill</th><td class="bar"><span style="width:0.60%"><i style="width:100.00%"></i></span></td><td class="num">1</td><td class="num">1</td><td class="num">100.00%</td><td class="num">54,854</td></tr></tbody></table>
+
+<footer>
+Every figure above except spend is counted from an S3 or Batch API response.
+<strong>Spend is derived</strong>: vCPU-hours from Batch job start and stop times,
+multiplied by <code>$0.0148</code> per vCPU-hour. It is not a billed
+figure — Cost Explorer is blocked on this account by an organisation policy, so
+nothing here has been checked against AWS billing.
+Data volume <em>ingested</em> from the archives is not shown because it is not
+measured anywhere; the catalogue size above is what was written, not what was read.
+</footer>
+</div>

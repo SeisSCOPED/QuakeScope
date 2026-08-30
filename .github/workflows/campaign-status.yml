@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write        # commits the rebuilt dashboard
   issues: write
   id-token: write
 
@@ -95,6 +95,25 @@ jobs:
             echo "attention=false" >> "$GITHUB_OUTPUT"
           fi
           cat status.md >> "$GITHUB_STEP_SUMMARY"
+
+          # Rebuild the visual dashboard. Committing it under reports/ is what
+          # publishes it - pages.yml triggers on that path.
+          python scripts/campaign_dashboard.py -o reports/campaign_dashboard.html
+
+      - name: Publish the dashboard if it changed
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          if git diff --quiet -- reports/campaign_dashboard.html; then
+            echo "dashboard unchanged; nothing to publish"
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add reports/campaign_dashboard.html
+            git commit -m "Campaign dashboard: hourly rebuild [skip ci]"
+            # Rebase rather than force: another job may have pushed meanwhile.
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
 
       - name: Update the dashboard issue
         if: steps.creds.outputs.mode != 'none'
