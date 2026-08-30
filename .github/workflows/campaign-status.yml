@@ -6,11 +6,15 @@ name: Campaign status
 # shards complete, claims outstanding, picks recorded in the manifests, Parquet
 # objects and their size. Nothing is estimated or carried over between runs.
 #
-# Notification model, same as aws-watch: ONE issue is the live dashboard and its
-# body is rewritten hourly, which is silent. A comment - which emails everyone
-# subscribed - is posted only when the numbers CHANGE or something needs
-# attention. A campaign that is not running produces no mail at all, so the mail
-# that does arrive means something.
+# Notification model: ONE issue is the live dashboard, its body always showing
+# the current state. A comment is posted EVERY hour, which emails everyone
+# subscribed - the report is wanted hourly whether or not anything moved, so a
+# quiet hour says "no change" rather than saying nothing. Comments are labelled
+# so progress, no-change and needs-attention are distinguishable at a glance.
+#
+# This does mean 24 emails a day while a campaign runs. To go back to
+# change-only mail, restore the `if (changed || attention)` guard around
+# createComment in the final step.
 #
 # Subscribe: open the dashboard issue once and click Subscribe. GitHub mails
 # comments to subscribers; there is no SMTP to configure.
@@ -134,12 +138,16 @@ jobs:
               issue_number: issue.number, body: full,
             });
 
-            if (changed || attention) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issue.number,
-                body: attention
-                  ? `**Needs attention.**\n\n${body}`
-                  : `Progress since the last check.\n\n${body}`,
-              });
-            }
+            // Comment on EVERY run, so the hourly report is an hourly email
+            // rather than a silence you have to trust. `changed` is still used,
+            // but only to label the comment - an hour with no movement says so
+            // plainly instead of looking identical to one with progress.
+            const header = attention
+              ? '**Needs attention.**'
+              : (changed ? '**Progress since the last check.**'
+                         : '_No change in the last hour._');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `${header}\n\n${body}`,
+            });
