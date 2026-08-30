@@ -347,43 +347,65 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
 
 
 def svg_waveform(ex, w=760, h=150):
-    """One trace with its picks. The trace is neutral; colour carries phase."""
+    """One trace with its picks, drawn the way a seismogram is drawn.
+
+    A thin stroked line, not a filled envelope. The first version filled the
+    min/max envelope as a polygon, which renders as a solid grey smear and loses
+    the shape of the arrival entirely - the one thing the figure exists to show.
+
+    Above about two samples per pixel the line is the samples themselves. Denser
+    than that it becomes a min/max zigzag, still stroked, which is what obspy
+    does for the same reason: it preserves peak amplitude where plain
+    subsampling would drop the sharp onset the pick sits on.
+    """
     d = ex["data"]
     n = len(d)
     if not n:
         return ""
-    lo, hi = min(d), max(d)
-    amp = max(abs(lo), abs(hi)) or 1.0
-    left, right, top, bot = 8, w - 8, 10, h - 24
-    # One min/max pair per pixel column: a 3,000-sample trace becomes ~1,500
-    # points instead of 3,000, and no peak is lost to naive subsampling.
+    amp = max(abs(min(d)), abs(max(d))) or 1.0
+    left, right, top, bot = 8, w - 8, 12, h - 26
+    mid = (top + bot) / 2
+    half = (bot - top) / 2
     cols = int(right - left)
-    step = max(n / cols, 1)
-    up, dn = [], []
-    for c in range(cols):
-        a, b = int(c * step), max(int((c + 1) * step), int(c * step) + 1)
-        chunk = d[a:min(b, n)]
-        if not chunk:
-            continue
-        x = left + c
-        up.append(f"{x},{(top+bot)/2 - max(chunk)/amp*(bot-top)/2:.1f}")
-        dn.append(f"{x},{(top+bot)/2 - min(chunk)/amp*(bot-top)/2:.1f}")
-    poly = " ".join(up + dn[::-1])
+
+    def y(v):
+        return mid - (v / amp) * half
+
+    if n <= cols * 2:
+        pts = [f"{left + i / (n - 1) * (right - left):.1f},{y(v):.1f}"
+               for i, v in enumerate(d)]
+    else:
+        step = n / cols
+        pts = []
+        for c in range(cols):
+            a = int(c * step); b = max(int((c + 1) * step), a + 1)
+            chunk = d[a:min(b, n)]
+            if not chunk:
+                continue
+            x = left + c
+            lo, hi = min(chunk), max(chunk)
+            # Order the pair so the zigzag never doubles back on itself.
+            first, second = (hi, lo) if c % 2 == 0 else (lo, hi)
+            pts.append(f"{x},{y(first):.1f}")
+            pts.append(f"{x},{y(second):.1f}")
+
     o = [f'<svg viewBox="0 0 {w} {h}" role="img" '
-         f'aria-label="{ex["tid"]} {ex["cha"]} waveform with '
-         f'{len(ex["marks"])} picks marked">']
-    o.append(f'<polygon class="wave" points="{poly}"/>')
+         f'aria-label="{ex["tid"]} {ex["cha"]} vertical-component waveform, '
+         f'{ex["dur"]:.0f} seconds, with {len(ex["marks"])} picks marked">']
+    o.append(f'<line x1="{left}" y1="{mid:.1f}" x2="{right}" y2="{mid:.1f}" '
+             f'stroke="var(--grid)" stroke-width="1"/>')
+    o.append(f'<polyline class="wave" points="{" ".join(pts)}"/>')
     for sec, pha, conf in ex["marks"]:
         x = left + (sec / ex["dur"]) * (right - left)
         col, lab = PHASE.get(pha, ("var(--muted)", pha))
         o.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{bot}" '
-                 f'stroke="{col}" stroke-width="2"/>')
-        o.append(f'<text x="{x+3:.1f}" y="{top+11}" class="ph" fill="{col}">'
-                 f'{lab} {conf:.2f}</text>')
-    o.append(f'<text x="{left}" y="{h-8}" class="ax">{ex["start"]} UTC · '
-             f'{ex["dur"]:.0f} s · {ex["rate"]:.0f} Hz</text>')
+                 f'stroke="{col}" stroke-width="1.75"/>')
+        o.append(f'<text x="{x+3:.1f}" y="{top+10}" class="ph" fill="{col}">'
+                 f'{lab}&#8202;{conf:.2f}</text>')
+    o.append(f'<text x="{left}" y="{h-8}" class="ax">{ex["start"]} UTC '
+             f'\u00b7 {ex["dur"]:.0f} s \u00b7 {ex["rate"]:.0f} Hz</text>')
     o.append(f'<text x="{right}" y="{h-8}" class="ax" text-anchor="end">'
-             f'{ex["tid"]} {ex["cha"]}</text>')
+             f'{ex["tid"]}{ex["cha"]}Z</text>')
     o.append('</svg>')
     return "".join(o)
 
@@ -462,7 +484,7 @@ svg{{width:100%;height:auto;display:block}}
 .base .coast{{stroke:var(--coast);stroke-width:1}}
 .base .border{{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}}
 .wf{{padding:6px 8px 2px;margin-bottom:8px}}
-.wave{{fill:var(--wave);stroke:none}}
+.wave{{fill:none;stroke:var(--wave);stroke-width:.9;stroke-linejoin:round;vector-effect:non-scaling-stroke}}
 .ph{{font-size:10.5px;font-weight:640}}
 .empty{{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}}
 table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
