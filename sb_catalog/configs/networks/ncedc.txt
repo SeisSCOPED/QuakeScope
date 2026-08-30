@@ -7,5 +7,7 @@ BK
 BP
 NC
 PG
-UL
+# UL - dropped 2026-08-30: no networks/UL.zip, so no station
+#      metadata exists for it and it was already absent from the
+#      written queue. Re-add with its metadata if it is wanted.
 WR

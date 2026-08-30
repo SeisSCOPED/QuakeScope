@@ -1,0 +1,145 @@
+name: Campaign status
+
+# Hourly report of what the picking campaigns have actually written to S3.
+#
+# Every figure is counted from an S3 or Batch API response - shards planned,
+# shards complete, claims outstanding, picks recorded in the manifests, Parquet
+# objects and their size. Nothing is estimated or carried over between runs.
+#
+# Notification model, same as aws-watch: ONE issue is the live dashboard and its
+# body is rewritten hourly, which is silent. A comment - which emails everyone
+# subscribed - is posted only when the numbers CHANGE or something needs
+# attention. A campaign that is not running produces no mail at all, so the mail
+# that does arrive means something.
+#
+# Subscribe: open the dashboard issue once and click Subscribe. GitHub mails
+# comments to subscribers; there is no SMTP to configure.
+#
+# Needs the same credentials as aws-watch: AWS_WATCH_ROLE_ARN (OIDC) or the
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets. The role needs read access
+# to the picks bucket in addition to Batch describe.
+
+on:
+  schedule:
+    - cron: "23 * * * *"     # hourly, offset from aws-watch's :07
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: campaign-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet boto3
+
+      - name: Check credentials are configured
+        id: creds
+        env:
+          ROLE: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$ROLE" ]; then echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ -n "$KEY" ]; then echo "mode=keys" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Campaign status is not configured yet"
+              echo
+              echo "No AWS credentials, so nothing was read. Set \`AWS_WATCH_ROLE_ARN\`"
+              echo "(OIDC) or the access-key secrets - the same ones aws-watch uses."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Campaign status has no credentials; skipping."
+          fi
+
+      - name: Configure AWS (OIDC)
+        if: steps.creds.outputs.mode == 'oidc'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Configure AWS (access keys)
+        if: steps.creds.outputs.mode == 'keys'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Read campaign state
+        id: report
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          python scripts/campaign_status.py --markdown > status.md
+          # The signature changes only when a number that matters changes; it is
+          # what decides whether to email, so an idle hour stays quiet.
+          echo "sig=$(grep -o 'sig:[^ ]*' status.md | tail -1)" >> "$GITHUB_OUTPUT"
+          if grep -q '^#### Needs attention' status.md; then
+            echo "attention=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "attention=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat status.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the dashboard issue
+        if: steps.creds.outputs.mode != 'none'
+        uses: actions/github-script@v7
+        env:
+          SIG: ${{ steps.report.outputs.sig }}
+          ATTENTION: ${{ steps.report.outputs.attention }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('status.md', 'utf8');
+            const TITLE = 'Campaign status dashboard';
+            const LABEL = 'campaign-status';
+            const sig = process.env.SIG || '';
+            const attention = process.env.ATTENTION === 'true';
+
+            const found = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue label:${LABEL}`,
+            });
+            let issue = found.data.items[0];
+            const full = `${body}\n\n---\n_Updated ${new Date().toISOString()} by ` +
+              `[campaign-status](../actions/workflows/campaign-status.yml). ` +
+              `Subscribe to this issue to be emailed when the numbers change._`;
+
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body: full, labels: [LABEL],
+              });
+              core.info(`created dashboard #${created.data.number}`);
+              return;
+            }
+
+            // The previous signature is carried in the issue body, so no state
+            // is stored anywhere else and a re-run cannot double-notify.
+            const prev = (issue.body || '').match(/sig:[^\s]*/);
+            const changed = !prev || prev[0] !== sig;
+
+            await github.rest.issues.update({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body: full,
+            });
+
+            if (changed || attention) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: attention
+                  ? `**Needs attention.**\n\n${body}`
+                  : `Progress since the last check.\n\n${body}`,
+              });
+            }
