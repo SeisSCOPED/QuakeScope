@@ -27,12 +27,18 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import io
 import json
 import math
 import os
+import sys
 from collections import defaultdict
 
 import boto3
+
+# sys.path[0] is this script's directory, so the repo root - and with it
+# sb_catalog - is not importable without help.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 REGION = "us-east-2"
 BUCKET = "quakescope-picks-2026"
@@ -41,6 +47,10 @@ FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rat
 
 BASEMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "data", "basemap.json")
+
+# P and S are two identities, so two categorical slots. Validated as an
+# adjacent pair in both modes: normal-vision dE 33.6 light / 31.8 dark, CVD 24.7.
+PHASE = {"P": ("var(--phase-p)", "P"), "S": ("var(--phase-s)", "S")}
 
 SEQ = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7",
        "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281"]
@@ -264,7 +274,121 @@ def svg_series(per_day, w=760, h=240):
     return "".join(out)
 
 
-def render(g):
+def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
+    """Random picks from the catalogue, with the waveform they were made on.
+
+    Sampled from a Parquet object chosen at random, so the examples change hour
+    to hour and are not a curated set. Only anonymous archives are used - the
+    restricted EarthScope access point needs a token the dashboard job does not
+    carry, and an example that cannot be fetched is skipped rather than faked.
+    """
+    import random
+
+    import obspy
+    import pandas as pd
+    from s3fs import S3FileSystem
+
+    from sb_catalog.src.constants import NETWORK_MAPPING
+    from sb_catalog.src.s3_helper import (EarthScopeS3ObjectHelper,
+                                          NCEDCS3ObjectHelper,
+                                          SCEDCS3ObjectHelper)
+
+    rng = random.Random(seed)
+    objs = []
+    for c in campaigns:
+        for page in s3.get_paginator("list_objects_v2").paginate(
+                Bucket=BUCKET, Prefix=f"{c}/picks/"):
+            objs += [o["Key"] for o in page.get("Contents", [])]
+    if not objs:
+        return []
+    df = pd.read_parquet(f"s3://{BUCKET}/{rng.choice(objs)}")
+    if df.empty:
+        return []
+
+    fs = S3FileSystem(anon=True)
+    helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper()}
+    out, tried = [], set()
+    order = list(df.sample(frac=1, random_state=rng.randrange(10**6)).index)
+    for idx in order:
+        if len(out) >= n:
+            break
+        p = df.loc[idx]
+        if p.tid in tried:
+            continue                       # spread examples across stations
+        tried.add(p.tid)
+        net, sta, loc = (p.tid.split(".") + ["", ""])[:3]
+        dc = NETWORK_MAPPING.get(net)
+        if dc not in helpers:
+            continue                       # EarthScope needs a token; skip
+        t = obspy.UTCDateTime(str(p.peak))
+        try:
+            key = helpers[dc].get_s3_path(net, sta, loc, p.cha, f"{t.year}",
+                                          f"{t.julday:03d}", "Z")
+            tr = obspy.read(io.BytesIO(fs.open(key, "rb").read()))
+            tr.merge(fill_value=0)
+            tr.trim(t - window[0], t + window[1])
+            if not len(tr) or tr[0].stats.npts < 50:
+                continue
+            tr = tr[0]
+        except Exception:
+            continue                       # missing day, gap, unreadable: skip
+
+        t0, t1 = tr.stats.starttime, tr.stats.endtime
+        marks = []
+        for _, q in df[df.tid == p.tid].iterrows():
+            qt = obspy.UTCDateTime(str(q.peak))
+            if t0 <= qt <= t1:
+                marks.append((float(qt - t0), str(q.pha), float(q.conf)))
+        out.append({"tid": p.tid, "cha": p.cha, "start": str(t0)[:19],
+                    "rate": float(tr.stats.sampling_rate),
+                    "data": tr.data.astype(float).tolist(),
+                    "dur": float(t1 - t0), "marks": marks})
+    return out
+
+
+def svg_waveform(ex, w=760, h=150):
+    """One trace with its picks. The trace is neutral; colour carries phase."""
+    d = ex["data"]
+    n = len(d)
+    if not n:
+        return ""
+    lo, hi = min(d), max(d)
+    amp = max(abs(lo), abs(hi)) or 1.0
+    left, right, top, bot = 8, w - 8, 10, h - 24
+    # One min/max pair per pixel column: a 3,000-sample trace becomes ~1,500
+    # points instead of 3,000, and no peak is lost to naive subsampling.
+    cols = int(right - left)
+    step = max(n / cols, 1)
+    up, dn = [], []
+    for c in range(cols):
+        a, b = int(c * step), max(int((c + 1) * step), int(c * step) + 1)
+        chunk = d[a:min(b, n)]
+        if not chunk:
+            continue
+        x = left + c
+        up.append(f"{x},{(top+bot)/2 - max(chunk)/amp*(bot-top)/2:.1f}")
+        dn.append(f"{x},{(top+bot)/2 - min(chunk)/amp*(bot-top)/2:.1f}")
+    poly = " ".join(up + dn[::-1])
+    o = [f'<svg viewBox="0 0 {w} {h}" role="img" '
+         f'aria-label="{ex["tid"]} {ex["cha"]} waveform with '
+         f'{len(ex["marks"])} picks marked">']
+    o.append(f'<polygon class="wave" points="{poly}"/>')
+    for sec, pha, conf in ex["marks"]:
+        x = left + (sec / ex["dur"]) * (right - left)
+        col, lab = PHASE.get(pha, ("var(--muted)", pha))
+        o.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{bot}" '
+                 f'stroke="{col}" stroke-width="2"/>')
+        o.append(f'<text x="{x+3:.1f}" y="{top+11}" class="ph" fill="{col}">'
+                 f'{lab} {conf:.2f}</text>')
+    o.append(f'<text x="{left}" y="{h-8}" class="ax">{ex["start"]} UTC · '
+             f'{ex["dur"]:.0f} s · {ex["rate"]:.0f} Hz</text>')
+    o.append(f'<text x="{right}" y="{h-8}" class="ax" text-anchor="end">'
+             f'{ex["tid"]} {ex["cha"]}</text>')
+    o.append('</svg>')
+    return "".join(o)
+
+
+def render(g, examples):
     done = sum(c["done"] for c in g["camps"])
     planned = sum(c["shards"] for c in g["camps"])
     pct = (100 * done / planned) if planned else 0
@@ -295,6 +419,13 @@ def render(g):
             f'<td class="num">{p:.2f}%</td><td class="num">{c["picks"]:,}</td></tr>')
 
     st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
+    if examples:
+        waves = "".join(f'<figure class="wf">{svg_waveform(e)}</figure>'
+                        for e in examples)
+    else:
+        waves = ('<p class="empty">No examples yet. They are drawn from picks '
+                 'already written to S3, so this fills in once a campaign has '
+                 'produced some.</p>')
     return f"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QuakeScope campaign dashboard</title>
@@ -302,11 +433,13 @@ def render(g):
 :root{{color-scheme:light;--surface-1:#fcfcfb;--surface-2:#f4f3f0;
 --text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
 --series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219;
---sea:#f0f4f8;--coast:#9aa5ae;--border-line:#c3cad1}}
+--sea:#f0f4f8;--coast:#9aa5ae;--border-line:#c3cad1;
+--wave:#6b6a65;--phase-p:#2a78d6;--phase-s:#eb6834}}
 @media(prefers-color-scheme:dark){{:root:where(:not([data-theme=light])){{
 color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
 --text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431;
---sea:#20242a;--coast:#5d6771;--border-line:#454e57}}}}
+--sea:#20242a;--coast:#5d6771;--border-line:#454e57;
+--wave:#9d9b92;--phase-p:#3987e5;--phase-s:#d95926}}}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--surface-1);color:var(--text-primary);
 font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}}
@@ -328,6 +461,9 @@ svg{{width:100%;height:auto;display:block}}
 .base{{fill:none;vector-effect:non-scaling-stroke}}
 .base .coast{{stroke:var(--coast);stroke-width:1}}
 .base .border{{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}}
+.wf{{padding:6px 8px 2px;margin-bottom:8px}}
+.wave{{fill:var(--wave);stroke:none}}
+.ph{{font-size:10.5px;font-weight:640}}
 .empty{{color:var(--muted);padding:26px 8px;margin:0;font-size:13px}}
 table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}
 th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);font-size:13px}}
@@ -356,6 +492,12 @@ Natural Earth for orientation. Hover a triangle for its code and count.</p>
 <p class="cap">Picks by the day the waveform covers — not by when the job ran.</p>
 <figure>{svg_series(g['per_day'])}</figure>
 
+<h2>Waveforms and picks</h2>
+<p class="cap">Picks drawn at random from the catalogue each hour, with the
+waveform they were made on and every pick this station has in the same window.
+Colour is the phase; the number is model confidence.</p>
+{waves}
+
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
 complete.</p>
@@ -379,15 +521,23 @@ measured anywhere; the catalogue size above is what was written, not what was re
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("-o", "--out", default="reports/campaign_dashboard.html")
+    ap.add_argument("--examples", type=int, default=3,
+                    help="random waveform+pick examples to include")
     ap.add_argument("--campaigns",
                     default="scedc,ncedc,earthscope,obs,western,firedrill")
     a = ap.parse_args()
     s3 = boto3.client("s3", region_name=REGION)
     b = boto3.client("batch", region_name=REGION)
-    g = gather(s3, b, [c for c in a.campaigns.split(",") if c])
+    camps = [c for c in a.campaigns.split(",") if c]
+    g = gather(s3, b, camps)
+    try:
+        ex = waveform_examples(s3, camps, n=a.examples)
+    except Exception as e:                 # never let examples break the page
+        print(f"  (examples skipped: {type(e).__name__}: {e})")
+        ex = []
     with open(a.out, "w") as f:
-        f.write(render(g))
-    print(f"wrote {a.out}: {g['picks']:,} picks, "
+        f.write(render(g, ex))
+    print(f"wrote {a.out}: {len(ex)} waveform examples, {g['picks']:,} picks, "
           f"{len(g['per_station'])} stations, {len(g['per_day'])} days, "
           f"{g['vcpu_hours']:.1f} vCPU-h")
 
