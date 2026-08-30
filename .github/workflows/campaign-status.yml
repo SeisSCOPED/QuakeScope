@@ -99,25 +99,28 @@ jobs:
           fi
           cat status.md >> "$GITHUB_STEP_SUMMARY"
 
-          # Rebuild the visual dashboard. Committing it under reports/ is what
-          # publishes it - pages.yml triggers on that path.
-          # --examples fetches real day files from the public archives; a
-          # failure there must not fail the run, so the generator already
-          # degrades to a page without examples.
-          python scripts/campaign_dashboard.py -o reports/campaign_dashboard.html
-
-      - name: Publish the dashboard if it changed
+      - name: Rebuild and publish the dashboard
         if: steps.creds.outputs.mode != 'none'
         run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Sync BEFORE generating. The dashboard is a generated file that is
+          # committed, so generating first and rebasing after guarantees a
+          # conflict against anyone else's rebuild - on a file neither side
+          # edited. Rebasing first means there is nothing to conflict with.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+
+          # --examples fetches real day files from the public archives; a
+          # failure there must not fail the run, so the generator degrades to a
+          # page without examples rather than raising.
+          python scripts/campaign_dashboard.py -o reports/campaign_dashboard.html
+
           if git diff --quiet -- reports/campaign_dashboard.html; then
             echo "dashboard unchanged; nothing to publish"
           else
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add reports/campaign_dashboard.html
             git commit -m "Campaign dashboard: hourly rebuild [skip ci]"
-            # Rebase rather than force: another job may have pushed meanwhile.
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
