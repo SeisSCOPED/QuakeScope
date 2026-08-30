@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import datetime
 import io
@@ -6,7 +8,7 @@ import os
 import re
 import time
 from abc import abstractmethod
-from typing import AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 import numpy as np
 import obspy
@@ -16,7 +18,10 @@ from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING, select_channel
 from .profiling import stage
-from .utils import SeisBenchDatabase
+if TYPE_CHECKING:                     # pymongo is a 2025 DocumentDB
+    from .utils import SeisBenchDatabase   # dependency; v3 writes Parquet
+    # and never touches Mongo, so importing it eagerly made the path
+    # helpers unusable anywhere pymongo is not installed.
 
 # Default to empty rather than KeyError at import: parameters.py has always
 # defaulted this to "" for campaigns that never touch EarthScope, and the
