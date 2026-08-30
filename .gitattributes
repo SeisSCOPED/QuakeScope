@@ -1,0 +1,4 @@
+# Generated hourly by campaign-status.yml. Conflicts between the bot's
+# rebuild and a local one are noise on a build artifact - always take the
+# incoming copy; the next run regenerates it from the real numbers anyway.
+reports/campaign_dashboard.html merge=ours linguist-generated=true
