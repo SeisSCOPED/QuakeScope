@@ -177,9 +177,20 @@ class S3CampaignState:
                 yield item["Key"]
 
     # -------------------------------------------------------------- stations
+    # Identifiers are text even when they look numeric. Station codes like
+    # "1001" (nodal deployments) parse as int64 and location codes like "00"
+    # as either int or NaN, which makes the column mixed-type and Arrow refuses
+    # to write it. Worse, when it does write, "00" comes back as 0 and the
+    # object key built from it no longer matches anything in S3.
+    _ID_COLUMNS = ("id", "network_code", "station_code", "location_code", "channels")
+
     def write_stations(self, stations: pd.DataFrame) -> str:
         """Persist station metadata. Replaces the `stations` collection."""
         uri = self.uri("stations.parquet")
+        stations = stations.copy()
+        for c in self._ID_COLUMNS:
+            if c in stations.columns:
+                stations[c] = stations[c].fillna("").astype(str)
         stations.to_parquet(uri, index=False)
         logger.info(f"Wrote {len(stations)} stations to {uri}")
         return uri
