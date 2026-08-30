@@ -11,7 +11,6 @@ from typing import AsyncIterator, Optional
 import numpy as np
 import obspy
 from botocore.exceptions import ClientError
-from earthscope_sdk import EarthScopeClient
 from obspy.clients.fdsn.header import FDSNNoDataException
 from s3fs import S3FileSystem
 
@@ -183,6 +182,11 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         """
         Set 5 minutes buffer time to update credential
         """
+        # Imported here, not at module scope: building an object key needs no
+        # credentials machinery, and an eager import made every consumer of the
+        # path helpers - including the dashboard job in CI - depend on the SDK.
+        from earthscope_sdk import EarthScopeClient
+
         last = None
         for attempt in range(1, ES_CREDENTIAL_ATTEMPTS + 1):
             try:
