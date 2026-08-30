@@ -52,6 +52,14 @@ def test_channel_selection():
     # Whitespace and duplicates in metadata are tolerated.
     assert select_channel([" HH ", "HH", "BH"]) == "HH"
 
+    # Both metadata formats in the repo: western_states.csv stores bands,
+    # networks/*.zip stores full SEED codes. Accepting only bands made the
+    # second select nothing, which skips the station silently.
+    assert select_channel(["HHZ", "BHN", "EHZ", "HNE"]) == "HH"
+    assert select_channel(["BHZ", "BHN", "BHE"]) == "BH"
+    assert select_channel(["LHZ", "VHZ"]) is None
+    assert select_channel(["HH", "BH"]) == select_channel(["HHZ", "BHZ"]) == "HH"
+
     print("PASS  the study's channel set, and nothing else")
     print("PASS  ordered by distance from 100 Hz, then instrument quality")
     print("PASS  broadband stations pick 100 Hz over 40 Hz")

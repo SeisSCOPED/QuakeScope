@@ -507,15 +507,22 @@ CHANNEL_PRIORITY_INDEX = {c: i for i, c in enumerate(CHANNEL_PRIORITY)}
 def select_channel(available):
     """The one channel code to pick on, from those a station offers.
 
-    `available` is any iterable of two-character band codes. Codes outside
-    CHANNEL_PRIORITY are ignored - the 2025 study defined the set, and picking
-    on an LH or VH channel at 1 Hz or below would not produce usable arrivals.
-    Returns None when a station offers nothing pickable, which the caller should
-    treat as "skip this station" rather than as an error.
+    `available` accepts either two-character band codes ("HH", "BH") or full
+    SEED channel codes ("HHZ", "BHN"); the component is dropped and duplicates
+    collapse. Both forms are in use: western_states.csv stores bands, while the
+    2025 per-network lists in networks/*.zip store full codes. Accepting only
+    bands made the full-code form select nothing, and a station with no selected
+    channel is skipped - so an entire campaign built from those files would have
+    been silently empty rather than failing loudly.
+
+    Codes outside CHANNEL_PRIORITY are ignored - the 2025 study defined the set,
+    and picking on an LH or VH channel at 1 Hz or below would not produce usable
+    arrivals. Returns None when a station offers nothing pickable, which the
+    caller should treat as "skip this station" rather than as an error.
     """
+    bands = {str(x).strip()[:2] for x in available if str(x).strip()}
     ranked = sorted(
-        (c for c in {str(x).strip() for x in available}
-         if c in CHANNEL_PRIORITY_INDEX),
+        (c for c in bands if c in CHANNEL_PRIORITY_INDEX),
         key=lambda c: CHANNEL_PRIORITY_INDEX[c],
     )
     return ranked[0] if ranked else None
