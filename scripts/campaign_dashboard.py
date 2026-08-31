@@ -75,9 +75,11 @@ def gather(s3, b, campaigns):
         pg = s3.get_paginator("list_objects_v2")
         for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/complete/"):
             done += len(page.get("Contents", []))
+        nobjs = 0
         for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/picks/"):
             for o in page.get("Contents", []):
                 nbytes += o["Size"]
+                nobjs += 1
         for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/manifests/"):
             for o in page.get("Contents", []):
                 m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
@@ -90,7 +92,11 @@ def gather(s3, b, campaigns):
         if shards or picks:
             camp_rows.append({"name": name, "shards": shards, "done": done,
                               "picks": picks, "sdays": sdays, "bytes": nbytes})
-        total_picks += picks; total_bytes += nbytes; total_files += files
+        # Count objects from the same listing that produced the bytes. Taking
+        # the count from the manifests instead made the two disagree - 9 files
+        # against 49 MB - because a running shard has written objects but has
+        # no manifest yet.
+        total_picks += picks; total_bytes += nbytes; total_files += nobjs
 
     coords = {}
     try:
