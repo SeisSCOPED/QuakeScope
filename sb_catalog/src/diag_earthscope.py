@@ -50,14 +50,28 @@ def main(argv=None) -> None:
 
     nets = list(argv) if argv else DEFAULT_NETS
     print(f"=== EarthScope S3 diagnostic  {datetime.datetime.utcnow()}Z ===")
+    # Fargate does not serve the EC2 IMDS address; it exposes
+    # ECS_CONTAINER_METADATA_URI_V4. Probing the wrong one printed "laptop?"
+    # from a task that was genuinely in us-east-2 - which would have undermined
+    # the one claim this whole diagnostic rests on.
+    import json as _json
+    import os as _os
+    import urllib.request as _u
+    where = "unknown"
+    uri = _os.environ.get("ECS_CONTAINER_METADATA_URI_V4") or \
+        _os.environ.get("ECS_CONTAINER_METADATA_URI")
     try:
-        import urllib.request
-        az = urllib.request.urlopen(
-            "http://169.254.169.254/latest/meta-data/placement/availability-zone",
-            timeout=2).read().decode()
-        print(f"running in: {az}")
+        if uri:
+            meta = _json.loads(_u.urlopen(f"{uri}/task", timeout=3).read())
+            where = (f"ECS/Fargate  AZ={meta.get('AvailabilityZone')}  "
+                     f"cluster={str(meta.get('Cluster','')).split('/')[-1]}")
+        else:
+            where = "EC2 AZ=" + _u.urlopen(
+                "http://169.254.169.254/latest/meta-data/placement/"
+                "availability-zone", timeout=2).read().decode()
     except Exception:
-        print("running in: not an EC2/ECS metadata host (laptop?)")
+        where = "not an AWS metadata host (laptop?)"
+    print(f"running in: {where}")
 
     helper = CompositeS3ObjectHelper()
     # Short timeouts: the point is to observe a stall, not to sit through one.
