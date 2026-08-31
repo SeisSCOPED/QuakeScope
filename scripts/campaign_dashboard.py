@@ -427,7 +427,8 @@ def render(g, examples):
     pct = (100 * done / planned) if planned else 0
     spend = g["vcpu_hours"] * FARGATE_SPOT_RATE
     tiles = [
-        ("Picks written", f"{g['picks']:,}", "summed from shard manifests"),
+        ("Picks in finished shards", f"{g['picks']:,}",
+         "from manifests; in-flight shards have written more"),
         ("Shards complete", f"{done:,} / {planned:,}", f"{pct:.2f}% of the queue"),
         ("Catalogue size", human(g["bytes"]),
          f"{g['files']:,} Parquet object" + ("" if g["files"] == 1 else "s")),
@@ -514,6 +515,13 @@ td.bar i{{display:block;height:9px;border-radius:4px;background:var(--series-1)}
 footer{{margin-top:34px;color:var(--muted);font-size:12px;border-top:1px solid var(--grid);
 padding-top:12px}}
 code{{font-size:12px;background:var(--surface-2);padding:1px 5px;border-radius:4px}}
+.loc{{background:var(--surface-2);border-radius:9px;padding:10px 12px}}
+.loc .row{{display:flex;gap:10px;align-items:baseline;padding:3px 0;flex-wrap:wrap}}
+.loc .row span{{flex:0 0 92px;color:var(--text-secondary);font-size:11.5px;
+text-transform:uppercase;letter-spacing:.04em}}
+.loc code{{background:none;padding:0;word-break:break-all}}
+.snip{{background:var(--surface-2);border-radius:9px;padding:12px 14px;margin:10px 0 0;
+overflow-x:auto;font-size:12px;line-height:1.5}}
 </style>
 <div class="wrap">
 <h1>QuakeScope campaign dashboard</h1>
@@ -532,7 +540,7 @@ Natural Earth for orientation. Hover a triangle for its code and count.</p>
 <figure>{svg_series(g['per_day'])}</figure>
 
 <h2>Waveforms and picks</h2>
-<p class="cap">Picks drawn at random from the catalogue each hour, with the
+<p class="cap" id="pickcount">Picks drawn at random from the catalogue each hour, with the
 waveform they were made on and every pick this station has in the same window.
 Colour is the phase; the number is model confidence.</p>
 {waves}
@@ -544,7 +552,38 @@ complete.</p>
 <th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
 <tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
 
+<h2>Where the catalogue lives</h2>
+<p class="cap">The picks are Parquet on S3, Hive-partitioned by network, year and
+month. Read them with anything that speaks Parquet; no database to connect to.</p>
+<div class="loc">
+<div class="row"><span>bucket</span><code>s3://{BUCKET}</code></div>
+<div class="row"><span>region</span><code>{REGION}</code></div>
+<div class="row"><span>picks</span><code>s3://{BUCKET}/&lt;campaign&gt;/picks/network=&lt;NET&gt;/year=&lt;YYYY&gt;/month=&lt;MM&gt;/&lt;shard&gt;.parquet</code></div>
+<div class="row"><span>manifests</span><code>s3://{BUCKET}/&lt;campaign&gt;/manifests/&lt;shard&gt;.json</code></div>
+<div class="row"><span>run metadata</span><code>s3://{BUCKET}/&lt;campaign&gt;/runs/&lt;run_id&gt;.json</code></div>
+</div>
+<pre class="snip">import pandas as pd
+
+# one campaign, with partition pruning - no LIST, no scan
+df = pd.read_parquet(
+    "s3://{BUCKET}/scedc/picks/",
+    filters=[("network", "=", "CI"), ("year", "=", 2019)],
+)
+
+# or exactly the objects a shard wrote, from its manifest
+import json, boto3
+m = json.load(boto3.client("s3", region_name="{REGION}").get_object(
+    Bucket="{BUCKET}", Key="scedc/manifests/&lt;shard&gt;.json")["Body"])
+df = pd.concat(pd.read_parquet(f["path"]) for f in m["files"])</pre>
+
 <footer>
+<strong>Two pick counts, both true.</strong> The tile counts picks in shards
+that have <em>finished</em>, taken from their manifests. A running shard
+checkpoints its work to Parquet every 40 station-day-channels, so the objects on
+S3 already hold more than the tile shows; the manifest only appears when the
+shard closes. Query the Parquet for what is actually stored, the tile for what is
+durably accounted for.
+
 Every figure above except spend is counted from an S3 or Batch API response.
 <strong>Spend is derived</strong>: vCPU-hours from Batch job start and stop times,
 multiplied by <code>${FARGATE_SPOT_RATE}</code> per vCPU-hour. It is not a billed
