@@ -53,6 +53,10 @@ FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rat
 # says so - a projection is not an observation.
 VCPU_H_PER_STATION_DAY = 0.068 * 0.354
 QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
+# Parquet objects to scan for the per-station and per-day breakdowns. The
+# headline count is metadata-only and always exact; only the breakdowns are
+# capped, so the hourly job stays hourly as the catalogue grows.
+PARQUET_SCAN_CAP = int(os.environ.get("PARQUET_SCAN_CAP", "600"))
 TASK_VCPU = 8                       # per job definition
 
 # Campaigns whose data cannot currently be read, and why. Shown on the plan so
@@ -80,10 +84,67 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def parquet_stats(campaign, max_files=None):
+    """Pick counts straight from the Parquet, not from the manifests.
+
+    A manifest is written by ParquetPickWriter.close(), which a Spot
+    interruption skips - so on a preempted fleet most finished work has no
+    manifest and a manifest-based count silently under-reports a catalogue that
+    is filling normally. The picks themselves are durable either way: they were
+    flushed before the interruption.
+
+    Row counts come from the Parquet footers via count_rows(), so the headline
+    number costs metadata reads rather than a full scan. The per-station and
+    per-day breakdowns do need column data, so they read two columns and say so
+    on the page when they had to sample.
+    """
+    import pyarrow.dataset as ds
+
+    out = {"picks": 0, "per_station": {}, "per_day": {}, "sampled": None}
+    try:
+        dataset = ds.dataset(f"{BUCKET}/{campaign}/picks/", format="parquet",
+                             filesystem=_arrow_fs(), partitioning="hive")
+    except Exception:
+        return out                        # nothing written yet
+    files = list(dataset.files)
+    if not files:
+        return out
+    try:
+        out["picks"] = dataset.count_rows()
+    except Exception:
+        pass
+
+    # The breakdowns are what the map and the time series draw, and they are the
+    # expensive part. Cap the scan and report the cap rather than either
+    # stalling the hourly job or quietly showing a subset as if it were all.
+    scan = files
+    if max_files and len(files) > max_files:
+        scan = files[-max_files:]
+        out["sampled"] = (len(scan), len(files))
+    try:
+        import pandas as pd
+        t = ds.dataset(scan, format="parquet", filesystem=_arrow_fs(),
+                       partitioning="hive").to_table(columns=["tid", "peak"])
+        df = t.to_pandas()
+        out["per_station"] = df.groupby("tid").size().to_dict()
+        d = pd.to_datetime(df["peak"])
+        out["per_day"] = (df.assign(yr=d.dt.year, doy=d.dt.dayofyear)
+                          .groupby(["yr", "doy"]).size().to_dict())
+    except Exception:
+        pass
+    return out
+
+
+def _arrow_fs():
+    from pyarrow.fs import S3FileSystem
+    return S3FileSystem(region=REGION)
+
+
 def gather(s3, b, campaigns):
     per_station = defaultdict(int)
     per_day = defaultdict(int)
     camp_rows, total_picks, total_bytes, total_files = [], 0, 0, 0
+    sampled = []
 
     for name in campaigns:
         try:
@@ -100,15 +161,27 @@ def gather(s3, b, campaigns):
             for o in page.get("Contents", []):
                 nbytes += o["Size"]
                 nobjs += 1
+        # Station-days still come from the manifests - the Parquet does not
+        # record how many station-days were examined, only what was found.
+        n_manifests = 0
         for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/manifests/"):
             for o in page.get("Contents", []):
                 m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
-                picks += m.get("n_picks", 0)
                 sdays += m.get("station_days", 0)
                 files += len(m.get("files", []))
-                for r in m.get("records", []):
-                    per_station[r["tid"]] += r.get("npks", 0)
-                    per_day[(r["yr"], r["doy"])] += r.get("npks", 0)
+                n_manifests += 1
+
+        # Picks and their breakdowns come from the Parquet itself, so a
+        # preempted worker's output is counted even though it never wrote a
+        # manifest.
+        ps = parquet_stats(name, max_files=PARQUET_SCAN_CAP)
+        picks = ps["picks"]
+        for tid, n in ps["per_station"].items():
+            per_station[str(tid)] += int(n)
+        for (yr, doy), n in ps["per_day"].items():
+            per_day[(int(yr), int(doy))] += int(n)
+        if ps["sampled"]:
+            sampled.append((name,) + ps["sampled"])
         # Planned station-days come from the queue, not the manifests: the
         # manifests only describe what is already finished, and the plan panel
         # is about what is still to come.
@@ -167,6 +240,7 @@ def gather(s3, b, campaigns):
                     end = s1 or now().timestamp() * 1000
                     vcpu_hours += v * (end - s0) / 3_600_000
     return dict(per_station=per_station, per_day=per_day, camps=camp_rows,
+                sampled=sampled,
                 picks=total_picks, bytes=total_bytes, files=total_files,
                 coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
                 status=status)
@@ -517,8 +591,9 @@ def render(g, examples):
     pct = (100 * done / planned) if planned else 0
     spend = g["vcpu_hours"] * FARGATE_SPOT_RATE
     tiles = [
-        ("Picks in finished shards", f"{g['picks']:,}",
-         "from manifests; in-flight shards have written more"),
+        ("Picks in the catalogue", f"{g['picks']:,}",
+         "counted from the Parquet footers - exact, including work whose "
+         "worker was preempted before it wrote a manifest"),
         ("Shards complete", f"{done:,} / {planned:,}", f"{pct:.2f}% of the queue"),
         ("Catalogue size", human(g["bytes"]),
          f"{g['files']:,} Parquet object" + ("" if g["files"] == 1 else "s")),
@@ -572,6 +647,14 @@ def render(g, examples):
         f'<td class="num"></td><td class="num">{tot_vh:,.0f}</td>'
         f'<td class="num">${tot_vh * FARGATE_SPOT_RATE:,.0f}</td>'
         f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
+
+    sampled_note = ""
+    if g.get("sampled"):
+        bits = ", ".join(f"{c}: {a:,} of {b:,}" for c, a, b in g["sampled"])
+        sampled_note = (
+            f'<p class="note">Headline pick counts are exact. The map and time '
+            f'series are built from the most recent Parquet objects only '
+            f'({bits}), so they show less than the catalogue holds.</p>')
 
     st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
     # Grouped by campaign, in the fixed campaign order, so a campaign keeps its
@@ -725,6 +808,7 @@ Blocked queues are excluded from the total.</p>
 <th class="num">at full quota</th></tr></thead>
 <tbody>{''.join(plan_rows)}{plan_total}</tbody></table></div>
 
+{sampled_note}
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
 complete.</p>
