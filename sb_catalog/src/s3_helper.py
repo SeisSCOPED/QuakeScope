@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, AsyncIterator, Optional
 import numpy as np
 import obspy
 from botocore.exceptions import ClientError
-from obspy.clients.fdsn.header import FDSNNoDataException
+from obspy.clients.fdsn.header import (FDSNException,
+                                       FDSNNoDataException)
 from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING, select_channel
@@ -56,6 +57,7 @@ EARTHSCOPE_RESTRICTED_ACCESS_POINT = os.environ.get(
 # permissions problem rather than a renamed role.
 EARTHSCOPE_ROLE = os.environ.get("EARTHSCOPE_ROLE", "s3-miniseed-v2")
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
+FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
 
 logger = logging.getLogger("picker")
 
@@ -504,16 +506,21 @@ class S3DataSource:
     def _get_inventory(self):
         sta_code = ",".join([i.split(".")[1] for i in self.stations])
         net_code = ",".join(self.networks)
-        cha_code = ",".join(
-            set([f"{j}?" for i in self.meta.channels for j in i.split(",")])
-        )
+        # Take the band code and add the component wildcard. The metadata may
+        # hold either form: western_states.csv stores bands ("HH"), the 2025
+        # per-network lists store full codes ("HHZ"). Appending "?" to a full
+        # code yields "HHZ?", which FDSN rejects with a 400 - and the retry loop
+        # below used to treat that permanent error as a busy server and spin on
+        # it forever, so a whole campaign burned vCPU without picking anything.
+        cha_code = ",".join(sorted(
+            {f"{str(j).strip()[:2]}?" for i in self.meta.channels
+             for j in str(i).split(",") if str(j).strip()}
+        ))
 
-        while True:
+        for attempt in range(1, FDSN_ATTEMPTS + 1):
             try:
-                # Use IRIS web service for inventory request
-                client = obspy.clients.fdsn.Client("IRIS")
-
-                inv = client.get_stations(
+                client = obspy.clients.fdsn.Client("EARTHSCOPE")
+                return client.get_stations(
                     network=net_code,
                     station=sta_code,
                     channel=cha_code,
@@ -521,14 +528,34 @@ class S3DataSource:
                     starttime=obspy.UTCDateTime(self.start),
                     endtime=obspy.UTCDateTime(self.end),
                 )
-                return inv
             except FDSNNoDataException:
                 logger.warning(
-                    f"No metadata at EarthScope FDSN service. Return empty inventory."
+                    "No metadata at the EarthScope FDSN service. "
+                    "Returning an empty inventory."
                 )
                 return obspy.Inventory()
-            except:
+            except FDSNException as exc:
+                # A 4xx will not become a 2xx by waiting. Retrying it is how a
+                # bad request turns into an unbounded loop that looks like a
+                # busy server.
+                if "400" in str(exc) or "Bad request" in str(exc):
+                    raise RuntimeError(
+                        f"FDSN rejected the inventory request for this shard: "
+                        f"{str(exc)[:200]}. channel={cha_code[:80]}"
+                    ) from exc
                 logger.warning(
-                    f"EarthScope FDSN web service might be busy. Sleep for 5 seconds and retry."
+                    f"FDSN error ({attempt}/{FDSN_ATTEMPTS}): "
+                    f"{type(exc).__name__}. Sleeping 5 s."
                 )
                 time.sleep(5)
+            except Exception as exc:
+                logger.warning(
+                    f"FDSN request failed ({attempt}/{FDSN_ATTEMPTS}): "
+                    f"{type(exc).__name__}. Sleeping 5 s."
+                )
+                time.sleep(5)
+        raise RuntimeError(
+            f"Could not fetch station inventory after {FDSN_ATTEMPTS} attempts. "
+            f"Without instrument response the amplitudes cannot be computed, so "
+            f"the shard is failed rather than written without them."
+        )
