@@ -40,6 +40,15 @@ def main() -> None:
 
         return worker_main(sys.argv[2:])
 
+    # Same reason as `work`: the container ENTRYPOINT is fixed and Batch cannot
+    # override it, so a subcommand is the only way to run anything else in the
+    # deployed image - and this diagnostic is only meaningful from inside
+    # us-east-2, which means it has to run there.
+    if len(sys.argv) > 1 and sys.argv[1] == "diag-earthscope":
+        from .diag_earthscope import main as diag_main
+
+        return diag_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
