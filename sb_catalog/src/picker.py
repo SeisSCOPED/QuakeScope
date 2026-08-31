@@ -208,6 +208,7 @@ class S3MongoSBBridge:
         extent: Optional[tuple[float, float, float, float]] = None,
         classifier: Optional[bool] = False,
         parquet_uri: Optional[str] = None,
+        flush_threshold: int = 250_000,
         job_id: Optional[str] = None,
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
@@ -223,6 +224,7 @@ class S3MongoSBBridge:
         # output" arrives as an empty string, and the writer would otherwise be
         # constructed with an empty root.
         self.parquet_uri = parquet_uri or None
+        self.flush_threshold = flush_threshold
         # Names the Parquet object. Without it ParquetPickWriter falls back to
         # HOSTNAME, and every shard a node runs writes the SAME key inside a
         # (network, year, month) partition - silently overwriting the last.
@@ -287,7 +289,8 @@ class S3MongoSBBridge:
             return None
         if self._parquet is None:
             self._parquet = ParquetPickWriter(
-                root=self.parquet_uri, run_id=str(self.run_id), job_id=self.job_id
+                root=self.parquet_uri, run_id=str(self.run_id), job_id=self.job_id,
+                flush_threshold=self.flush_threshold
             )
         return self._parquet
 

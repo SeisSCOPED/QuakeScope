@@ -170,6 +170,7 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         classifier=False,          # the classifier is out for 2026
         checkpoint_every=args.checkpoint_every,
         on_checkpoint=_checkpoint,
+        flush_threshold=args.flush_threshold,
         parquet_uri=args.parquet_uri or state.uri(),
         # One Parquet object per shard. Anything less specific collides inside a
         # (network, year, month) partition when a node runs many shards.
@@ -324,6 +325,11 @@ def main(argv=None):
                          "Set above the longest expected shard runtime.")
     ap.add_argument("--max-shards", default=0, type=int, help="Stop after N (0 = drain)")
     ap.add_argument("--max-failures", default=0, type=int, help="Stop after N failures")
+    ap.add_argument("--flush-threshold", default=250_000, type=int,
+                    help="Rows buffered per (network, year, month) partition "
+                         "before it is written. Lower means more, smaller "
+                         "objects but more frequent checkpoints - a preempted "
+                         "worker only loses work since the last flush.")
     ap.add_argument("--checkpoint-every", default=40, type=int,
                     help="Flush Parquet and record progress every N "
                          "station-day-channels. Bounds what a Spot preemption "

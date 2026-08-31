@@ -94,6 +94,16 @@ class ParquetPickWriter:
     cheaper than writing a file per station-day.
 
     ``flush_threshold`` bounds that: once a partition exceeds it, the partition
+    is written and dropped from memory.
+
+    The default was 4,000,000 rows, which no shard ever reached: a busy
+    Ridgecrest-rate shard produces about 3.4M picks in total and they are
+    split across (network, year, month) partitions, so nothing flushed until
+    the shard closed. That made the mid-shard checkpoint unreachable - it
+    only runs after a flush - so a preempted Spot worker lost the whole
+    shard, up to twelve hours, and nothing appeared in S3 until a shard
+    finished. 250,000 rows is roughly 50 MB resident and flushes several
+    times per shard.
     is written and cleared. Long or unusually productive jobs therefore emit a
     few files per partition instead of one, which costs nothing.
     """
@@ -104,7 +114,7 @@ class ParquetPickWriter:
         run_id: str,
         job_id: Optional[str] = None,
         compression: str = "zstd",
-        flush_threshold: int = 4_000_000,
+        flush_threshold: int = 250_000,
         storage_options: Optional[dict] = None,
     ) -> None:
         self.root = root.rstrip("/")
