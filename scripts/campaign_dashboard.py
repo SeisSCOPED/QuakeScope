@@ -56,7 +56,7 @@ QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
 # Parquet objects to scan for the per-station and per-day breakdowns. The
 # headline count is metadata-only and always exact; only the breakdowns are
 # capped, so the hourly job stays hourly as the catalogue grows.
-PARQUET_SCAN_CAP = int(os.environ.get("PARQUET_SCAN_CAP", "600"))
+PARQUET_SCAN_CAP = int(os.environ.get("PARQUET_SCAN_CAP", "150"))
 TASK_VCPU = 8                       # per job definition
 
 # Campaigns whose data cannot currently be read, and why. Shown on the plan so
@@ -100,19 +100,27 @@ def parquet_stats(campaign, max_files=None):
     """
     import pyarrow.dataset as ds
 
-    out = {"picks": 0, "per_station": {}, "per_day": {}, "sampled": None}
+    out = {"picks": 0, "per_station": {}, "per_day": {}, "sampled": None,
+           "error": None}
     try:
         dataset = ds.dataset(f"{BUCKET}/{campaign}/picks/", format="parquet",
                              filesystem=_arrow_fs(), partitioning="hive")
-    except Exception:
-        return out                        # nothing written yet
-    files = list(dataset.files)
+        files = list(dataset.files)
+    except FileNotFoundError:
+        return out                        # genuinely nothing written yet
+    except Exception as exc:
+        # Throttled or otherwise unreadable. Returning 0 here would be a lie
+        # indistinguishable from an empty campaign - and under contention with
+        # the fleet that is exactly when it would happen. Say so instead.
+        out["error"] = f"{type(exc).__name__}: {exc}"[:120]
+        return out
     if not files:
         return out
     try:
         out["picks"] = dataset.count_rows()
-    except Exception:
-        pass
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"[:120]
+        return out
 
     # The breakdowns are what the map and the time series draw, and they are the
     # expensive part. Cap the scan and report the cap rather than either
@@ -123,21 +131,32 @@ def parquet_stats(campaign, max_files=None):
         out["sampled"] = (len(scan), len(files))
     try:
         import pandas as pd
+        # A live fleet is writing into this prefix, so the listing can include
+        # an object that is mid-upload. Skip those rather than lose the whole
+        # breakdown to one partial file - it will be complete by the next run.
         t = ds.dataset(scan, format="parquet", filesystem=_arrow_fs(),
-                       partitioning="hive").to_table(columns=["tid", "peak"])
+                       partitioning="hive",
+                       exclude_invalid_files=True).to_table(
+                           columns=["tid", "peak"])
         df = t.to_pandas()
         out["per_station"] = df.groupby("tid").size().to_dict()
         d = pd.to_datetime(df["peak"])
         out["per_day"] = (df.assign(yr=d.dt.year, doy=d.dt.dayofyear)
                           .groupby(["yr", "doy"]).size().to_dict())
-    except Exception:
-        pass
+    except Exception as exc:
+        # The headline count already succeeded; only the breakdowns failed, so
+        # keep the count and let the page say the map is thin rather than
+        # implying the campaign has four stations in it.
+        out["error"] = f"map/series unavailable - {type(exc).__name__}"
     return out
 
 
 def _arrow_fs():
-    from pyarrow.fs import S3FileSystem
-    return S3FileSystem(region=REGION)
+    from pyarrow.fs import AwsStandardS3RetryStrategy, S3FileSystem
+    # Same reasoning as the boto3 client: the fleet owns this bucket's request
+    # budget, so the dashboard retries patiently instead of failing fast.
+    return S3FileSystem(region=REGION,
+                        retry_strategy=AwsStandardS3RetryStrategy(max_attempts=10))
 
 
 def gather(s3, b, campaigns):
@@ -145,6 +164,7 @@ def gather(s3, b, campaigns):
     per_day = defaultdict(int)
     camp_rows, total_picks, total_bytes, total_files = [], 0, 0, 0
     sampled = []
+    unreadable = []
 
     for name in campaigns:
         try:
@@ -166,7 +186,11 @@ def gather(s3, b, campaigns):
         n_manifests = 0
         for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/manifests/"):
             for o in page.get("Contents", []):
-                m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
+                try:
+                    m = json.loads(
+                        s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
+                except Exception:
+                    continue        # throttled or gone; station-days undercount
                 sdays += m.get("station_days", 0)
                 files += len(m.get("files", []))
                 n_manifests += 1
@@ -182,6 +206,8 @@ def gather(s3, b, campaigns):
             per_day[(int(yr), int(doy))] += int(n)
         if ps["sampled"]:
             sampled.append((name,) + ps["sampled"])
+        if ps.get("error"):
+            unreadable.append((name, ps["error"]))
         # Planned station-days come from the queue, not the manifests: the
         # manifests only describe what is already finished, and the plan panel
         # is about what is still to come.
@@ -240,7 +266,7 @@ def gather(s3, b, campaigns):
                     end = s1 or now().timestamp() * 1000
                     vcpu_hours += v * (end - s0) / 3_600_000
     return dict(per_station=per_station, per_day=per_day, camps=camp_rows,
-                sampled=sampled,
+                sampled=sampled, unreadable=unreadable,
                 picks=total_picks, bytes=total_bytes, files=total_files,
                 coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
                 status=status)
@@ -648,6 +674,13 @@ def render(g, examples):
         f'<td class="num">${tot_vh * FARGATE_SPOT_RATE:,.0f}</td>'
         f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
 
+    bad_note = ""
+    if g.get("unreadable"):
+        bits = "; ".join(f"{c} ({e})" for c, e in g["unreadable"])
+        bad_note = (f'<p class="note">Some figures could not be read from S3 '
+                    f'this hour - {bits}. The fleet and this job share the '
+                    f'bucket\'s request budget, so a busy campaign can throttle '
+                    f'the dashboard. Nothing is lost; the next run retries.</p>')
     sampled_note = ""
     if g.get("sampled"):
         bits = ", ".join(f"{c}: {a:,} of {b:,}" for c, a, b in g["sampled"])
@@ -809,6 +842,7 @@ Blocked queues are excluded from the total.</p>
 <tbody>{''.join(plan_rows)}{plan_total}</tbody></table></div>
 
 {sampled_note}
+{bad_note}
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
 complete.</p>
@@ -870,7 +904,14 @@ def main():
     ap.add_argument("--campaigns",
                     default="western-a,western-b,scedc,ncedc,earthscope,obs,firedrill")
     a = ap.parse_args()
-    s3 = boto3.client("s3", region_name=REGION)
+    # The hourly job shares S3 with the fleet. At 1,500 workers the dashboard
+    # is the small, interruptible client in that contention, so it backs off
+    # adaptively rather than adding to the pressure - a render that throttles is
+    # a render that reports nothing.
+    from botocore.config import Config
+    s3 = boto3.client("s3", region_name=REGION, config=Config(
+        retries={"max_attempts": 10, "mode": "adaptive"},
+        max_pool_connections=8))
     b = boto3.client("batch", region_name=REGION)
     camps = [c for c in a.campaigns.split(",") if c]
     g = gather(s3, b, camps)
