@@ -45,6 +45,26 @@ BUCKET = "quakescope-picks-2026"
 QUEUE = "niyiyu_earthscope_missing_station"
 FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rate
 
+# Cost model for the plan panel. VCPU_H_PER_STATION_DAY is MEASURED: 707
+# vCPU-hours over 10,440 station-days on the live SCEDC campaign gave 0.068
+# under the day-long deconvolution, and the short-window rework cut the
+# per-station-day pipeline from 20.65 s to 7.32 s at campaign-average pick
+# density (0.354x). Everything downstream of it is arithmetic, and the page
+# says so - a projection is not an observation.
+VCPU_H_PER_STATION_DAY = 0.068 * 0.354
+QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
+TASK_VCPU = 8                       # per job definition
+
+# Campaigns whose data cannot currently be read, and why. Shown on the plan so
+# a queue that is deliberately parked is not mistaken for one that is failing.
+BLOCKED = {
+    "western-b": "EarthScope restricted access point: reads stall and time out "
+                 "at 900 s even from inside us-east-2, where GetObject is "
+                 "permitted. Not a permissions problem - under diagnosis. "
+                 "Parked.",
+    "earthscope": "Mostly the EarthScope restricted access point - same stall.",
+}
+
 BASEMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "data", "basemap.json")
 
@@ -89,9 +109,21 @@ def gather(s3, b, campaigns):
                 for r in m.get("records", []):
                     per_station[r["tid"]] += r.get("npks", 0)
                     per_day[(r["yr"], r["doy"])] += r.get("npks", 0)
+        # Planned station-days come from the queue, not the manifests: the
+        # manifests only describe what is already finished, and the plan panel
+        # is about what is still to come.
+        planned_sd = 0
+        try:
+            body = s3.get_object(Bucket=BUCKET,
+                                 Key=f"{name}/shards.jsonl")["Body"].read()
+            planned_sd = sum(json.loads(x).get("n_station_days", 0)
+                             for x in body.decode().splitlines() if x.strip())
+        except Exception:
+            pass
         if shards or picks:
             camp_rows.append({"name": name, "shards": shards, "done": done,
-                              "picks": picks, "sdays": sdays, "bytes": nbytes})
+                              "picks": picks, "sdays": sdays, "bytes": nbytes,
+                              "planned_sd": planned_sd})
         # Count objects from the same listing that produced the bytes. Taking
         # the count from the manifests instead made the two disagree - 9 files
         # against 49 MB - because a running shard has written objects but has
@@ -510,6 +542,37 @@ def render(g, examples):
             f'<td class="num">{c["done"]:,}</td><td class="num">{c["shards"]:,}</td>'
             f'<td class="num">{p:.2f}%</td><td class="num">{c["picks"]:,}</td></tr>')
 
+    # ---- campaign plan: what each queue will cost and how long it will take.
+    # Every figure here is DERIVED from one measured rate; nothing is observed.
+    plan_rows, tot_sd, tot_vh = [], 0, 0.0
+    for c in sorted(g["camps"], key=lambda x: -x["planned_sd"]):
+        sd = c["planned_sd"]
+        if not sd:
+            continue
+        vh = sd * VCPU_H_PER_STATION_DAY
+        cost = vh * FARGATE_SPOT_RATE
+        hours = vh / QUOTA_VCPU
+        blocked = BLOCKED.get(c["name"])
+        if not blocked:            # the total is what can actually be run
+            tot_sd += sd
+            tot_vh += vh
+        lo, dk = campaign_ink(c["name"])
+        note = (f'<span class="blocked" title="{blocked}">blocked</span>'
+                if blocked else "")
+        plan_rows.append(
+            f'<tr{" class=off" if blocked else ""}>'
+            f'<td><span class="dot" style="--camp:{lo};--camp-dk:{dk}"></span>'
+            f'{c["name"]} {note}</td>'
+            f'<td class="num">{sd:,}</td><td class="num">{c["shards"]:,}</td>'
+            f'<td class="num">{vh:,.0f}</td>'
+            f'<td class="num">${cost:,.0f}</td>'
+            f'<td class="num">{hours:,.1f} h</td></tr>')
+    plan_total = (
+        f'<tr class="tot"><td>runnable total</td><td class="num">{tot_sd:,}</td>'
+        f'<td class="num"></td><td class="num">{tot_vh:,.0f}</td>'
+        f'<td class="num">${tot_vh * FARGATE_SPOT_RATE:,.0f}</td>'
+        f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
+
     st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
     # Grouped by campaign, in the fixed campaign order, so a campaign keeps its
     # place and its hue on the page from hour to hour.
@@ -584,6 +647,14 @@ svg{{width:100%;height:auto;display:block}}
 .campgrp h3{{font-size:12px;font-weight:640;letter-spacing:.04em;
 text-transform:uppercase;color:var(--text-secondary);margin:0 0 4px;
 display:flex;align-items:center;gap:6px}}
+.plan .dot,td .dot{{width:8px;height:8px;border-radius:50%;
+background:var(--camp);display:inline-block;margin-right:6px}}
+tr.off td{{opacity:.55}}
+.blocked{{font-size:10.5px;font-weight:640;letter-spacing:.03em;
+text-transform:uppercase;color:var(--warning);border:1px solid var(--warning);
+border-radius:3px;padding:0 4px;margin-left:6px;cursor:help}}
+tr.tot td{{font-weight:640;border-top:2px solid var(--grid)}}
+.scroll{{overflow-x:auto}}
 .campgrp .dot{{width:8px;height:8px;border-radius:50%;background:var(--camp);
 flex:none}}
 @media (prefers-color-scheme:dark){{:root:not([data-theme="light"]) .campgrp
@@ -639,6 +710,20 @@ the phase; the number is confidence. Traces are demeaned and high-passed at
 upstream, on the data the model saw.</p>
 {waves}
 {waves_note}
+
+<h2>Campaign plan</h2>
+<p class="cap">What is still to run, costed from one measured rate:
+<b>{VCPU_H_PER_STATION_DAY:.4f} vCPU-hours per station-day</b> (707 vCPU-hours
+over 10,440 station-days on the live SCEDC campaign, times 0.354 for the
+short-window amplitude rework). Time assumes the full
+{QUOTA_VCPU:,}-vCPU Fargate Spot quota with nothing else running. These are
+projections, not observations - the tiles above are what actually happened.
+Blocked queues are excluded from the total.</p>
+<div class="scroll">
+<table><thead><tr><th>campaign</th><th class="num">station-days</th>
+<th class="num">shards</th><th class="num">vCPU-h</th><th class="num">est. cost</th>
+<th class="num">at full quota</th></tr></thead>
+<tbody>{''.join(plan_rows)}{plan_total}</tbody></table></div>
 
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
@@ -699,7 +784,7 @@ def main():
     ap.add_argument("--min-conf", type=float, default=EXAMPLE_MIN_CONF,
                     help="minimum pick confidence for the examples")
     ap.add_argument("--campaigns",
-                    default="scedc,ncedc,earthscope,obs,western,firedrill")
+                    default="western-a,western-b,scedc,ncedc,earthscope,obs,firedrill")
     a = ap.parse_args()
     s3 = boto3.client("s3", region_name=REGION)
     b = boto3.client("batch", region_name=REGION)
