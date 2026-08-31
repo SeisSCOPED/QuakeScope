@@ -70,6 +70,9 @@ class AmplitudeExtractor:
         parallel: bool = False,
         raw_highpass: Optional[float] = 1.0,
         taper_seconds: float = 60.0,
+        wa_min_conf: float = 0.5,
+        wa_window_seconds: float = 70.0,
+        vel_highpass: float = 0.2,
     ):
         self.time_before = time_before
         self.time_after = time_after
@@ -77,6 +80,17 @@ class AmplitudeExtractor:
         self.components = components
         self.raw_highpass = raw_highpass
         self.taper_seconds = taper_seconds
+        # Only picks at or above this confidence get a Wood-Anderson amplitude.
+        # The deconvolution is the dominant cost in the whole pipeline and the
+        # marginal end of the catalogue is not where magnitudes are wanted: the
+        # picking threshold is 0.2, and 0.5 keeps ~16% of picks.
+        self.wa_min_conf = wa_min_conf
+        # Total length of the window deconvolved around each qualifying pick.
+        # Must comfortably exceed time_before + time_after plus both tapers:
+        # at 70 s the 15% taper is 10.5 s a side, leaving a 49 s core for a
+        # 13 s measurement window.
+        self.wa_window_seconds = wa_window_seconds
+        self.vel_highpass = vel_highpass
         if parallel:
             # Retained for call-site compatibility. The per-pick work is now a
             # slice and a maximum, so there is nothing worth a joblib worker -
@@ -148,46 +162,124 @@ class AmplitudeExtractor:
     ) -> list[float]:
         """
         Extract Wood-Anderson amplitudes from the horizontal components.
-        Returns NaN for every pick where no amplitude could be determined.
+        Returns NaN for every pick below `wa_min_conf` or where no amplitude
+        could be determined.
 
-        The response is removed **once per station**, on whatever span the stream
-        covers, and each pick's measurement window is then sliced out of the
-        deconvolved trace. Previously this ran one `remove_response` per pick -
-        roughly 6,700 deconvolutions for a single busy station-day, all of them
-        recomputing the same transfer function.
+        The response is removed on a short window around each qualifying pick,
+        not on the day-long trace. Deconvolving the whole day cost ~14 s per
+        station-day-channel and was **71-89% of total campaign wall clock**
+        (measured, `docs/rerun_2026/22_amplitude_profile.md`) - five times the
+        cost of everything else in the pipeline combined.
 
-        Deconvolving the long trace is also the better measurement: a short
-        window cannot resolve periods near its own length, which is why
-        `docs/amplitude_conventions.md` constrains the pre-filter to what a 33 s
-        window supported. That constraint no longer applies here.
+        A short window is sound here specifically because Wood-Anderson is
+        window-insensitive: measured against the day-long deconvolution on
+        CI.BAR 2010.166, the ratio is median 1.0000, p10 0.999, p90 1.001, 97%
+        within 5%. `docs/amplitude_conventions.md` records why this holds for WA
+        and *not* for displacement, where the same substitution shifts
+        amplitudes by 12x. Do not reuse this window for a longer-period measure.
+
+        Cost scales with pick count rather than samples: ~20 ms per pick against
+        a flat ~14 s per station-day, so short windows win below ~680 picks.
+        Gating at `wa_min_conf` keeps the count well under that - the median
+        station-day has 120 picks at conf >= 0.5 against 940 at all confidences.
         """
         if len(picks) == 0:
             return []                       # never deconvolve a day with no picks
 
         stream = stream.select(channel=f"*[{self.components}]")
         amplitudes: list[float] = [np.nan] * len(picks)
+        half = self.wa_window_seconds / 2.0
 
         for station, indices in self._stations_with_picks(picks).items():
             net, sta = station.split(".")
+            strong = [i for i in indices
+                      if float(picks[i].peak_value) >= self.wa_min_conf]
+            if not strong:
+                continue
             sub_inv = inventory.select(network=net, station=sta)
+            station_stream = stream.select(network=net, station=sta)
+            if len(station_stream) == 0:
+                continue
+
+            for i in strong:
+                t = picks[i].peak_time
+                window = station_stream.slice(t - half, t + half).copy()
+                if len(window) == 0:
+                    continue
+                window.detrend("linear")
+                # A fixed fraction is right here: every window is the same
+                # length, so 15% is a fixed number of seconds, and the guard
+                # below rejects any pick whose measurement window reaches into
+                # it rather than measuring a suppressed peak.
+                fraction = 0.15
+                try:
+                    window.remove_response(
+                        sub_inv,
+                        taper_fraction=fraction,
+                        **self.response_removal_args,
+                    )
+                except Exception:           # no response information
+                    continue
+                window.simulate(paz_simulate=WOOD_ANDERSON)
+                arrays = self._as_arrays(
+                    window, self._taper_length(window, fraction))
+                amplitudes[i] = self._peak_from_arrays(arrays, picks[i], mean=True)
+
+        return amplitudes
+
+    def extract_velocity_amplitudes(
+        self, stream: obspy.Stream, picks: sbu.PickList, inventory: obspy.Inventory
+    ) -> list[float]:
+        """
+        Peak ground velocity near each pick, in m/s, for **every** pick.
+
+        This is the cheap amplitude that replaces raw counts. Rather than
+        deconvolving the full response, it divides by the scalar instrument
+        sensitivity and high-passes at `vel_highpass` Hz - one filter and one
+        divide over the day, no FFT of the transfer function. Measured at 0.95 s
+        per station-day-channel against 13.5 s for the day-long deconvolution,
+        a 14x saving, and unlike raw counts the number is physical and
+        comparable between instruments.
+
+        The scalar gain is flat-response only, so this is valid in the band
+        where the instrument is flat to velocity and NOT below `vel_highpass`.
+        It is a triage and QC amplitude; `amp` remains the calibrated one.
+        Returns NaN where no response or no data is available.
+        """
+        if len(picks) == 0:
+            return []
+
+        amplitudes: list[float] = [np.nan] * len(picks)
+
+        for station, indices in self._stations_with_picks(picks).items():
+            net, sta = station.split(".")
             prepared = stream.select(network=net, station=sta).copy()
             if len(prepared) == 0:
                 continue
             prepared.detrend("linear")
             fraction = self._taper_fraction(prepared)
-            try:
-                prepared.remove_response(
-                    sub_inv,
-                    taper_fraction=fraction,
-                    **self.response_removal_args,
-                )
-            except Exception:               # no response information
+            prepared.taper(max_percentage=fraction, type="cosine")
+            prepared.filter("highpass", freq=self.vel_highpass,
+                            corners=4, zerophase=True)
+            # Per-trace sensitivity: components of one station can differ, and a
+            # station's response changes across epochs.
+            kept = obspy.Stream()
+            for tr in prepared:
+                try:
+                    sens = (inventory.select(network=net, station=sta)
+                            .get_response(tr.id, tr.stats.starttime)
+                            .instrument_sensitivity.value)
+                except Exception:
+                    continue                # no response for this component
+                if not sens:
+                    continue
+                tr.data = tr.data / float(sens)
+                kept += tr
+            if len(kept) == 0:
                 continue
-            prepared.simulate(paz_simulate=WOOD_ANDERSON)
-            arrays = self._as_arrays(prepared, self._taper_length(prepared, fraction))
-
+            arrays = self._as_arrays(kept, self._taper_length(kept, fraction))
             for i in indices:
-                amplitudes[i] = self._peak_from_arrays(arrays, picks[i], mean=True)
+                amplitudes[i] = self._peak_from_arrays(arrays, picks[i], mean=False)
 
         return amplitudes
 

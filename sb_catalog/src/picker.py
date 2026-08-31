@@ -467,10 +467,11 @@ class S3MongoSBBridge:
                 stream_annotations = await asyncio.to_thread(_classify)
                 n_picks = len(stream_annotations.picks)
 
-                # extract amplitudes. Timed against PICK COUNT, not station-days:
-                # this pass runs once per pick and pick counts vary ~4x between an
-                # ordinary day and a mainshock day, so per-station-day timing hides
-                # how it actually scales.
+                # Wood-Anderson, deconvolved on a short window around each pick
+                # above the confidence gate. Timed against PICK COUNT, not
+                # station-days: this pass now scales with qualifying picks, and
+                # pick counts vary ~4x between an ordinary day and a mainshock
+                # day, so per-station-day timing would hide how it scales.
                 def _amps():
                     with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
                         return self.amp_extor.extract_amplitudes(
@@ -479,14 +480,16 @@ class S3MongoSBBridge:
 
                 stream_amplitudes = await asyncio.to_thread(_amps)
 
-                # extract raw amplitudes around each pick
-                def _raw_amps():
-                    with stage("amp.raw", unit=n_picks, unit_name="pick"):
-                        return self.amp_extor.extract_raw_amplitudes(
-                            stream, stream_annotations.picks
+                # Gain-corrected peak ground velocity for every pick. Replaces
+                # the raw-counts pass: same cost class, but the number is
+                # physical and comparable between instruments.
+                def _vel_amps():
+                    with stage("amp.velocity", unit=n_picks, unit_name="pick"):
+                        return self.amp_extor.extract_velocity_amplitudes(
+                            stream, stream_annotations.picks, self.s3.inventory
                         )
 
-                stream_raw_amplitudes = await asyncio.to_thread(_raw_amps)
+                stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
 
                 # classifier
                 if self.classifier and (channel in ["BH", "HH"]):
@@ -582,7 +585,7 @@ class S3MongoSBBridge:
                         "end": pick.end_time.datetime,
                         "conf": float(pick.peak_value),
                         "amp": float(amp),
-                        "amp_raw": float(raw_amp),
+                        "amp_vel": float(raw_amp),
                         "pha": pick.phase,
                         "rid": self.run_id,
                     }

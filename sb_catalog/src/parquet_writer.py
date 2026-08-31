@@ -60,7 +60,7 @@ PICK_SCHEMA = pa.schema(
         ("end", pa.timestamp("ms")),
         ("conf", pa.float32()),
         ("amp", pa.float32()),
-        ("amp_raw", pa.float32()),
+        ("amp_vel", pa.float32()),
         ("rid", pa.string()),          # run id, ties picks to their weights
     ]
 )
@@ -176,7 +176,7 @@ class ParquetPickWriter:
                     "end": pick.end_time.datetime,
                     "conf": float(pick.peak_value),
                     "amp": float(amp),
-                    "amp_raw": float(raw_amp),
+                    "amp_vel": float(raw_amp),
                     "rid": self.run_id,
                 }
             )
