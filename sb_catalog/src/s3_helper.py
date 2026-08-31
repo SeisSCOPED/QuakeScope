@@ -60,6 +60,22 @@ ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
 # Denied GETs to tolerate before concluding the role lacks the entitlement.
 ES_DENIED_ATTEMPTS = int(os.environ.get("ES_DENIED_ATTEMPTS", "2"))
+# Retries to tolerate on a transient S3 error before giving the station-day up.
+S3_BUSY_ATTEMPTS = int(os.environ.get("S3_BUSY_ATTEMPTS", "6"))
+# Hard ceiling on one station-day. A worker that blocks past this loses one
+# station-day; a worker with no ceiling loses the whole shard and its lease.
+STATION_DAY_TIMEOUT = float(os.environ.get("STATION_DAY_TIMEOUT", "900"))
+
+# Socket-level timeouts. Without these a stalled connection never raises: a
+# profiling shard held a single GET open for 447 minutes and logged nothing
+# until Spot reclaimed the task. botocore's defaults are generous and s3fs
+# layers its own retries on top, so set them explicitly and keep them tight -
+# a day-long mSEED object is tens of MB, not gigabytes.
+S3_CONFIG = {
+    "connect_timeout": 15,
+    "read_timeout": 120,
+    "retries": {"max_attempts": 4, "mode": "standard"},
+}
 
 logger = logging.getLogger("picker")
 
@@ -146,14 +162,14 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
 
         self.ttl_threshold = datetime.timedelta(minutes=5)
         self.fs = {
-            "scedc": S3FileSystem(anon=True),
-            "ncedc": S3FileSystem(anon=True),
+            "scedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+            "ncedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
         }
         # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
         # credential exchange entirely when the campaign has not been configured
         # for EarthScope, so a public-bucket run neither stalls nor fails on it.
         # Open Data needs nothing, so it is always available.
-        self.fs["earthscope_open"] = S3FileSystem(anon=True)
+        self.fs["earthscope_open"] = S3FileSystem(anon=True, config_kwargs=S3_CONFIG)
         self.credential = None
 
         # The restricted access point is credentialed lazily: a campaign that
@@ -229,6 +245,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             secret=self.credential.aws_secret_access_key,
             token=self.credential.aws_session_token,
             client_kwargs={"region_name": "us-east-2"},
+            config_kwargs=S3_CONFIG,
         )
         self.earthscope_restricted_ready = True
 
@@ -414,8 +431,8 @@ class S3DataSource:
                             net, sta, loc, channel, day
                         ):
                             if uri in avail_uri[net]:
-                                stream += await asyncio.to_thread(
-                                    self._read_waveform_from_s3, uri, net
+                                stream += await self._read_with_timeout(
+                                    uri, net, station, day
                                 )
                 elif dc == "earthscope":
                     # use the first one: they should be all same
@@ -423,8 +440,8 @@ class S3DataSource:
                     # earthscope object name has version number
                     uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
                     if len(uri) > 0:
-                        s = await asyncio.to_thread(
-                            self._read_waveform_from_s3, uri[0], net
+                        s = await self._read_with_timeout(
+                            uri[0], net, station, day
                         )
                         for channel in all_channels:
                             if check[channel]:
@@ -445,6 +462,30 @@ class S3DataSource:
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
 
+    async def _read_with_timeout(self, uri, net, station, day) -> obspy.Stream:
+        """One object read, bounded by STATION_DAY_TIMEOUT.
+
+        `wait_for` cannot kill the worker thread - it only stops waiting on it -
+        so this is the second line of defence, not the first. The socket
+        timeouts in S3_CONFIG are what actually bound the thread; this bounds
+        the *shard*, so one pathological object costs a station-day rather than
+        the whole shard and its lease. Both exist because the failure we hit
+        (447 minutes on one GET, no log line, killed by Spot) got past having
+        neither.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._read_waveform_from_s3, uri, net),
+                timeout=STATION_DAY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Timeout after {STATION_DAY_TIMEOUT:.0f}s reading {uri} for "
+                f"{station} {day.strftime('%Y.%j')}; abandoning this "
+                f"station-day so the shard can continue."
+            )
+            return obspy.Stream()
+
     def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
@@ -462,7 +503,7 @@ class S3DataSource:
         # indistinguishable from a hang: a profiling shard sat on a single
         # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
         # Bound the attempts and say what is actually wrong.
-        denied = 0
+        denied = busy = 0
         while True:
             fs = self.s3helper.get_filesystem(net)
             try:
@@ -506,7 +547,18 @@ class S3DataSource:
                     f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}"
                 )
             except ClientError:
-                logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
+                busy += 1
+                if busy > S3_BUSY_ATTEMPTS:
+                    logger.error(
+                        f"S3 still failing after {busy} attempts for {uri}; "
+                        f"giving up on this object rather than holding the "
+                        f"shard open."
+                    )
+                    return obspy.Stream()
+                logger.warning(
+                    f"S3 might be busy ({busy}/{S3_BUSY_ATTEMPTS}). "
+                    f"Sleep 5 seconds and retry."
+                )
                 time.sleep(5)
             except (FileNotFoundError, ValueError, TypeError):
                 return obspy.Stream()
