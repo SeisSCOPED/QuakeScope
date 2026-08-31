@@ -290,14 +290,36 @@ EXAMPLE_MIN_CONF = 0.5
 DISPLAY_HIGHPASS_HZ = 1.0
 
 
+# Campaign identity colour. The fixed categorical order, assigned once and never
+# cycled, so a campaign keeps its hue as campaigns come and go from the page.
+# Validated as a 5-slot categorical palette against both card surfaces: CVD
+# separation PASS (worst adjacent dE 9.1 protan), normal-vision PASS (19.6).
+# Four slots sit under 3:1 on the light card, so the colour is never the only
+# cue - every panel and section header spells the campaign name out in text.
+CAMPAIGN_ORDER = ["scedc", "ncedc", "western", "obs", "earthscope"]
+CAMPAIGN_INK = {
+    "scedc":      ("#2a78d6", "#3987e5"),   # (light, dark)
+    "ncedc":      ("#eb6834", "#d95926"),
+    "western":    ("#1baf7a", "#199e70"),
+    "obs":        ("#eda100", "#c98500"),
+    "earthscope": ("#e87ba4", "#d55181"),
+}
+
+
+def campaign_ink(name):
+    return CAMPAIGN_INK.get(name, ("#78766f", "#96948b"))
+
+
 def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
                       min_conf=EXAMPLE_MIN_CONF):
     """Random picks from the catalogue, with the waveform they were made on.
 
-    Sampled from a Parquet object chosen at random, so the examples change hour
-    to hour and are not a curated set. Only anonymous archives are used - the
-    restricted EarthScope access point needs a token the dashboard job does not
-    carry, and an example that cannot be fetched is skipped rather than faked.
+    Returns {campaign: [example, ...]}, sampled independently per campaign so
+    one busy campaign cannot crowd the others out of the page. Sampled from a
+    Parquet object chosen at random, so the examples change hour to hour and are
+    not a curated set. Only anonymous archives are used - the restricted
+    EarthScope access point needs a token the dashboard job does not carry, and
+    an example that cannot be fetched is skipped rather than faked.
     """
     import random
 
@@ -311,59 +333,66 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
                                           SCEDCS3ObjectHelper)
 
     rng = random.Random(seed)
-    objs = []
+    fs = S3FileSystem(anon=True)
+    helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper()}
+    by_campaign = {}
+
     for c in campaigns:
+        objs = []
         for page in s3.get_paginator("list_objects_v2").paginate(
                 Bucket=BUCKET, Prefix=f"{c}/picks/"):
             objs += [o["Key"] for o in page.get("Contents", [])]
-    if not objs:
-        return []
-    df = pd.read_parquet(f"s3://{BUCKET}/{rng.choice(objs)}")
-    if df.empty:
-        return []
-    strong = df[df.conf >= min_conf]
-    if strong.empty:
-        return []                      # nothing confident here; no example
+        if not objs:
+            continue                       # campaign has written nothing yet
+        df = pd.read_parquet(f"s3://{BUCKET}/{rng.choice(objs)}")
+        if df.empty:
+            continue
+        strong = df[df.conf >= min_conf]
+        if strong.empty:
+            continue                       # nothing confident here; no example
 
-    fs = S3FileSystem(anon=True)
-    helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper()}
-    out, tried = [], set()
-    order = list(strong.sample(frac=1, random_state=rng.randrange(10**6)).index)
-    for idx in order:
-        if len(out) >= n:
-            break
-        p = df.loc[idx]
-        if p.tid in tried:
-            continue                       # spread examples across stations
-        tried.add(p.tid)
-        net, sta, loc = (p.tid.split(".") + ["", ""])[:3]
-        dc = NETWORK_MAPPING.get(net)
-        if dc not in helpers:
-            continue                       # EarthScope needs a token; skip
-        t = obspy.UTCDateTime(str(p.peak))
-        try:
-            key = helpers[dc].get_s3_path(net, sta, loc, p.cha, f"{t.year}",
-                                          f"{t.julday:03d}", "Z")
-            tr = obspy.read(io.BytesIO(fs.open(key, "rb").read()))
-            tr.merge(fill_value=0)
-            tr.trim(t - window[0], t + window[1])
-            if not len(tr) or tr[0].stats.npts < 50:
-                continue
-            tr = tr[0]
-        except Exception:
-            continue                       # missing day, gap, unreadable: skip
+        out, tried = [], set()
+        order = list(
+            strong.sample(frac=1, random_state=rng.randrange(10**6)).index)
+        for idx in order:
+            if len(out) >= n:
+                break
+            p = df.loc[idx]
+            if p.tid in tried:
+                continue                   # spread examples across stations
+            tried.add(p.tid)
+            net, sta, loc = (p.tid.split(".") + ["", ""])[:3]
+            dc = NETWORK_MAPPING.get(net)
+            if dc not in helpers:
+                continue                   # EarthScope needs a token; skip
+            t = obspy.UTCDateTime(str(p.peak))
+            try:
+                key = helpers[dc].get_s3_path(net, sta, loc, p.cha,
+                                              f"{t.year}", f"{t.julday:03d}",
+                                              "Z")
+                tr = obspy.read(io.BytesIO(fs.open(key, "rb").read()))
+                tr.merge(fill_value=0)
+                tr.trim(t - window[0], t + window[1])
+                if not len(tr) or tr[0].stats.npts < 50:
+                    continue
+                tr = tr[0]
+            except Exception:
+                continue                   # missing day, gap, unreadable: skip
 
-        t0, t1 = tr.stats.starttime, tr.stats.endtime
-        marks = []
-        for _, q in strong[strong.tid == p.tid].iterrows():
-            qt = obspy.UTCDateTime(str(q.peak))
-            if t0 <= qt <= t1:
-                marks.append((float(qt - t0), str(q.pha), float(q.conf)))
-        out.append({"tid": p.tid, "cha": p.cha, "start": str(t0)[:19],
-                    "rate": float(tr.stats.sampling_rate),
-                    "data": tr.data.astype(float).tolist(),
-                    "dur": float(t1 - t0), "marks": marks})
-    return out
+            t0, t1 = tr.stats.starttime, tr.stats.endtime
+            marks = []
+            for _, q in strong[strong.tid == p.tid].iterrows():
+                qt = obspy.UTCDateTime(str(q.peak))
+                if t0 <= qt <= t1:
+                    marks.append((float(qt - t0), str(q.pha), float(q.conf)))
+            out.append({"tid": p.tid, "cha": p.cha, "start": str(t0)[:19],
+                        "campaign": c,
+                        "rate": float(tr.stats.sampling_rate),
+                        "data": tr.data.astype(float).tolist(),
+                        "dur": float(t1 - t0), "marks": marks})
+        if out:
+            by_campaign[c] = out
+    return by_campaign
 
 
 # The waveform panels are raster, so they cannot restyle with the theme the way
@@ -482,18 +511,40 @@ def render(g, examples):
             f'<td class="num">{p:.2f}%</td><td class="num">{c["picks"]:,}</td></tr>')
 
     st = ", ".join(f"{k} {v}" for k, v in sorted(g["status"].items())) or "nothing active"
+    # Grouped by campaign, in the fixed campaign order, so a campaign keeps its
+    # place and its hue on the page from hour to hour.
     if examples:
-        waves = "".join(
-            f'<figure class="wf">{png_waveform(e)}'
-            f'<figcaption>{e["tid"]}{e["cha"]}Z \u00b7 {e["start"]} UTC \u00b7 '
-            f'{e["rate"]:.0f} Hz \u00b7 '
-            f'{len(e["marks"])} pick{"" if len(e["marks"])==1 else "s"}'
-            f'</figcaption></figure>'
-            for e in examples)
+        blocks = []
+        for c in [x for x in CAMPAIGN_ORDER if x in examples] + \
+                 [x for x in examples if x not in CAMPAIGN_ORDER]:
+            lo, dk = campaign_ink(c)
+            figs = "".join(
+                f'<figure class="wf" style="--camp:{lo};--camp-dk:{dk}">'
+                f'{png_waveform(e)}'
+                f'<figcaption>{e["tid"]}{e["cha"]}Z \u00b7 {e["start"]} UTC '
+                f'\u00b7 {e["rate"]:.0f} Hz \u00b7 '
+                f'{len(e["marks"])} pick{"" if len(e["marks"])==1 else "s"}'
+                f'</figcaption></figure>'
+                for e in examples[c])
+            blocks.append(
+                f'<div class="campgrp" style="--camp:{lo};--camp-dk:{dk}">'
+                f'<h3><span class="dot"></span>{c}</h3>{figs}</div>')
+        waves = "".join(blocks)
     else:
         waves = ('<p class="empty">No examples yet. They are drawn from picks '
                  'already written to S3, so this fills in once a campaign has '
                  'produced some.</p>')
+
+    # Campaigns whose data lives behind the restricted EarthScope access point
+    # cannot be illustrated here: the dashboard job runs anonymously. Say so
+    # rather than letting a silently absent section read as "no picks".
+    quiet = [c["name"] for c in g["camps"]
+             if c["picks"] and c["name"] not in (examples or {})]
+    waves_note = (f'<p class="note">No anonymous waveform source for '
+                  f'{", ".join(quiet)} - those picks are in the catalogue, but '
+                  f'their raw data sits behind the restricted EarthScope '
+                  f'access point, which this dashboard job has no token for.'
+                  f'</p>' if quiet else "")
     return f"""<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>QuakeScope campaign dashboard</title>
@@ -529,6 +580,16 @@ svg{{width:100%;height:auto;display:block}}
 .base{{fill:none;vector-effect:non-scaling-stroke}}
 .base .coast{{stroke:var(--coast);stroke-width:1}}
 .base .border{{stroke:var(--border-line);stroke-width:.75;stroke-dasharray:3 2.5}}
+.campgrp{{margin:0 0 14px;border-left:3px solid var(--camp);padding-left:10px}}
+.campgrp h3{{font-size:12px;font-weight:640;letter-spacing:.04em;
+text-transform:uppercase;color:var(--text-secondary);margin:0 0 4px;
+display:flex;align-items:center;gap:6px}}
+.campgrp .dot{{width:8px;height:8px;border-radius:50%;background:var(--camp);
+flex:none}}
+@media (prefers-color-scheme:dark){{:root:not([data-theme="light"]) .campgrp
+{{--camp:var(--camp-dk)}}}}
+:root[data-theme="dark"] .campgrp{{--camp:var(--camp-dk)}}
+.note{{color:var(--muted);font-size:12px;margin:2px 0 0;padding:0 2px}}
 .wf{{padding:6px 8px 2px;margin-bottom:8px}}
 img.wave{{width:100%;height:auto;display:block}}
 figcaption{{font-size:11.5px;color:var(--muted);padding:0 2px 4px;font-variant-numeric:tabular-nums}}
@@ -577,6 +638,7 @@ the phase; the number is confidence. Traces are demeaned and high-passed at
 {DISPLAY_HIGHPASS_HZ:.0f}&nbsp;Hz for display only - the picks were made
 upstream, on the data the model saw.</p>
 {waves}
+{waves_note}
 
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
@@ -647,10 +709,11 @@ def main():
         ex = waveform_examples(s3, camps, n=a.examples, min_conf=a.min_conf)
     except Exception as e:                 # never let examples break the page
         print(f"  (examples skipped: {type(e).__name__}: {e})")
-        ex = []
+        ex = {}
     with open(a.out, "w") as f:
         f.write(render(g, ex))
-    print(f"wrote {a.out}: {len(ex)} waveform examples, {g['picks']:,} picks, "
+    print(f"wrote {a.out}: {sum(len(v) for v in ex.values())} waveform examples "
+          f"across {len(ex)} campaign(s), {g['picks']:,} picks, "
           f"{len(g['per_station'])} stations, {len(g['per_day'])} days, "
           f"{g['vcpu_hours']:.1f} vCPU-h")
 
