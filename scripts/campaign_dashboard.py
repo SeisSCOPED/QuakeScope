@@ -280,7 +280,18 @@ def svg_series(per_day, w=760, h=240):
     return "".join(out)
 
 
-def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
+# Examples are anchored on, and annotated with, picks at or above this
+# confidence. The picking threshold is 0.2, so the catalogue contains plenty of
+# marginal detections; a showcase drawn uniformly from all of them mostly shows
+# the marginal ones, because that is what most picks are.
+EXAMPLE_MIN_CONF = 0.5
+
+# Display-only high-pass, in Hz. See png_waveform.
+DISPLAY_HIGHPASS_HZ = 1.0
+
+
+def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
+                      min_conf=EXAMPLE_MIN_CONF):
     """Random picks from the catalogue, with the waveform they were made on.
 
     Sampled from a Parquet object chosen at random, so the examples change hour
@@ -310,11 +321,14 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
     df = pd.read_parquet(f"s3://{BUCKET}/{rng.choice(objs)}")
     if df.empty:
         return []
+    strong = df[df.conf >= min_conf]
+    if strong.empty:
+        return []                      # nothing confident here; no example
 
     fs = S3FileSystem(anon=True)
     helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper()}
     out, tried = [], set()
-    order = list(df.sample(frac=1, random_state=rng.randrange(10**6)).index)
+    order = list(strong.sample(frac=1, random_state=rng.randrange(10**6)).index)
     for idx in order:
         if len(out) >= n:
             break
@@ -341,7 +355,7 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None):
 
         t0, t1 = tr.stats.starttime, tr.stats.endtime
         marks = []
-        for _, q in df[df.tid == p.tid].iterrows():
+        for _, q in strong[strong.tid == p.tid].iterrows():
             qt = obspy.UTCDateTime(str(q.peak))
             if t0 <= qt <= t1:
                 marks.append((float(qt - t0), str(q.pha), float(q.conf)))
@@ -382,6 +396,15 @@ def png_waveform(ex, w=760, h=150, dpi=2):
     tr.stats.sampling_rate = ex["rate"]
     tr.stats.network, tr.stats.station, _ = (ex["tid"].split(".") + [""])[:3]
     tr.stats.channel = ex["cha"] + "Z"
+    # Display filter. Raw counts on a broadband channel are dominated by
+    # long-period ground motion, which sets the amplitude scale and flattens the
+    # arrival into the middle of the trace - the panel then shows a slow
+    # oscillation with a coloured line through it. A 1 Hz high-pass is the
+    # standard view for local seismicity and is what makes the onset visible.
+    # It affects the picture only: the picks were made upstream, on the data the
+    # model saw, and are drawn where they fell.
+    tr.detrend("demean")
+    tr.filter("highpass", freq=DISPLAY_HIGHPASS_HZ, corners=2, zerophase=True)
 
     fig, ax = plt.subplots(figsize=(w / 100, h / 100), dpi=100 * dpi)
     t = np.arange(tr.stats.npts) / tr.stats.sampling_rate
@@ -546,9 +569,13 @@ Natural Earth for orientation. Hover a triangle for its code and count.</p>
 <figure>{svg_series(g['per_day'])}</figure>
 
 <h2>Waveforms and picks</h2>
-<p class="cap" id="pickcount">Picks drawn at random from the catalogue each hour, with the
-waveform they were made on and every pick this station has in the same window.
-Colour is the phase; the number is model confidence.</p>
+<p class="cap">Picks drawn at random from the catalogue each hour, with the
+waveform they were made on. Only picks at confidence
+&ge;&nbsp;{EXAMPLE_MIN_CONF} are shown - the picking threshold is 0.2, so most of
+the catalogue is marginal and a uniform sample would mostly show that. Colour is
+the phase; the number is confidence. Traces are demeaned and high-passed at
+{DISPLAY_HIGHPASS_HZ:.0f}&nbsp;Hz for display only - the picks were made
+upstream, on the data the model saw.</p>
 {waves}
 
 <h2>Progress by campaign</h2>
@@ -607,6 +634,8 @@ def main():
     ap.add_argument("-o", "--out", default="reports/campaign_dashboard.html")
     ap.add_argument("--examples", type=int, default=3,
                     help="random waveform+pick examples to include")
+    ap.add_argument("--min-conf", type=float, default=EXAMPLE_MIN_CONF,
+                    help="minimum pick confidence for the examples")
     ap.add_argument("--campaigns",
                     default="scedc,ncedc,earthscope,obs,western,firedrill")
     a = ap.parse_args()
@@ -615,7 +644,7 @@ def main():
     camps = [c for c in a.campaigns.split(",") if c]
     g = gather(s3, b, camps)
     try:
-        ex = waveform_examples(s3, camps, n=a.examples)
+        ex = waveform_examples(s3, camps, n=a.examples, min_conf=a.min_conf)
     except Exception as e:                 # never let examples break the page
         print(f"  (examples skipped: {type(e).__name__}: {e})")
         ex = []
