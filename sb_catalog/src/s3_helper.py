@@ -58,6 +58,8 @@ EARTHSCOPE_RESTRICTED_ACCESS_POINT = os.environ.get(
 EARTHSCOPE_ROLE = os.environ.get("EARTHSCOPE_ROLE", "s3-miniseed-v2")
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
+# Denied GETs to tolerate before concluding the role lacks the entitlement.
+ES_DENIED_ATTEMPTS = int(os.environ.get("ES_DENIED_ATTEMPTS", "2"))
 
 logger = logging.getLogger("picker")
 
@@ -455,6 +457,12 @@ class S3DataSource:
         TypeError: certain types of empty mSEED files, i.e. in NCEDC
 
         """
+        # A refresh fixes an *expired* credential. It cannot fix a credential
+        # that was never entitled to the object, and retrying one forever is
+        # indistinguishable from a hang: a profiling shard sat on a single
+        # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
+        # Bound the attempts and say what is actually wrong.
+        denied = 0
         while True:
             fs = self.s3helper.get_filesystem(net)
             try:
@@ -477,9 +485,26 @@ class S3DataSource:
                     logger.warning(f"Not authorized to access this resource: {uri}")
                     return obspy.Stream()
             except PermissionError as e:
+                denied += 1
+                if denied > ES_DENIED_ATTEMPTS:
+                    logger.error(
+                        f"Access denied {denied} times for {uri} - refreshing "
+                        f"the credential did not help, so this is an "
+                        f"entitlement gap, not an expiry. The role "
+                        f"{EARTHSCOPE_ROLE} can list this access point but is "
+                        f"not permitted to read it. Ask EarthScope to grant "
+                        f"s3:GetObject for network {net}, or restrict the "
+                        f"campaign to Open Data "
+                        f"({','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}) "
+                        f"plus SCEDC/NCEDC. Skipping."
+                    )
+                    return obspy.Stream()
                 logger.debug(e.args[0])
                 self.s3helper.update_es_filesystem()
-                logger.warning("Credential refreshed.")
+                logger.warning(
+                    f"Credential refreshed after access denied "
+                    f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}"
+                )
             except ClientError:
                 logger.warning(f"S3 might be busy. Sleep for 5 seconds and retry.")
                 time.sleep(5)
