@@ -15,10 +15,11 @@ time and can then be selected at job submission with `--weight <weightname>`.
 `jma_wc`, `obs` and `original` are upstream SeisBench weights, committed here
 deliberately rather than fetched at runtime.
 
-They were not baked in before. The Dockerfile's other source is a tarball from
-`munchmeyer.de` dated `230614` (June 2023), which predates `jma_wc`, so a
-worker running campaigns 1-3 downloaded 4.13 MB from `hifis-storage.desy.de`
-during startup — observed in the logs of the 2026-09-01 SCEDC smoke test:
+They were not baked in before. The Dockerfile's other weight source was a
+156 MB tarball from `munchmeyer.de` dated `230614` (June 2023), which predates
+`jma_wc`, so a worker running campaigns 1-3 downloaded 4.13 MB from
+`hifis-storage.desy.de` during startup — observed in the logs of the
+2026-09-01 SCEDC smoke test:
 
 ```
 Weight file jma_wc.pt.v1.partial not in cache. Downloading...
@@ -62,8 +63,24 @@ python -c "import seisbench.models as sbm; sbm.PhaseNet.from_pretrained('<name>'
 cp ~/.seisbench/models/v3/phasenet/<name>.{pt,json}.v* .
 ```
 
-The rest of the June 2023 tarball (`instance`, `stead`, `scedc`, ...) remains
-available for anything not listed above, but is not relied on by this campaign.
+## Where the other weights come from
+
+The tarball has been removed. The Dockerfile now fetches the full PhaseNet set
+from SeisBench's own repository — `seisbench.remote_model_root`,
+`https://hifis-storage.desy.de/Helmholtz/HelmholtzAI/SeisBench/models/v3/` —
+from an explicit list, so a build is reproducible and a weight appearing or
+vanishing upstream cannot silently change the image.
+
+The tarball's 40 PhaseNet files were compared by SHA-256 against the current
+official ones before it was dropped: **all 40 identical**, so nothing regressed
+in the switch and the 2025 campaign was not running divergent weights. What the
+tarball lacked was everything published since June 2023 — `aq2009`, `jma`,
+`jma_wc`, `phasenet_sn`, `pisdl`, `volpick`.
+
+The weights in this directory are copied over that set afterwards, so they win
+on conflict. That is what makes the campaign path hermetic: even if the
+build-time fetch changed upstream, the four weights a 2026 campaign selects come
+from this directory.
 
 ## Provenance of the 2026 re-run weights
 

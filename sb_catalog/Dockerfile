@@ -19,23 +19,35 @@ RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 # copy the content of the local src directory to the working directory
 COPY src/ src/
 
-# TODO !!!TEMPORARY!!! load model weights from Jannes personal data repo.
-# We may only include those needed
-RUN wget https://munchmeyer.de/data/sbmodels_v3_230614.tgz \
-    && mkdir models \
-    && mkdir -p /root/.seisbench/models/v3/  \
-    && tar xvf sbmodels_v3_230614.tgz -C models/ \
-    && cp -r models/phasenet /root/.seisbench/models/v3/phasenet \
-    && rm -rf models/ \
-    && rm -rf sbmodels_v3_230614.tgz
+# Pretrained PhaseNet weights, from SeisBench's own model repository -
+# seisbench.remote_model_root, https://hifis-storage.desy.de/Helmholtz/HelmholtzAI/SeisBench/models/v3/
+#
+# This replaces a 156 MB tarball from a personal site dated 2023-06-14. Its 40
+# PhaseNet files were checked and are byte-identical to the official ones, so
+# nothing regressed in switching - but it predates six weights published since,
+# and **jma_wc is one of them**. jma_wc drives campaigns 1-3, 78M of the
+# campaign's 113M station-days, so every worker was instead downloading it
+# during startup: 1,500 cold-start fetches of an unpinned external host in the
+# critical path. Observed in the 2026-09-01 SCEDC smoke test.
+#
+# The list is explicit rather than list_pretrained(), so a build is reproducible
+# and a weight appearing or vanishing upstream cannot silently change the image.
+# The build fails loudly if any is unreachable, which is the intent - a missing
+# weight should not become a runtime download on 1,500 workers.
+RUN python -c "\
+import seisbench.models as sbm; \
+ws = ['aq2009','diting','ethz','geofon','instance','iquique','jma','jma_wc', \
+      'lendb','neic','obs','original','phasenet_sn','pisdl','scedc','stead','volpick']; \
+[sbm.PhaseNet.from_pretrained(w) for w in ws]; \
+print('baked %d PhaseNet weights' % len(ws))"
 
 # Send and merge local weights into the image.
 #
-# This COPY must stay AFTER the tarball above: the tarball is from June 2023 and
-# predates jma_wc, so anything a 2026 campaign actually uses is supplied here and
-# must win on conflict. Without it a worker downloads jma_wc from
-# hifis-storage.desy.de during startup - 1,500 cold-start fetches of an external
-# host in the critical path. See models/v3/phasenet/README.md.
+# Must stay AFTER the fetch above so these win on conflict. Every weight a 2026
+# campaign selects - jma_wc, obs, original, quakescope2026 - is committed in the
+# repo, so the campaign path stays hermetic even if upstream changes underneath
+# the fetch. quakescope2026 is only here; it is not published upstream.
+# See models/v3/phasenet/README.md.
 COPY models/v3/ /root/.seisbench/models/v3/
 
 
