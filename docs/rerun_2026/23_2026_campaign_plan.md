@@ -145,11 +145,17 @@ done
 ## Cost Estimate (based on Phase 1 measurements)
 
 ### Inputs
-- SCEDC: 2.5M station-days, ${price}/band-day (measured in Phase 1)
-- NCEDC: 6.0M station-days, ${price}/band-day
-- EarthScope: 69M station-days, ${price}/band-day (measured in Phase 1)
-- OBS: 1.0M station-days, ${price}/band-day
-- Western: 34M station-days, ${price}/band-day
+
+Station-day counts are from [21_queues_written.md](21_queues_written.md), which
+was verified by reading the written queues back from S3. Do not restate them
+from memory — earlier drafts of this plan carried 2.5M for SCEDC, which came
+from a superseded estimate in doc 12 and is 1.66x low.
+
+- SCEDC: 4,106,669 station-days, ${price}/band-day (measured in Phase 1)
+- NCEDC: 5,979,675 station-days, ${price}/band-day
+- EarthScope: 67,983,975 station-days, ${price}/band-day (measured in Phase 1)
+- OBS: 996,536 station-days, ${price}/band-day
+- Western: 33,799,828 station-days, ${price}/band-day
 
 ### Totals
 - Estimated vCPU-hours: XXX,XXX
@@ -195,7 +201,11 @@ week,campaign,shards_done,vpu_hours,estimated_cost,actual_cost,variance
 
 **Goal:** Validate assumptions on real infrastructure before committing to full campaign.
 
-**Scope:** 2.5M station-days (40 stations × 20 days per shard = 8,479 shards)
+**Scope:** 4,106,669 station-days over 8,479 shards ([21](21_queues_written.md)).
+Shards average 484 station-days and are not a fixed 40x20 grid — the sampled
+shard `2015175-2015195-4cd53b5d98c6` holds 23 stations over 20 days. Station
+count per shard varies; the 40x20 figure describes the 2025 run, not the v3
+planner.
 
 **Timeline:** 3–5 days
 
@@ -436,9 +446,9 @@ Once all shards show `complete/`:
 
 ```bash
 pixi run -e cloud python notebooks/6_check_parquet.ipynb
-# Should show:
-# - SCEDC: 2.5M station-days → ~X picks
-# - NCEDC: 6.0M station-days → ~Y picks
+# Should show, per 21_queues_written.md:
+# - SCEDC: 4,106,669 station-days → ~X picks
+# - NCEDC: 5,979,675 station-days → ~Y picks
 # - etc.
 ```
 
