@@ -147,12 +147,22 @@ The four differ in ways that are not interchangeable:
 | `original` | `ENZ` | — | ≥ 0.3.2 | 268,443 |
 | `obs` | `Z12H` | — | ≥ 0.4.0 | 268,499 |
 
-`filter_factor: 2` is why `jma_wc` is a 1.07M-parameter network where `original`
-is 268k — a different architecture, not just different numbers. Pairing a `.pt`
-with a `.json` of a different `filter_factor` fails loudly on a state-dict shape
-mismatch. A `component_order` mismatch does not: `ZNE`, `ENZ` and `Z12H` are all
-valid three-or-four-character orders, so the model loads and picks on
-mis-ordered traces. That is the failure worth guarding against.
+All four are the same `PhaseNet` class and the same 50-module topology.
+`filter_factor: 2` widens it: every convolutional layer gets double the filters
+(PhaseNetWC, [Naoi et al. 2024](https://doi.org/10.1186/s40623-024-02091-8)), so
+`inc.weight` goes `(8,3,7)` → `(16,3,7)` and `down_branch.0.0.weight` goes
+`(8,8,7)` → `(16,16,7)`. Doubling *both* channel dimensions quadruples each
+conv, which is why 268,443 params becomes 1,070,899 — a factor of 3.99, short of
+exactly 4 only because the input layer's `in_channels` is fixed by the component
+count and biases scale linearly.
+
+So the risk is not that they are different networks; it is that they are the
+same network at different widths. Pairing a `.pt` with a `.json` of a different
+`filter_factor` fails loudly on a state-dict shape mismatch — fine. A
+`component_order` mismatch does not: `ZNE`, `ENZ` and `Z12H` are all valid, so
+the model loads clean and picks on mis-ordered traces. That is the failure worth
+guarding against, and why step 3 loads the model rather than just checking the
+file is present.
 
 `seisbench_requirement` is a real floor: `jma_wc` needs ≥ 0.9.0, and the
 Dockerfile's `pip install seisbench` is unpinned.
