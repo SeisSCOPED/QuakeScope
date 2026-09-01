@@ -95,11 +95,25 @@ How to add one, and why the `.json` is the architecture rather than metadata:
 # smoke test one shard first - always
 aws batch submit-job --region us-east-2 \
   --job-name scedc-smoke --job-queue niyiyu_earthscope_missing_station \
-  --job-definition quakescope_v3_worker:3 \
-  --container-overrides '{"command":["work",
-    "--campaign","s3://quakescope-picks-2026/scedc",
-    "--weight","jma_wc","--procs","1","--max-shards","1","--profile"]}'
+  --job-definition quakescope_v3_worker:4 \
+  --container-overrides '{
+    "command":["work",
+      "--campaign","s3://quakescope-picks-2026/scedc",
+      "--weight","jma_wc","--procs","4","--max-shards","1","--profile"],
+    "environment":[
+      {"name":"OMP_NUM_THREADS","value":"2"},
+      {"name":"MKL_NUM_THREADS","value":"2"},
+      {"name":"OPENBLAS_NUM_THREADS","value":"2"},
+      {"name":"NUMEXPR_NUM_THREADS","value":"2"},
+      {"name":"VECLIB_MAXIMUM_THREADS","value":"2"}]}'
 ```
+
+**`--procs` and the thread count must move together.** The job definition sets
+no thread environment, so torch defaults to the core count; raising `--procs`
+without lowering threads gives 8 processes x 8 threads on 8 vCPU and is *slower*
+than one process. `4 x 2` is the measured optimum — [OPTIMISE.md](OPTIMISE.md)
+item 0. All five variables, because `amp.wood_anderson` is 58% of runtime and
+threads through numpy/BLAS rather than torch.
 
 Then look at the picks, not just the exit code. To scale, submit an array job;
 workers are stateless, so adding more needs no cleanup and cancelling loses at
@@ -132,6 +146,11 @@ compute — they are not additive shares.
 (only 100 of the shard's 460 planned station-days held data), giving
 **~1.11M vCPU-hours and ~$16,400** at $0.0148/vCPU-hr. That lands within 4% of
 the independent ~$15,800 in [21_queues_written.md](21_queues_written.md).
+
+That figure is at `--procs 1`. **At the settled `--procs 4` /
+`OMP_NUM_THREADS=2` it is ~1.50x faster, so ~740k vCPU-hours and ~$11,000** —
+measured 2026-09-01 across four arms on eight pinned identical shards,
+[OPTIMISE.md](OPTIMISE.md) item 0.
 
 **Treat it as one sample.** It is CI, in 2010, at `--procs 1`. EarthScope is 60%
 of that total and its I/O is still unprofiled. See [OPTIMISE.md](OPTIMISE.md).

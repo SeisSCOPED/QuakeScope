@@ -11,94 +11,131 @@ nobody had measured, and all of it had to be retracted
 
 ---
 
-## 1. `--procs` scaling — the largest unknown
+## 0. RESOLVED — `--procs 4` with `OMP_NUM_THREADS=2`, worth 1.50x
 
-**Status: being measured now.** Jobs `proctest-p{1,2,4,8}`, job definition
-`quakescope_v3_worker:4`, image `dd4fcbc`, submitted 2026-09-01 05:20 UTC. Ids
-in [`proctest.json`](../../proctest.json); they run on AWS and need no laptop
-attached.
+**Measured 2026-09-01** on `quakescope_v3_worker:4` (image `dd4fcbc`), eight
+pinned identical shards per arm, throughput counted from `Put` lines over ~26
+minutes. Set it and move on.
 
-### The first attempt was not a valid experiment
+| `--procs` | threads | station-day-channels/min | speedup | worker spread |
+|--:|--:|--:|--:|---|
+| 1 | 8 | 4.64 | 1.00x | `120` |
+| 2 | 4 | 6.54 | 1.41x | `88,84` |
+| **4** | **2** | **6.97** | **1.50x** | `25,53,53,53` |
+| 8 | 1 | 7.03 | 1.52x | `44,41,7,1,43,43,7` |
 
-Recorded because the flaw is easy to repeat. The first sweep gave every job
-`--max-shards 1`, so a job with `--procs P` claimed P shards from the live queue
-and its wall clock was **the maximum of P random draws** — while `--procs 1`
-drew once. Even under perfect scaling `procs=8` would finish later, purely
-because the max of eight draws exceeds one draw. "Flat wall clock means perfect
-scaling" was wrong.
+**Take `4 x 2`, not `8 x 1`.** They are within 0.3% of each other, and four
+processes hold half the Parquet write buffers of eight — the memory ceiling
+flagged in [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) §4. Same
+throughput, less risk.
 
-The draws are wildly unequal, which is what made this fatal rather than
-cosmetic. Two shards observed in that run:
+Campaign estimate moves **~$16,400 to ~$11,000**.
+
+### The thread count is the whole story
+
+Sweeping `--procs` alone found the *opposite* answer — `procs=8` came out at
+1.06x, worse than `procs=2` — because `OMP_NUM_THREADS` was unset and torch
+defaults to the core count. Eight processes then meant **64 threads on 8 vCPU**,
+and the per-worker spread showed the thrashing plainly: `35,1,205,1,36,1`, most
+workers starved.
+
+Pinning `procs x threads = 8` turned that same `procs=8` arm into `7,7,7,1,7,7,7`
+— evenly loaded — and moved it from 1.06x to 1.52x. **Never raise `--procs`
+without lowering the thread count to match.**
+
+The Batch job definition sets no thread environment at all, so this must be
+passed per submission (or added to the job definition):
+
+```
+OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS,
+NUMEXPR_NUM_THREADS, VECLIB_MAXIMUM_THREADS
+```
+
+All five, not just `OMP_NUM_THREADS`: `amp.wood_anderson` is 58% of runtime and
+runs through numpy/BLAS, which threads independently of torch.
+
+### Why the ceiling is 1.5x and not 4x
+
+Adding processes only helps the part of the pipeline a single process leaves
+idle. One process at 8 threads already saturates the box, so the gain comes from
+filling stalls — I/O waits, single-threaded stretches — not from unused cores.
+1.5x is the size of that gap. Do not expect more from this axis; the remaining
+multiples are in items 2 and 3.
+
+## 0a. Preempted workers are not replaced
+
+Found while reading the sweep. On SIGTERM the worker releases its claim and
+calls `sys.exit(0)` — deliberate and correct for the *shard*, which returns to
+the queue and resumes from its checkpoint, costing at most 40 station-day-
+channels. Observed working:
+
+```
+Checkpointed 120 station-day-channels; a preemption now costs at most 40
+Preempted while holding 2015135-2015155-23a5e8f47dbb - releasing it back
+Exiting on signal after 0 shards
+```
+
+But exit 0 means Batch records the attempt as **SUCCEEDED**, so the
+`evaluateOnExit` rule that retries `"Your Spot Task was interrupted."` never
+fires. The shard survives; the **worker does not**. Over a multi-day campaign at
+1,500 Spot workers the fleet decays instead of self-healing, and the dashboard
+shows it as a falling vCPU count with no failures anywhere.
+
+Not yet decided. Exiting non-zero would make Batch retry, at the cost of making
+every ordinary preemption look like a failure. Whichever way it goes, the
+campaign needs *something* that notices the fleet shrinking.
+
+## 1. How that was measured, and the two designs that were wrong
+
+Kept because both mistakes are easy to repeat, not because the question is open.
+
+**Attempt 1 measured shard luck.** Every arm got `--max-shards 1`, so `--procs P`
+claimed P shards from the live queue and its wall clock was the *maximum of P
+random draws* while `--procs 1` drew once. Under perfect scaling `procs=8` would
+still finish later. The draws are nowhere near equal — two shards from that run:
 
 | shard | wall | station-day-channels |
 |---|--:|--:|
 | `2018219-2018239-9c91d08e08b6` | **23 s** | **0** — no data at all |
 | `2012031-2012051-52c578f41b6a` | 1145 s | 60 |
 
-A 50x spread, and some shards are entirely empty. Any design that hands
-different shards to different arms measures shard luck, not parallelism.
+A 50x spread, some shards entirely empty. Any design handing different shards to
+different arms measures the queue, not the change.
 
-### The design that replaces it
+**Attempt 2 swept one axis of a two-axis problem** — `--procs` without
+`OMP_NUM_THREADS` — and produced an answer that was not merely imprecise but
+*inverted*: `procs=8` looked worse than `procs=2`. See item 0.
 
-Four campaign prefixes under `s3://quakescope-picks-2026/_proctest/p{1,2,4,8}`,
-each holding an **identical** `shards.jsonl` of the same 8 shards, with
-`--max-shards` set so `procs x max_shards = 8`:
+**The design that worked.** Four campaign prefixes under
+`s3://quakescope-picks-2026/_omptest/{a,b,c,d}`, each holding an **identical**
+`shards.jsonl` of the same 8 shards — all 620 planned station-days, the same 31
+stations, consecutive 20-day windows through 2015, so no straggler dominates.
+Picks land in the test prefixes, keeping the real catalogue clean.
 
-| arm | `--procs` | `--max-shards` | shards |
-|---|--:|--:|--:|
-| p1 | 1 | 8 | 8, sequential |
-| p2 | 2 | 4 | 8 |
-| p4 | 4 | 2 | 8 |
-| p8 | 8 | 1 | 8, all parallel |
+**Do not wait for completion.** Throughput is counted from `Put` lines while the
+arms run, so the answer arrives in ~20 minutes instead of the ~7 hours the
+`procs=1` arm needs to grind 8 shards sequentially. The ranking was already
+correct at 6 minutes and unchanged at 26. Total cost of the sweep: about $0.10.
 
-Every arm completes the same work, so wall clock is directly comparable and the
-speedup is `p1_wall / pN_wall`.
-
-The 8 shards are deliberately uniform — all 620 planned station-days, the same
-31 stations, consecutive 20-day windows through 2015 — so no single straggler
-sets `p8`'s wall clock while `p1` pays the sum. That skew, not parallelism, is
-what the first attempt actually measured.
-
-Picks land in the test prefixes, not in `scedc`, so the real catalogue stays
-clean. The work is duplicated four times; that is the price of a controlled
-experiment and comes to well under a dollar.
-
-### Reading it
+The `procs=1` arm reproduced the previous run's baseline to within 2% (4.64 vs
+4.85 station-day-channels/min), which is the check that the harness measures
+anything at all.
 
 ```bash
+# rate per arm, while running
 python3 -c "
-import boto3, json
-b = boto3.client('batch', region_name='us-east-2')
-for p, jid in sorted(json.load(open('proctest.json'))['jobs'].items(),
-                     key=lambda x: int(x[0])):
-    d = b.describe_jobs(jobs=[jid])['jobs'][0]
-    el = (d['stoppedAt'] - d['startedAt']) / 1000 if d.get('stoppedAt') else None
-    print(f\"procs={p}: {d['status']:10} {el and f'{el:.0f}s' or '-'}\")"
+import boto3, json, collections, re, time
+b  = boto3.client('batch', region_name='us-east-2')
+lg = boto3.client('logs',  region_name='us-east-2')
+for n, c in json.load(open('omptest.json'))['arms'].items():
+    d = b.describe_jobs(jobs=[c['job_id']])['jobs'][0]
+    el = (time.time()*1000 - d['startedAt'])/60000
+    ev = lg.get_log_events(logGroupName='/aws/batch/job',
+             logStreamName=d['container']['logStreamName'],
+             startFromHead=True)['events']
+    n_put = sum(1 for e in ev if '| Put ' in e['message'])
+    print(f\"{n}: procs={c['procs']}x{c['threads']}  {n_put/el:.2f}/min\")"
 ```
-
-**You do not have to wait for `p1`.** It runs 8 shards sequentially and will take
-hours; `p8` runs them in parallel and should finish in roughly one shard's time.
-Comparing completed-shards-per-elapsed-minute answers the question long before
-`p1` ends, and `p1` can be killed once the rate is clear.
-
-Also check `p8` for an OOM or memory-pressure stall — 16 GB across 8 processes
-is 2 GB each, and the Parquet writer buffers a partition per process.
-
-Record the outcome here and update the cost figure in [README.md](README.md).
-
-Every measurement to date used `--procs 1` on an 8 vCPU task. If the other seven
-cores are idle, the campaign costs up to 8× what it needs to; if torch is
-already using them, there is nothing to win. **Nobody has looked.** This single
-number moves the ~$16,400 estimate more than everything else on this list
-combined.
-
-Method: `--procs P --max-shards 1` runs P worker loops, each taking one shard, so
-the job completes P shards on the same 8 vCPU. Perfect scaling shows as flat wall
-clock across P; the useful metric is station-day-channels per vCPU-hour.
-
-Watch for memory. The Parquet writer buffers a partition until `flush_threshold`
-and 16 GB across 8 processes is 2 GB each, so `--procs 8` is where an OOM would
-appear if there is one.
 
 ## 2. EarthScope I/O — 60% of the campaign, unprofiled
 
@@ -232,7 +269,8 @@ shards, which span whatever the queue hands them, and compare.
 
 | # | item | blocks | effort |
 |---|---|---|---|
-| 1 | `--procs` scaling | the whole cost model | in flight |
+| ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
+| 0a | preempted workers are not replaced | fleet stability on a long campaign | 1 h |
 | 2 | EarthScope I/O profile | campaigns 3–5, ~$14,800 of the estimate | 2 h |
 | 9 | processed-vs-planned ratio | the cost basis | free, from item 1 |
 | 6 | `obs` components, seisbench pin | correctness of campaign 4 | 1 h |

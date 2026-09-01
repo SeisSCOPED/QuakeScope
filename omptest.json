@@ -1,0 +1,27 @@
+{
+  "jobdef": "quakescope_v3_worker:4",
+  "image": "dd4fcbc",
+  "shards": 8,
+  "arms": {
+    "a": {
+      "job_id": "5575fe1b-e9cc-4c9d-bb8b-3ef66d25b588",
+      "procs": 1,
+      "threads": 8
+    },
+    "b": {
+      "job_id": "d077b928-bc2e-41b7-b261-27bf7509bf38",
+      "procs": 2,
+      "threads": 4
+    },
+    "c": {
+      "job_id": "79c14cce-5e98-4299-8de9-4f43120cdd8a",
+      "procs": 4,
+      "threads": 2
+    },
+    "d": {
+      "job_id": "eb8b412e-595d-4cf7-8c61-4bdae61c73f6",
+      "procs": 8,
+      "threads": 1
+    }
+  }
+}
