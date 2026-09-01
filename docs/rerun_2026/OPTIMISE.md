@@ -31,6 +31,10 @@ throughput, less risk.
 
 Campaign estimate moves **~$16,400 to ~$11,000**.
 
+> ⚠️ **Do not set this yet — see item 0c.** `--procs > 1` currently breaks
+> graceful preemption: the parent traps no SIGTERM, so children are SIGKILLed
+> with their claims still held. Run at `--procs 1` until that is fixed.
+
 ### The thread count is the whole story
 
 Sweeping `--procs` alone found the *opposite* answer — `procs=8` came out at
@@ -133,6 +137,81 @@ The I/O profile in item 2 deliberately uses Open Data networks so it is not
 blocked on this; per doc 19 both tiers use identical object layout, so the
 I/O question is answerable anonymously.
 
+## 0c. BLOCKER — `--procs > 1` breaks graceful preemption
+
+**This conditions item 0.** The 1.50x is real, but it is not safely usable until
+this is fixed, because it is bought by running the exact configuration that
+strands work on preemption.
+
+`worker.py` `main()`:
+
+```python
+if args.procs <= 1:
+    loop(args, 0)              # loop() installs the SIGTERM handler
+    return
+procs = [mp.Process(target=loop, args=(args, i)) for i in range(args.procs)]
+for p in procs: p.start()
+try:
+    for p in procs: p.join()
+except KeyboardInterrupt:      # SIGINT only - never SIGTERM
+    for p in procs: p.terminate()
+```
+
+The parent installs **no SIGTERM handler**. Docker delivers SIGTERM to PID 1
+only. So with `--procs > 1`:
+
+1. the parent takes the default action and dies immediately;
+2. the children are orphaned and never see the signal;
+3. ~120 s later the task is SIGKILLed, so **claims are never released**;
+4. Batch retries; the retry finds every shard still claimed and logs
+   `Queue drained for this worker: 0 shards done, 0 failed`;
+5. `n_done == 0 and n_failed == 0` does not trip the `sys.exit(1)` guard, so it
+   **exits 0 and the job reports SUCCEEDED having done nothing**.
+
+Observed 2026-09-01 on both I/O-profile arms, which is what destroyed that
+measurement:
+
+| arm | attempt 1 | attempt 2 | attempt 3 |
+|---|---|---|---|
+| es | 2.9 m, **exit 137** | 7.1 m, **exit 137** | 0.5 m, exit 0, 0 shards |
+| sc | 9.2 m, **exit 137** | 0.0 m, **exit 137** | 0.5 m, exit 0, 0 shards |
+
+Exit 137 is SIGKILL. The logs of attempts 1 and 2 stop mid-`Load` with no
+`Preempted while holding`, no `Exiting on signal`, no checkpoint line — the
+handler never ran. Afterwards both prefixes held **8 claims each, 0 shards
+complete**, locked for the 6 h lease.
+
+Contrast `--procs 1`, where `loop()` runs in the main process and the handler
+does fire:
+
+```
+Checkpointed 120 station-day-channels; a preemption now costs at most 40
+Preempted while holding 2015135-2015155-23a5e8f47dbb - releasing it back
+```
+
+**Campaign impact.** At 1,500 Spot workers on `--procs 4`, every preemption
+strands 4 shards for 6 hours and its retries "succeed" instantly doing nothing.
+Throughput collapses while the dashboard shows SUCCEEDED jobs and **zero
+failures anywhere** — the same class of invisible failure as the stale image pin.
+
+**The fix is small.** Trap SIGTERM in the parent, forward it to the children,
+join with a timeout, then escalate. Roughly:
+
+```python
+def _forward(signum, frame):
+    for p in procs:
+        if p.is_alive():
+            os.kill(p.pid, signal.SIGTERM)
+signal.signal(signal.SIGTERM, _forward)
+signal.signal(signal.SIGINT, _forward)
+```
+
+Decide item 0a at the same time — it is the same signal path, and the two
+interact: 0a is about the graceful exit not being retried, 0c is about the
+graceful exit never happening.
+
+Until this lands, run campaigns at **`--procs 1`** and forgo the 1.50x.
+
 ## 1. How that was measured, and the two designs that were wrong
 
 Kept because both mistakes are easy to repeat, not because the question is open.
@@ -228,10 +307,61 @@ Against 46.6 MB/s same-region and 24.1 MB/s cross-region measured in
 [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) §2. That is 3–5× slower
 than expected and costs 502 s of a 2,038 s shard.
 
-Unexplained. Candidates: `--procs 1` leaving no concurrency to hide latency,
-2010 objects being small and numerous, or per-request overhead dominating at
-14.7 MB per call. Item 1 may resolve it for free — check this again from the
-sweep's profiles before investigating separately.
+Unexplained, but the candidate list narrowed on 2026-09-01. The measurement was
+taken on SCEDC, which is the **only cross-region archive** (`scedc-pds` is
+us-west-2, compute is us-east-2) **and** has no S3 gateway endpoint — see item
+4a. Doc 16's 24.1 MB/s cross-region figure was also SCEDC-from-us-east-2, so
+8.8 MB/s is low even against the cross-region baseline, but the comparison to
+46.6 MB/s same-region was never like-for-like.
+
+Remaining candidates: no gateway endpoint, `--procs 1` leaving no concurrency to
+hide latency, 2010 objects being small and numerous, or per-request overhead at
+14.7 MB per call.
+
+**Re-measure on a same-region archive before spending effort here** — NCEDC or
+EarthScope, both us-east-2. The number may simply be a SCEDC artefact.
+
+## 4a. No S3 gateway endpoint — free, and covers nearly all reads
+
+Checked 2026-09-01 on compute environment `niyiyu_earthscope` (`vpc-0543376e`,
+subnets `subnet-f85fc393`, `subnet-4f37fd32`, `subnet-2b635e67`):
+
+```
+endpoints : NONE
+NAT gws   : none
+default route -> igw-b6f0e6de   (all three subnets)
+```
+
+**The good news first.** Tasks run in public subnets behind an Internet Gateway,
+not private subnets behind NAT. So the failure mode where NAT data-processing at
+$0.045/GB quietly exceeds the compute bill **does not apply here**. Across ~1.1 PB
+of campaign reads that would have been a five-figure surprise. Confirm this again
+if the VPC is ever rebuilt, because it is invisible until the bill arrives.
+
+**What is missing is a Gateway endpoint for S3.** It has no hourly and no per-GB
+charge, so there is no cost argument against one. Verified bucket regions:
+
+| bucket | region | |
+|---|---|---|
+| `ncedc-pds` | us-east-2 | same region as compute |
+| `earthscope-geophysical-data` | us-east-2 | same region |
+| `earthscope-mseed-v2-…-s3alias` | us-east-2 | same region |
+| `scedc-pds` | **us-west-2** | the only cross-region archive |
+
+A gateway endpoint covers same-region S3 only, but that is nearly all of the
+campaign: EarthScope alone is 68.0M of 112.9M station-days, NCEDC another 6.0M,
+and western is predominantly EarthScope-routed. Only the SCEDC campaign
+(4.1M station-days) plus western's ~3,211 SCEDC/NCEDC-routed stations read
+cross-region.
+
+Also a posture note the cost lens does not capture: public subnets mean tasks
+carry public IPs. Not a charge, but not least-privilege networking either.
+
+**This reframes item 4.** The 8.8 MB/s `s3.get` was measured on the SCEDC smoke
+test — the one archive that is cross-region *and* has no endpoint. EarthScope may
+well read faster than that baseline implies, which cuts the opposite way from the
+standing worry in item 2. Do not resolve item 4 without re-measuring on a
+same-region archive.
 
 ## 5. Parquet fragmentation — and the compaction code is unverified
 
@@ -318,12 +448,15 @@ shards, which span whatever the queue hands them, and compare.
 | # | item | blocks | effort |
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
+| **0c** | **`--procs > 1` breaks graceful preemption** | **item 0's 1.50x; strands claims 6 h** | **~10 lines** |
 | 0a | preempted workers are not replaced | fleet stability on a long campaign | 1 h |
+| 0b | EarthScope credentials unwired | campaigns 3 and 5, ~$9,000 | IAM change |
 | 2 | EarthScope I/O profile | campaigns 3–5, ~$14,800 of the estimate | 2 h |
 | 9 | processed-vs-planned ratio | the cost basis | free, from item 1 |
 | 6 | `obs` components, seisbench pin | correctness of campaign 4 | 1 h |
 | 5 | verify compaction before trusting it | analysis after the campaign | 2 h |
 | 3 | `amp.wood_anderson` | ~$4,000 | days |
-| 4 | `s3.get` throughput | ~$3,000 | may fall out of item 1 |
+| 4a | add S3 gateway endpoint | free; may explain item 4 | 15 min |
+| 4 | `s3.get` throughput | ~$3,000 | re-measure same-region first |
 | 8 | billing baseline | knowing what it actually cost | 1 h + waiting |
 | 7 | arm64 | ~1.68× on price | days |
