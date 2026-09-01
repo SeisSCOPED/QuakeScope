@@ -118,7 +118,25 @@ supplied to the job — properly via Secrets Manager and
 `containerProperties.secrets`, never baked into a job definition in plaintext.
 SCEDC, NCEDC and the Open Data eight are anonymous and unaffected.
 
-## Credentials in the container (2026-08-30)
+## Credentials in the container (2026-08-30) — ⚠️ NOT TRUE OF ANY CURRENT JOB DEFINITION
+
+> **Checked 2026-09-01: the wiring described below is not present.** All 30
+> active `quakescope*` job definitions report `secrets=0`;
+> `quakescope_2026_earthscope:2` specifically returns `"secrets": null` and
+> `"environment": []`. The secret itself is healthy
+> (`quakescope/earthscope-refresh-token`, last changed 2026-08-30, last accessed
+> 2026-08-31) — only the job-definition wiring is missing.
+>
+> There is a second problem underneath it. Fargate injects
+> `containerProperties.secrets` using the **execution** role, and these
+> definitions set no `executionRoleArn` at all — only `jobRoleArn`. The policy
+> named below is attached to the job role, which is not the role that performs
+> the injection, so adding `secrets:` alone would fail at task startup.
+>
+> This blocks 81% of the EarthScope queue (123,771 of 153,208 shards are fully
+> restricted). See [OPTIMISE.md](OPTIMISE.md) item 0b. The section below records
+> the intended design; treat it as a specification to implement, not a
+> description of what is deployed.
 
 The refresh token lives in Secrets Manager and is injected as an environment
 variable by Batch, never baked into a job definition:

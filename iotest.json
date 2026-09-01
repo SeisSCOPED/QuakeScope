@@ -1,0 +1,14 @@
+{
+  "jobdef": "quakescope_v3_worker:4",
+  "config": "procs=4 x threads=2",
+  "arms": {
+    "es": {
+      "job_id": "43c97e29-763a-432c-bd32-270f318c53dc",
+      "label": "earthscope-AK-opendata"
+    },
+    "sc": {
+      "job_id": "934c24c3-916f-4225-b9d0-544fe21b2a2d",
+      "label": "scedc-control"
+    }
+  }
+}

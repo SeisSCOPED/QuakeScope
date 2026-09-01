@@ -85,6 +85,54 @@ Not yet decided. Exiting non-zero would make Batch retry, at the cost of making
 every ordinary preemption look like a failure. Whichever way it goes, the
 campaign needs *something* that notices the fleet shrinking.
 
+## 0b. BLOCKER — no job definition can read restricted EarthScope
+
+**81% of the EarthScope queue cannot currently run.** Found 2026-09-01 while
+setting up the I/O profile.
+
+[19_earthscope_access.md](19_earthscope_access.md) states that
+`quakescope_2026_earthscope:2` and `quakescope_2026_western:2` carry
+`ES_OAUTH2__REFRESH_TOKEN` through `containerProperties.secrets`. They do not:
+
+```
+$ aws batch describe-job-definitions --status ACTIVE \
+    | jq '.jobDefinitions[] | select(.jobDefinitionName|test("quakescope"))
+          | "\(.jobDefinitionName):\(.revision) secrets=\(.containerProperties.secrets//[]|length)"'
+... every one of the 30 active definitions reports secrets=0
+```
+
+`quakescope_2026_earthscope:2` specifically returns `"secrets": null` and
+`"environment": []`.
+
+**The secret itself is fine** — `quakescope/earthscope-refresh-token` exists in
+us-east-2, last changed 2026-08-30, last accessed 2026-08-31. It is the wiring
+that is missing, so this is a job-definition fix, not a credentials problem.
+
+**And wiring it needs an IAM change.** Fargate injects
+`containerProperties.secrets` using the **execution** role, and none of these
+definitions set `executionRoleArn` at all — only `jobRoleArn`
+(`SeisBenchBatchRole`). The policy doc 19 describes,
+`QuakeScopeEarthScopeSecretRead`, is attached to the job role, which is not the
+role that performs the injection. So adding `secrets:` alone would fail at task
+startup.
+
+Scale of what is blocked, from the written queue:
+
+| | shards | share |
+|---|--:|--:|
+| fully restricted | 123,771 | 81% |
+| mixed | 3,496 | 2% |
+| all Open Data (anonymous) | 25,941 | 17% |
+
+Campaigns 3 and 5 both route to EarthScope, so this gates ~$9,000 of the
+estimate. Do not schedule either until a job definition demonstrably reads a
+restricted network — the evidence doc 19 cites is a log line from a container
+that no current definition reproduces.
+
+The I/O profile in item 2 deliberately uses Open Data networks so it is not
+blocked on this; per doc 19 both tiers use identical object layout, so the
+I/O question is answerable anonymously.
+
 ## 1. How that was measured, and the two designs that were wrong
 
 Kept because both mistakes are easy to repeat, not because the question is open.
