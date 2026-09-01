@@ -93,7 +93,7 @@ DOCDB_ENDPOINT_URI = (
 ## 5. Populate station metadata (notebook 2)
 
 On the controller, run
-[notebooks/2_prepare_station_metadata.ipynb](../../notebooks/2_prepare_station_metadata.ipynb)
+[notebooks/2_prepare_station_metadata.ipynb](../../../notebooks/2_prepare_station_metadata.ipynb)
 (via `jupyter nbconvert --execute`, JupyterLab, or paste into ipython) —
 **changing the database name** in the connect cell:
 
@@ -129,4 +129,4 @@ Note: the QuakeXNet *classifier* weight name is not recorded in `sb_runs`
 ties classifier output to its weights — one more reason to use a fresh
 database name and to pin the image SHA in the job definition.
 
-Next: [04_batch_setup.md](04_batch_setup.md)
+Next: [04_batch_setup.md](../04_batch_setup.md)

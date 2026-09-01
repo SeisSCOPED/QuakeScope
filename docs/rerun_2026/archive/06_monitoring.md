@@ -45,7 +45,7 @@ renewed", "Skip ... picks found" (the resume logic working).
 ## 3. Data — DocumentDB
 
 On the controller, notebook
-[4_check_database.ipynb](../../notebooks/4_check_database.ipynb) (point it at
+[4_check_database.ipynb](../../../notebooks/4_check_database.ipynb) (point it at
 `quakescope2026`). The key progress metric is `picks_record` — one document
 per completed station-channel-day:
 
@@ -127,4 +127,4 @@ denying `batch:SubmitJob` at your campaign ceiling.
 - [ ] EC2: stop the controller instance.
 - [ ] Check Cost Explorer one week later to confirm spend dropped to ~$0.
 
-Next: [07_troubleshooting.md](07_troubleshooting.md)
+Next: [07_troubleshooting.md](../07_troubleshooting.md)

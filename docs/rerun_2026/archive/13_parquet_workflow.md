@@ -24,7 +24,7 @@ of picks it is not what was costing anything.
 
 New pieces:
 
-- [`sb_catalog/src/parquet_writer.py`](../../sb_catalog/src/parquet_writer.py) —
+- [`sb_catalog/src/parquet_writer.py`](../../../sb_catalog/src/parquet_writer.py) —
   `ParquetPickWriter`, which buffers a job's output and writes it partitioned on
   close.
 - `--parquet_uri` on `src.picker`. Unset or empty means the old behaviour, so

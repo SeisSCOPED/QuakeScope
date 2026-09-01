@@ -2,7 +2,7 @@
 
 All submission happens **on the EC2 controller** (it needs database access to
 list stations). The tool is `src.submit_helper`; notebook
-[3_submit_job.ipynb](../../notebooks/3_submit_job.ipynb) wraps it.
+[3_submit_job.ipynb](../../../notebooks/3_submit_job.ipynb) wraps it.
 
 ## 1. How work is split (refresher)
 

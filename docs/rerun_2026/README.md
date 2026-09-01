@@ -1,167 +1,175 @@
-# QuakeScope 2026 re-run — master runbook
+# QuakeScope 2026 — what works today
 
-Goal: re-run the QuakeScope **picking** workflow with the **v7 phase-picker
-weights** (`quakescope2026`) over three archives — **NCEDC**, **SCEDC**, and
-**EarthScope S3** — using AWS Batch on Fargate Spot, writing picks to
-DocumentDB.
+State of the picking workflow as of **2026-09-01**. Every number here names the
+run it came from; anything unmeasured is in [OPTIMISE.md](OPTIMISE.md) instead.
 
-> **Scope decision, 2026-08-17: the classifier is deferred for this run.**
-> Submit picking jobs **without** `--classifier`. QuakeXNet stays in the image
-> and everything below about its weights remains accurate, but it will not
-> write labels into the 2026 catalog.
->
-> The reason is generalization, not a defect. The model was trained on Pacific
-> Northwest data, and out-of-region testing showed it is strongly dependent on
-> where the arrival sits in the analysis window — agreement on a fixed set of
-> Alaska events runs from 78% down to 16% on window placement alone, and the
-> pipeline currently slides windows blindly with a 50 s stride. That is fixable
-> and worth fixing, but not before a campaign. See
-> [`../quakexnet_generalization_plan.md`](../quakexnet_generalization_plan.md)
-> for the measurements and the plan, and
-> [Akashkharita/pnw_seismic_event_detection#2](https://github.com/Akashkharita/pnw_seismic_event_detection/issues/2)
-> for the upstream discussion.
->
-> Picking is unaffected and proceeds as planned.
-
-This folder is written for someone returning to AWS after a long break. Follow
-the checklist top to bottom; each step links to a detailed guide. The
-companion notebooks in [notebooks/](../../notebooks/) are still the executable
-version of stages 1–4.
-
-Background reading (optional refresher): the SCOPED HPS book
-<https://seisscoped.org/HPS-book/intro.html>, in particular the *AWS 101*,
-*S3*, and *Fargate/Batch* chapters.
+Superseded documents are in [`archive/`](archive/), with a note on why each was
+retired. Two of them are retracted rather than merely stale — read
+[`archive/README.md`](archive/README.md) before citing anything there.
 
 ---
 
-## The big picture
+## The shape of it
 
 ```mermaid
 flowchart LR
-    subgraph laptop [Your laptop]
-        W[New weight files] --> GH[git push to GitHub]
-    end
-    GH -->|GitHub Action| IMG[Container image ghcr.io/seisscoped/quakescope]
     subgraph aws [AWS us-east-2]
-        EC2[EC2 controller instance] -->|submit jobs boto3| BATCH[AWS Batch queue Fargate Spot]
-        BATCH -->|runs many containers| JOB[Picking jobs]
-        JOB -->|writes picks| DDB[(DocumentDB cluster)]
-        EC2 -->|notebooks 2 and 4| DDB
+        Q[(S3 campaign prefix<br/>shards · claims · complete)] --> W[Fargate Spot workers<br/>python -m src.picker work]
+        W --> P[(S3 Parquet<br/>network=/year=/month=)]
+        W --> Q
     end
-    IMG --> JOB
-    S3A[(NCEDC S3)] --> JOB
-    S3B[(SCEDC S3)] --> JOB
-    S3C[(EarthScope S3)] --> JOB
+    S3A[(SCEDC)] --> W
+    S3B[(NCEDC)] --> W
+    S3C[(EarthScope)] --> W
+    IMG[ghcr.io/seisscoped/quakescope] --> W
 ```
 
-- Each **Batch job** is one container that processes a block of
-  **40 stations × 20 days** (the defaults in `submit_helper.py`). It streams
-  miniSEED from S3, runs the phase picker + QuakeXNet classifier, and writes
-  picks to DocumentDB.
-- Hundreds of jobs run concurrently on **Fargate Spot** (cheap, interruptible;
-  interrupted jobs retry automatically up to 10 times).
-- **DocumentDB** (AWS's MongoDB) stores stations, picks, classifications, and
-  a provenance record for every run.
+**There is no database.** Work queue, claims, resume state, provenance and
+output are all S3 objects under one campaign prefix. A campaign costs nothing
+between runs and needs no VPC.
 
-## Two design rules for any re-run
+Workers claim shards with an S3 conditional write (`IfNoneMatch: "*"`), so two
+workers can never take the same shard. A claim goes stale after `lease_hours`
+without a manifest, which is what returns preempted work to the queue. Shape and
+reasoning: the module docstring in
+[`sb_catalog/src/s3_state.py`](../../sb_catalog/src/s3_state.py).
 
-1. **Weights live in this repository**, next to the existing ones
-   (`sb_catalog/models/`). They are small (~0.3–3 MB), the GitHub Action
-   bakes them into the container automatically on every push to `main`, and
-   git records their provenance. Details in
-   [02_weights_and_container.md](02_weights_and_container.md).
-2. **Reuse the existing DocumentDB cluster, but write into a NEW database
-   name inside it** (e.g. `quakescope2026`). Never write a re-run into a
-   database that already holds a campaign: the workflow skips any station-day
-   that already has a `picks_record` entry, so the re-run would skip almost
-   everything. A new database name costs nothing extra and keeps the old
-   catalog intact. Details in [03_documentdb.md](03_documentdb.md).
+Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
+[16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md).
 
----
+## What is provisioned
 
-## Checklist
+| | | verified |
+|---|---|---|
+| Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
+| Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
+| Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
+| Job definition | **`quakescope_v3_worker:3`** | image `5c612f6`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only |
+| Task role | `SeisBenchBatchRole` | S3 write confirmed by policy simulation |
+| EarthScope secret | `quakescope/earthscope-refresh-token` | injected as `ES_OAUTH2__REFRESH_TOKEN`; only the EarthScope and western job definitions carry it |
+| Cost alerts | `QuakeScopeAWSWatch`, hourly | [15_monitoring.md](15_monitoring.md) |
 
-### Phase A — Get back into AWS (½ day) → [01_aws_basics.md](01_aws_basics.md)
+**Re-register the job definition whenever the image changes.** A campaign runs
+whatever revision the job definition pins, and a stale pin is invisible until
+you read worker logs — `:2` pinned a pre-fix image for eleven days and cost a
+day of debugging. The image tag is the commit's short SHA.
 
-- [ ] A1. Sign in to the AWS console; note your 12-digit **account ID**.
-- [ ] A2. Set the console region to **us-east-2 (Ohio)** — everything lives there.
-- [ ] A3. Create a fresh **access key** for yourself (old ones are likely dead).
-- [ ] A4. `aws configure` on your laptop; verify with `aws sts get-caller-identity`.
-- [ ] A5. Set a **billing budget alert** (e.g. $500/month) so a runaway campaign emails you.
+## The five campaigns
 
-### Phase B — New weights + container (½ day) → [02_weights_and_container.md](02_weights_and_container.md)
+Queues are **written and immutable**. Counts read back from S3
+([21_queues_written.md](21_queues_written.md)) — use these, not the estimates in
+`archive/12_output_storage.md`, which were 1.3–1.7× low because they did not
+separate location codes.
 
-- [ ] B1. Drop the new QuakeXNet weights into `sb_catalog/models/v3/quakexnet/` (replace `base.pt.v1`).
-- [ ] B2. Drop the new phase-picker weights into `sb_catalog/models/v3/phasenet/` as `<name>.pt.v1` + `<name>.json.v1` — all of them, if running several pickers (OBS / general / California): see [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
-- [ ] B3. Push to `main`; the GitHub Action builds `ghcr.io/seisscoped/quakescope`.
-- [ ] B4. (Recommended) Test the image locally on one station-day.
-- [ ] B5. Note the image's **short-SHA tag** — pin it in the job definition for reproducibility.
+| campaign | weight | stations | shards | station-days |
+|---|---|--:|--:|--:|
+| scedc | `jma_wc` | 1,128 | 8,479 | 4,106,669 |
+| ncedc | `jma_wc` | 2,116 | 14,941 | 5,979,675 |
+| earthscope | `jma_wc` | 51,846 | 153,208 | 67,983,975 |
+| obs | `obs` | 3,389 | 6,566 | 996,536 |
+| western | `original` | 24,113 | 72,505 | 33,799,828 |
+| **total** | | | **255,699** | **112,866,683** |
 
-### Phase C — Database (½ day) → [03_documentdb.md](03_documentdb.md)
+Range 2010.001–2026.001. Weight rationale, thresholds and channel policy:
+[17_launch_conventions.md](17_launch_conventions.md). Campaign definitions:
+[11_launch_plan.md](11_launch_plan.md).
 
-- [ ] C1. Check whether the DocumentDB cluster still exists (Console → DocumentDB). If deleted, restore from snapshot or create anew.
-- [ ] C2. Start (or reuse) the **EC2 controller instance** in the same VPC/security group — DocumentDB is only reachable from inside the VPC.
-- [ ] C3. Fill `DOCDB_ENDPOINT_URI` in `sb_catalog/src/parameters.py`.
-- [ ] C4. Pick the new database name (e.g. `quakescope2026`) and populate **station metadata** (notebook 2).
+**The classifier is out of this run.** Submit without `--classifier`; the
+reasoning is generalization, not a defect —
+[../quakexnet_generalization_plan.md](../quakexnet_generalization_plan.md).
 
-### Phase D — Batch compute environment (½ day) → [04_batch_setup.md](04_batch_setup.md)
+## Weights ship in the image
 
-- [ ] D1. Check/create the IAM **job role** and **execution role**.
-- [ ] D2. Create (or verify) the **Fargate Spot compute environment** (`maxvCpus` controls how many jobs run at once).
-- [ ] D3. Create (or verify) the **job queue**.
-- [ ] D4. Register the **picking job definition** — must be re-registered this time because it now takes `model`/`weight` parameters.
-- [ ] D5. Fill the Batch names into `parameters.py`.
+`jma_wc`, `obs`, `original` and `quakescope2026` are committed in
+[`sb_catalog/models/v3/phasenet/`](../../sb_catalog/models/v3/phasenet/) and
+copied straight in, so the build downloads no weights and cannot vary between
+builds. Anything else SeisBench offers downloads on first use — fine ad-hoc,
+never on a campaign path.
 
-### Phase E — Smoke test, then scale (1 day + campaign) → [05_submitting_jobs.md](05_submitting_jobs.md)
+How to add one, and why the `.json` is the architecture rather than metadata:
+[the top-level README](../../README.md#model-weights-and-the-container-image).
 
-- [ ] E0. Run the **tier-2 smoke test** — three stations, one day, checked against
-      values measured locally → [10_tier2_smoke_test.md](10_tier2_smoke_test.md).
-      Do this before E2: it separates "the infrastructure is wrong" from "the
-      models are wrong", and it is an hour rather than a campaign.
-- [ ] E1. Get a fresh **EarthScope token** (needed only for the EarthScope archive).
-- [ ] E2. Submit **one small test job** (a few stations, a few days, one per archive).
-- [ ] E3. Verify picks arrive in the new database and `sb_runs` records the new weight names (notebook 4).
-- [ ] E4. Submit the real campaigns, archive by archive, year block by year block.
-      The five-campaign split, network lists, weights and order are in
-      [11_launch_plan.md](11_launch_plan.md).
-- [ ] E5. Running different weights on different station sets (OBS picker, general picker, California picker)? Partition the networks and submit one campaign per weight → [08_multi_picker_campaigns.md](08_multi_picker_campaigns.md).
-- [ ] E6. Stakeholder run with the original PhaseNet on a defined station set (western states), isolated from the science run → [09_western_states_run.md](09_western_states_run.md).
+## Launching
 
-### Phase F — Monitor & finish → [06_monitoring.md](06_monitoring.md)
+```bash
+# smoke test one shard first - always
+aws batch submit-job --region us-east-2 \
+  --job-name scedc-smoke --job-queue niyiyu_earthscope_missing_station \
+  --job-definition quakescope_v3_worker:3 \
+  --container-overrides '{"command":["work",
+    "--campaign","s3://quakescope-picks-2026/scedc",
+    "--weight","jma_wc","--procs","1","--max-shards","1","--profile"]}'
+```
 
-- [ ] F1. Daily: Batch console (running/failed counts), CloudWatch logs for failures, pick counts in the DB.
-- [ ] F2. Weekly: Cost Explorer.
-- [ ] F3. When done: stop the EC2 controller, scale the compute environment to 0, snapshot the database. Troubleshooting reference: [07_troubleshooting.md](07_troubleshooting.md).
+Then look at the picks, not just the exit code. To scale, submit an array job;
+workers are stateless, so adding more needs no cleanup and cancelling loses at
+most one checkpoint interval per worker.
 
-> **Output format is under review.** At the launch's measured scale — about
-> 52 million station-days and order 10^10 picks — DocumentDB storage is roughly
-> 6.5x larger than Parquet for the same picks, and the unique index on `picks`
-> becomes the throughput bottleneck. See
-> [12_output_storage.md](12_output_storage.md) for the measurements and the
-> recommended S3/Parquet layout, and
-> [13_parquet_workflow.md](13_parquet_workflow.md) for running the campaigns
-> against it. Note the picking job definition **no longer hardcodes**
-> `--classifier` and must be re-registered.
+The campaign parameters (`campaign`, `weight`, `procs`, `checkpoint`) are
+`Ref::` substitutions in the job definition — pass them via `parameters`, not
+`containerOverrides.environment`, or submission fails with
+*"No parameter found for reference campaign"*.
 
-> **v3 keeps Batch on Fargate Spot and drops DocumentDB.** Work is claimed from
-> an S3 queue instead of one job per unit; SkyPilot was evaluated and rejected,
-> see [16](16_skypilot_vs_fargate.md). Phases C and D below (DocumentDB,
-> Batch compute environment) do not apply to a v3 campaign.
+## Measured behaviour
 
-> **Amplitudes changed convention.** The Wood-Anderson constants were a mix of
-> the Richter and IASPEI standards and are now IASPEI throughout, which shifts
-> ML by a near-uniform +0.033 relative to the 2025 catalog. See
-> [../amplitude_conventions.md](../amplitude_conventions.md) for what
-> `amplitude` and `raw_amplitude` mean and why the deconvolution window is
-> short — it is safe for Wood-Anderson and would not be for a Mw amplitude.
+**One SCEDC shard, `2010081-2010101-5b92deb2ff4b`, job `9b63303b`, 2026-09-01,
+image `5c612f6`, `--procs 1` on 8 vCPU.** Exit 0, 2,037.7 s, 114,939 picks over
+100 station-day-channels, 4,425 MB read.
 
----
+| stage | seconds | per unit |
+|---|--:|---|
+| `amp.wood_anderson` | 1179.45 | 10.262 ms/pick |
+| `model.classify` | 662.25 | |
+| `s3.get` | 502.18 | 8.8 MB/s |
+| `amp.velocity` | 192.62 | 1.676 ms/pick |
+| `mseed.parse` | 28.40 | 155.8 MB/s |
+| `parquet` encode+put | 0.40 | 0.002 ms/row |
 
-## A note on screenshots
+Stages sum past 100% of wall clock because the pipeline overlaps I/O with
+compute — they are not additive shares.
 
-The AWS console changes layout often, so these guides use exact navigation
-breadcrumbs instead of screenshots, e.g. **Console → Batch → Job queues**.
-The search bar at the top of the console is the fastest way to follow them:
-type the service name ("Batch", "DocumentDB", "IAM") and hit enter. If
-annotated screenshots are wanted for training others, capture them from a
-signed-in session while walking through each phase.
+**Cost, extrapolated from that one shard:** 4.43 s per *planned* station-day
+(only 100 of the shard's 460 planned station-days held data), giving
+**~1.11M vCPU-hours and ~$16,400** at $0.0148/vCPU-hr. That lands within 4% of
+the independent ~$15,800 in [21_queues_written.md](21_queues_written.md).
+
+**Treat it as one sample.** It is CI, in 2010, at `--procs 1`. EarthScope is 60%
+of that total and its I/O is still unprofiled. See [OPTIMISE.md](OPTIMISE.md).
+
+## Things that were fixed by running, not by reading
+
+Recorded because they are the argument for the smoke-test discipline above.
+
+- **The job definition pinned an eleven-day-old image.** Three commits bounding
+  retry loops had landed and none were deployed, so workers hung 85 minutes in a
+  loop that had already been fixed. Diagnosed from a log string that no longer
+  exists in HEAD.
+- **`jma_wc` was not in the image**, so every worker fetched 4.13 MB from
+  `hifis-storage.desy.de` at startup — 1,500 cold-start requests to an external
+  academic host in the critical path.
+- **S3 cold-start burst**, not throughput, collapsed a 1,500-task fleet: every
+  task's first act hit the same three prefixes in the same second. Steady state
+  is 0.4 writes/s against a 3,500/s limit. Fixed with adaptive retries and an
+  array-index stagger.
+- Earlier, and in the same spirit: an inclusive end silently dropping the last
+  day of every shard; the Parquet key defaulting to `HOSTNAME` so shards
+  overwrote each other; a job reporting SUCCEEDED after failing every shard; a
+  non-atomic stale-claim takeover; a planner overstating the campaign 4.2×.
+
+## Reference
+
+| | |
+|---|---|
+| [11_launch_plan.md](11_launch_plan.md) | the five campaigns, networks, weights |
+| [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) | platform decision, stage measurements, **and how to read either catalog** (§6) |
+| [17_launch_conventions.md](17_launch_conventions.md) | weights, thresholds, channel policy, naming |
+| [19_earthscope_access.md](19_earthscope_access.md) | two tiers, the `s3-miniseed-v2` role, credentials in the container |
+| [21_queues_written.md](21_queues_written.md) | authoritative station-day counts |
+| [15_monitoring.md](15_monitoring.md) | hourly watch, budgets, emergency stop |
+| [20_fire_drill.md](20_fire_drill.md) | end-to-end rehearsal |
+| [07_troubleshooting.md](07_troubleshooting.md) | common failures |
+| [01_aws_basics.md](01_aws_basics.md), [04_batch_setup.md](04_batch_setup.md) | getting back into the account |
+| [02_weights_and_container.md](02_weights_and_container.md) | weight provenance |
+
+Reading the **2025** catalog (DocumentDB) and the **2026** catalog (Parquet):
+[16_skypilot_vs_fargate.md §6](16_skypilot_vs_fargate.md).

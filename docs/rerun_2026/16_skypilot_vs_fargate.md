@@ -171,7 +171,7 @@ noise.
 
 Per-band-day cost is **~54 s** on 8 vCPU with one process, after the amplitude
 work in §5. The campaign is 52.1M station-days
-([12_output_storage.md](12_output_storage.md) §1, operating-window aware).
+([12_output_storage.md](archive/12_output_storage.md) §1, operating-window aware).
 
 Two numbers are still unmeasured and together swing the total by ~4×:
 
@@ -201,7 +201,7 @@ is comfortable; at 256 it is not.
 | Between campaigns | cluster must stay up | nothing to run |
 | Requires a VPC | yes — submission had to run inside it | **no** |
 
-Measurements in [12_output_storage.md](12_output_storage.md) §2.
+Measurements in [12_output_storage.md](archive/12_output_storage.md) §2.
 
 The change is a win on every axis measured: **6.5× less storage**, the cluster
 and its VPC constraint disappear, and the write path costs 0.1% of a station-day.
@@ -211,9 +211,9 @@ document.
 
 **What did not move.** Station metadata and resume state are small, need point
 lookups, and are what a database is good at. In v3 they became S3 objects too
-(`stations.parquet`, `complete/`, `manifests/`) — see
-[14_skypilot.md](14_skypilot.md) — but that is a consequence of dropping the
-database entirely, not of the Parquet decision.
+(`stations.parquet`, `complete/`, `manifests/`) — see the module docstring in
+[`sb_catalog/src/s3_state.py`](../../sb_catalog/src/s3_state.py) — but that is a
+consequence of dropping the database entirely, not of the Parquet decision.
 
 **The one cost.** Parquet buffers a partition in memory until
 `flush_threshold` (4M rows, ~800 MB resident per partition per process). That is

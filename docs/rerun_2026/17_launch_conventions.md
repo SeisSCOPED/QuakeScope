@@ -185,7 +185,7 @@ and it should not be edited to match.
 | **western** | **`original`** | see below |
 
 **Western states uses `original`, superseding
-[09_western_states_run.md](09_western_states_run.md), which specified
+[09_western_states_run.md](archive/09_western_states_run.md), which specified
 `instance`.** `instance` has a genuine ceiling on dense near-field aftershock
 sequences: at Ridgecrest it emits 246 S picks with its threshold on the floor
 where the others reach 684 and 832, and no threshold recovers it. This is a
@@ -208,7 +208,7 @@ Measured from station operating windows, not stations × span:
 The western set is **24,111 stations across 122 networks**, selected by true
 state polygons rather than a bounding box — a single box over the six states
 sweeps in about 3,000 stations from AZ, UT, MT and CO, which
-[09](09_western_states_run.md) explicitly warns against. Nevada is the tell: a
+[09](archive/09_western_states_run.md) explicitly warns against. Nevada is the tell: a
 naive per-state rectangle scheme assigns it 3 stations, because California's
 rectangle covers it.
 

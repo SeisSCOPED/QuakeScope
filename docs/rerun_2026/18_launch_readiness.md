@@ -69,7 +69,7 @@ All five campaigns are unblocked.
 ## Decisions
 
 **1. Weight: `original`. CONFIRMED 2026-08-29 by M. Denolle.**
-[09](09_western_states_run.md) specified `instance`; [11](11_launch_plan.md)
+[09](archive/09_western_states_run.md) specified `instance`; [11](11_launch_plan.md)
 superseded it with `original`, and that substitution is now agreed. The evidence
 behind it: on three minutes of Ridgecrest aftershocks at a shared threshold,
 `instance` returns 4 picks where `original` returns 26, a ceiling no threshold

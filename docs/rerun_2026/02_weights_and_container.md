@@ -121,6 +121,6 @@ docker run --rm --entrypoint ls ghcr.io/seisscoped/quakescope:latest /root/.seis
 You should see your `quakescope2026.pt.v1` and `base.pt.v1`. A full
 end-to-end local test (pick one station-day into the database) is easiest
 from the EC2 controller once the database is up — see the end of
-[03_documentdb.md](03_documentdb.md).
+[03_documentdb.md](archive/03_documentdb.md).
 
-Next: [03_documentdb.md](03_documentdb.md)
+Next: [03_documentdb.md](archive/03_documentdb.md)

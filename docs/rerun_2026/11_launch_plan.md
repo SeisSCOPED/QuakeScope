@@ -22,7 +22,7 @@ as one code per line, and as `networks.json` for programmatic use.
 Campaigns 1–4 are the science run and share a database; `sb_runs` records which
 weight produced which picks, so they remain separable. Campaign 5 is the
 stakeholder deliverable and is isolated in its own database — see
-[09_western_states_run.md](09_western_states_run.md), whose weight and state
+[09_western_states_run.md](archive/09_western_states_run.md), whose weight and state
 list this plan supersedes.
 
 **The classifier is not part of any of these.** Submit without `--classifier`;
@@ -78,7 +78,7 @@ no single one ahead everywhere. The hydrophone is *not* where the gain comes
 from, so stations with a dead pressure channel are still worth picking.
 
 **Western states — `original`.** This changes
-[09_western_states_run.md](09_western_states_run.md), which specifies
+[09_western_states_run.md](archive/09_western_states_run.md), which specifies
 `instance`. The reason to change: `instance` has a genuine **ceiling** on dense
 near-field aftershock sequences — at Ridgecrest it emits 246 S picks with its
 threshold on the floor where the others reach 684 and 832, and no threshold
@@ -97,7 +97,7 @@ catalog completeness with it, and `obs` ships different defaults again
 
 Set each campaign's threshold from a **pick-budget target on a held-out week**
 before launching the full range. The
-[tier-2 smoke test](10_tier2_smoke_test.md) is the right place to do it.
+[tier-2 smoke test](archive/10_tier2_smoke_test.md) is the right place to do it.
 
 | Campaign | Starting point | Notes |
 |---|---|---|
@@ -160,7 +160,7 @@ instead and pass `--station_file`; `read_station_file` accepts a plain list of
 1. **Tier-2 smoke test first**, on three stations for one day, for every weight
    the launch uses — `jma_wc`, `obs` and `original`. It is an hour and it
    separates infrastructure faults from model faults.
-   → [10_tier2_smoke_test.md](10_tier2_smoke_test.md)
+   → [10_tier2_smoke_test.md](archive/10_tier2_smoke_test.md)
 2. **Campaign 2 (SCEDC)** next. One network, one bucket, the archive we have
    tested most. If anything is wrong with the image or the database it shows up
    here cheapest.
@@ -185,9 +185,9 @@ instead and pass `--station_file`; `read_station_file` accepts a plain list of
 - [ ] Thresholds set per campaign from a held-out week, not inherited.
 - [ ] `--classifier` omitted everywhere.
 - [ ] EarthScope token fresh — campaigns 3 and 4 need it; NCEDC and SCEDC are
-      anonymous. → [05_submitting_jobs.md](05_submitting_jobs.md)
+      anonymous. → [05_submitting_jobs.md](archive/05_submitting_jobs.md)
 - [ ] Databases exist: `quakescope_2026` and `western2026`.
-- [ ] Spend caps and monitoring in place → [06_monitoring.md](06_monitoring.md)
+- [ ] Spend caps and monitoring in place → [06_monitoring.md](archive/06_monitoring.md)
 
 ## A note on older data
 

@@ -104,4 +104,4 @@ JOB_DEFINITION_ASSOCIATION = "quakescope2026_association"
 Do this in the checkout **on the EC2 controller** — that's where submission
 runs.
 
-Next: [05_submitting_jobs.md](05_submitting_jobs.md)
+Next: [05_submitting_jobs.md](archive/05_submitting_jobs.md)

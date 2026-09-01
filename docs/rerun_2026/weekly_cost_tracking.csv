@@ -1,6 +1,0 @@
-date,week,campaign,shards_complete,shards_total,pct_complete,vpu_hours_this_week,vpu_hours_total,est_cost_this_week,est_cost_total,notes
-# Empty on purpose. Fill one row each Monday from the dashboard's vCPU-hours
-# tile. Earlier revisions of this file shipped with invented example rows that
-# read as real measurements; they were removed. shards_total comes from
-# 21_queues_written.md (scedc 8479, ncedc 14941, earthscope 153208, obs 6566,
-# western 72505). est_cost = vpu_hours * 0.0148. See MANUAL_COST_TRACKING.md.

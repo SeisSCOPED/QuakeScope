@@ -10,7 +10,7 @@ runtime by 60 band-days, when the shard it ran actually held **460** station-day
 describe current code either.
 
 The table additionally assumed EarthScope reads at the same speed as SCEDC.
-EarthScope I/O has never been profiled; [19_earthscope_access.md](19_earthscope_access.md)
+EarthScope I/O has never been profiled; [19_earthscope_access.md](../19_earthscope_access.md)
 records the open suspicion that it is substantially slower because it stores one
 multi-channel object per station-day. Since campaigns 3–5 are 91% of the
 station-days, that assumption carries most of the total.
@@ -21,7 +21,7 @@ Full account of what went wrong: [PHASE1_FINAL_REPORT.md](PHASE1_FINAL_REPORT.md
 
 `scripts/calculate_phase1_cost.py` is unaffected — it takes measured
 seconds-per-band-day as input and its per-campaign station-day counts match
-[21_queues_written.md](21_queues_written.md) exactly. It was fed bad inputs, not
+[21_queues_written.md](../21_queues_written.md) exactly. It was fed bad inputs, not
 written wrong. Re-run it once Phase 1 has produced real measurements on
 `quakescope_v3_worker:3`:
 
@@ -34,6 +34,6 @@ python scripts/calculate_phase1_cost.py \
 ```
 
 Until then the campaign has **no cost estimate**. The last figure with a
-defensible basis is the ~$15,800 in [21_queues_written.md](21_queues_written.md),
+defensible basis is the ~$15,800 in [21_queues_written.md](../21_queues_written.md),
 derived from the SCEDC-measured 34 s/band-day — and that document already flags
 the two things that qualify it.

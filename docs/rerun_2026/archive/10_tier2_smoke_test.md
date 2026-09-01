@@ -1,6 +1,6 @@
 # 10 — Tier-2 smoke test: one EC2 job, or a small Fargate cluster
 
-Tier 1 is the notebooks in [`tutorials/`](../../tutorials/): they check the
+Tier 1 is the notebooks in [`tutorials/`](../../../tutorials): they check the
 models on a laptop, against analyst picks, with no AWS involved. Tier 2 asks a
 different question — **does the deployed container reproduce that same result?**
 
@@ -26,7 +26,7 @@ can compare against it rather than merely checking that something ran.
 
 ## Before you start
 
-- [ ] Steps [02](02_weights_and_container.md) through [04](04_batch_setup.md)
+- [ ] Steps [02](../02_weights_and_container.md) through [04](../04_batch_setup.md)
       complete — image pushed, DocumentDB up, Batch queue defined.
 - [ ] Tier 1 passing locally, so a tier-2 failure points at infrastructure
       rather than at the models.
@@ -60,7 +60,7 @@ Roughly 65 s of inference per station-day on one CPU, plus about 10 s to fetch
 each channel. A three-station job should finish in a few minutes.
 
 These same numbers live in `REFERENCE` in
-[`sb_catalog/src/verify_smoke_test.py`](../../sb_catalog/src/verify_smoke_test.py);
+[`sb_catalog/src/verify_smoke_test.py`](../../../sb_catalog/src/verify_smoke_test.py);
 regenerate them if the weights or thresholds change.
 
 ---
@@ -74,7 +74,7 @@ instead of just a red status in the console.
    [03_documentdb.md](03_documentdb.md) — `t3.large` is enough, in the **same
    VPC and security group as the DocumentDB cluster**.
 
-2. **Pull the image** you pushed in [02](02_weights_and_container.md):
+2. **Pull the image** you pushed in [02](../02_weights_and_container.md):
 
    ```bash
    docker pull ghcr.io/seisscoped/quakescope:latest

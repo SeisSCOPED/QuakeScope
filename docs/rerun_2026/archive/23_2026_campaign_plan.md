@@ -146,7 +146,7 @@ done
 
 ### Inputs
 
-Station-day counts are from [21_queues_written.md](21_queues_written.md), which
+Station-day counts are from [21_queues_written.md](../21_queues_written.md), which
 was verified by reading the written queues back from S3. Do not restate them
 from memory — earlier drafts of this plan carried 2.5M for SCEDC, which came
 from a superseded estimate in doc 12 and is 1.66x low.
@@ -201,7 +201,7 @@ week,campaign,shards_done,vpu_hours,estimated_cost,actual_cost,variance
 
 **Goal:** Validate assumptions on real infrastructure before committing to full campaign.
 
-**Scope:** 4,106,669 station-days over 8,479 shards ([21](21_queues_written.md)).
+**Scope:** 4,106,669 station-days over 8,479 shards ([21](../21_queues_written.md)).
 Shards average 484 station-days and are not a fixed 40x20 grid — the sampled
 shard `2015175-2015195-4cd53b5d98c6` holds 23 stations over 20 days. Station
 count per shard varies; the 40x20 figure describes the 2025 run, not the v3
@@ -403,7 +403,7 @@ pixi run -e cloud python -m sb_catalog.src.parquet_compact \
 - Compaction takes: 5–10 min per partition (runs in background)
 - Dashboard refreshes: within 1 hour of compaction completing
 
-See [22_parquet_compaction.md](22_parquet_compaction.md) for details.
+See [22_parquet_compaction.md](../22_parquet_compaction.md) for details.
 
 ---
 
@@ -442,7 +442,7 @@ week,scedc_shards,scedc_cost,ncedc_shards,ncedc_cost,earthscope_shards,earthscop
 
 Once all shards show `complete/`:
 
-- [ ] Verify pick counts match expectations (compare to [21_queues_written.md](21_queues_written.md)):
+- [ ] Verify pick counts match expectations (compare to [21_queues_written.md](../21_queues_written.md)):
 
 ```bash
 pixi run -e cloud python notebooks/6_check_parquet.ipynb
@@ -619,12 +619,12 @@ state.write_shards(...)  # re-write from plan
 
 | Phase | Document | Purpose |
 |-------|----------|---------|
-| 1 | [19_earthscope_access.md](19_earthscope_access.md) | EarthScope credential setup |
-| 1 | [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) | Baseline performance expectations |
-| 2–3 | [15_monitoring.md](15_monitoring.md) | AWS watch, budgets, emergency stop |
-| 3–4 | [22_parquet_compaction.md](22_parquet_compaction.md) | Automatic Parquet consolidation |
-| 3–4 | [21_queues_written.md](21_queues_written.md) | Campaign scope and shard counts |
-| 4–5 | [11_launch_plan.md](11_launch_plan.md) | Campaign definitions and networks |
+| 1 | [19_earthscope_access.md](../19_earthscope_access.md) | EarthScope credential setup |
+| 1 | [16_skypilot_vs_fargate.md](../16_skypilot_vs_fargate.md) | Baseline performance expectations |
+| 2–3 | [15_monitoring.md](../15_monitoring.md) | AWS watch, budgets, emergency stop |
+| 3–4 | [22_parquet_compaction.md](../22_parquet_compaction.md) | Automatic Parquet consolidation |
+| 3–4 | [21_queues_written.md](../21_queues_written.md) | Campaign scope and shard counts |
+| 4–5 | [11_launch_plan.md](../11_launch_plan.md) | Campaign definitions and networks |
 
 ---
 

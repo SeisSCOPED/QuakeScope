@@ -23,7 +23,7 @@ selected geographically rather than by network.
 
 ## These counts are higher than the earlier estimates
 
-| campaign | [12](12_output_storage.md) said | planned | ratio |
+| campaign | [12](archive/12_output_storage.md) said | planned | ratio |
 |---|--:|--:|--:|
 | scedc | 2,467,740 | 4,106,669 | 1.66× |
 | ncedc | 4,551,557 | 5,979,675 | 1.31× |
