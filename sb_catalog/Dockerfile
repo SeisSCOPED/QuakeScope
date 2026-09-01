@@ -19,35 +19,29 @@ RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 # copy the content of the local src directory to the working directory
 COPY src/ src/
 
-# Pretrained PhaseNet weights, from SeisBench's own model repository -
-# seisbench.remote_model_root, https://hifis-storage.desy.de/Helmholtz/HelmholtzAI/SeisBench/models/v3/
+# Pretrained weights. Only the ones a campaign actually selects, committed in
+# the repo, copied straight in - so the build fetches no weights over the
+# network at all and the image cannot vary between builds.
+#
+#   jma_wc          campaigns 1-3 (SCEDC, NCEDC, EarthScope)
+#   obs             campaign 4 (OBS)
+#   original        campaign 5 (western)
+#   quakescope2026  the v7 fine-tune; not used this run, and not published
+#                   upstream, so the repo is its only source
 #
 # This replaces a 156 MB tarball from a personal site dated 2023-06-14. Its 40
-# PhaseNet files were checked and are byte-identical to the official ones, so
-# nothing regressed in switching - but it predates six weights published since,
-# and **jma_wc is one of them**. jma_wc drives campaigns 1-3, 78M of the
-# campaign's 113M station-days, so every worker was instead downloading it
-# during startup: 1,500 cold-start fetches of an unpinned external host in the
-# critical path. Observed in the 2026-09-01 SCEDC smoke test.
+# PhaseNet files were byte-identical to the current official ones, so nothing
+# regressed in dropping it - but it predated six weights published since, and
+# jma_wc was one of them. jma_wc drives 78M of the campaign's 113M station-days,
+# so every worker downloaded it from hifis-storage.desy.de during startup
+# instead. Observed in the 2026-09-01 SCEDC smoke test.
 #
-# The list is explicit rather than list_pretrained(), so a build is reproducible
-# and a weight appearing or vanishing upstream cannot silently change the image.
-# The build fails loudly if any is unreachable, which is the intent - a missing
-# weight should not become a runtime download on 1,500 workers.
-RUN python -c "\
-import seisbench.models as sbm; \
-ws = ['aq2009','diting','ethz','geofon','instance','iquique','jma','jma_wc', \
-      'lendb','neic','obs','original','phasenet_sn','pisdl','scedc','stead','volpick']; \
-[sbm.PhaseNet.from_pretrained(w) for w in ws]; \
-print('baked %d PhaseNet weights' % len(ws))"
-
-# Send and merge local weights into the image.
+# Anything else SeisBench offers still works; it just downloads on first use,
+# which is fine for ad-hoc runs and never happens on a campaign path. Note that
+# picker.py's own --weight default is `instance`, which is NOT here - the `work`
+# subcommand used by campaigns defaults to jma_wc and is unaffected.
 #
-# Must stay AFTER the fetch above so these win on conflict. Every weight a 2026
-# campaign selects - jma_wc, obs, original, quakescope2026 - is committed in the
-# repo, so the campaign path stays hermetic even if upstream changes underneath
-# the fetch. quakescope2026 is only here; it is not published upstream.
-# See models/v3/phasenet/README.md.
+# To add a weight, see models/v3/phasenet/README.md.
 COPY models/v3/ /root/.seisbench/models/v3/
 
 

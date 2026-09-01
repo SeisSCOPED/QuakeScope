@@ -100,13 +100,128 @@ emergency-stop sequence are in
 ## Key Features
 
 - 🌩️ **Cloud-native**: AWS Batch/Fargate for elastic, serverless phase picking
-- 🔬 **Selectable weights**: ships SeisBench models; custom fine-tunes drop in via `--weight`
+- 🔬 **Selectable weights**: the image carries the four a campaign uses; any other
+  SeisBench model downloads on first use, and custom fine-tunes drop in via
+  `--weight` — see [updating the image's weights](#updating-the-images-weights)
 - 📊 **Scalable database**: DocumentDB for catalog storage and querying
 - ⏱️ **Timing-tuned picker**: the v7 fine-tune improves P-MAE to 0.340 s from its
   parent's 0.374 s, trading recall to get there — see
   [the model notes](docs/phasenet_v7_model_description.md) before choosing it
 - 📦 **Containerized**: Docker-based deployment with custom weights and dependencies
 - 🔍 **Monitored**: CloudWatch dashboards and SNS alerts for job tracking
+
+## Model weights and the container image
+
+The image carries **only** the weights a campaign actually selects. Everything
+else SeisBench offers still works and downloads on first use — fine for
+notebooks and ad-hoc runs, and it never happens on a campaign path.
+
+| weight | used by | files |
+|---|---|---|
+| `jma_wc` | campaigns 1–3 (SCEDC, NCEDC, EarthScope) | `.pt.v1`, `.json.v1` |
+| `obs` | campaign 4 (OBS) | `.pt.v1`, `.json.v1` |
+| `original` | campaign 5 (western) | `.pt.v1/.v2`, `.json.v1/.v2` |
+| `quakescope2026` | the v7 fine-tune; not in this run | `.pt.v1`, `.json.v1` |
+
+They live in [`sb_catalog/models/v3/phasenet/`](sb_catalog/models/v3/phasenet/).
+
+### A weight is a pair, and the `.json` is the architecture
+
+Not metadata — `model_args` is what SeisBench builds the network from, so the
+two files must travel together and must match:
+
+```jsonc
+// jma_wc.json.v1
+"model_args": { "component_order": "ZNE", "phases": "PSN",
+                "norm": "std", "filter_factor": 2 },   // 2x the filters
+"seisbench_requirement": "0.9.0",
+"default_args": { "P_threshold": 0.1, "S_threshold": 0.1, ... }
+```
+
+The four differ in ways that are not interchangeable:
+
+| weight | `component_order` | `filter_factor` | needs SeisBench | params |
+|---|---|---|---|---|
+| `jma_wc` | `ZNE` | 2 | ≥ 0.9.0 | 1,070,899 |
+| `quakescope2026` | `ZNE` | 2 | ≥ 0.9.0 | 1,070,899 |
+| `original` | `ENZ` | — | ≥ 0.3.2 | 268,443 |
+| `obs` | `Z12H` | — | ≥ 0.4.0 | 268,499 |
+
+`filter_factor: 2` is why `jma_wc` is a 1.07M-parameter network where `original`
+is 268k — a different architecture, not just different numbers. Pairing a `.pt`
+with a `.json` of a different `filter_factor` fails loudly on a state-dict shape
+mismatch. A `component_order` mismatch does not: `ZNE`, `ENZ` and `Z12H` are all
+valid three-or-four-character orders, so the model loads and picks on
+mis-ordered traces. That is the failure worth guarding against.
+
+`seisbench_requirement` is a real floor: `jma_wc` needs ≥ 0.9.0, and the
+Dockerfile's `pip install seisbench` is unpinned.
+
+`obs` wanting `Z12H` — Z, two horizontals, and a hydrophone — is worth a look
+against the `--components` default of `ZNE12` before campaign 4 runs.
+
+### Fetching and committing a weight
+
+```bash
+# 1. fetch into your local SeisBench cache from the official repository
+#    (seisbench.remote_model_root -> hifis-storage.desy.de, Helmholtz-hosted)
+pixi run -e cloud python -c \
+  "import seisbench.models as sbm; sbm.PhaseNet.from_pretrained('<name>')"
+
+# 2. commit EVERY version of the pair, not just .v1 - see below
+cp ~/.seisbench/models/v3/phasenet/<name>.pt.v*   sb_catalog/models/v3/phasenet/
+cp ~/.seisbench/models/v3/phasenet/<name>.json.v* sb_catalog/models/v3/phasenet/
+
+# 3. verify it loads with the network blocked, from a cache holding only these
+cd sb_catalog/models/v3/phasenet
+rm -rf /tmp/sbtest && mkdir -p /tmp/sbtest/models/v3/phasenet
+cp *.pt.v* *.json.v* /tmp/sbtest/models/v3/phasenet/
+SEISBENCH_CACHE_ROOT=/tmp/sbtest pixi run -e cloud python -c "
+import seisbench.models as sbm, socket
+socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(OSError('blocked'))
+m = sbm.PhaseNet.from_pretrained('<name>')
+print(sum(p.numel() for p in m.parameters()), 'params')"
+
+# 4. commit and push - the Action rebuilds and tags the image with the short SHA
+# 5. re-register the Batch job definition against that tag
+```
+
+**Step 3 is the one that matters.** Skip it and you find out on 1,500 workers.
+
+**Copy every version, not just `.v1`.** Which one SeisBench resolves depends on
+*its own* version and is not always the highest or the one you would guess:
+seisbench 0.12.3 resolves `original` and `instance` to **`.v2`**, while `jma_wc`
+and `obs` have only `.v1`. Committing `original.pt.v1` alone would put a file in
+the image that SeisBench never asks for, leave the runtime download exactly
+where it was, and look like it had been fixed.
+
+**Step 5 is not optional.** A campaign runs whatever image the job definition
+pins, and a stale pin is invisible until you read worker logs — that is how
+`quakescope_v3_worker:2` spent eleven days pinning a pre-fix image.
+
+### Why the Dockerfile is as small as it is
+
+It does five things, and each one is load-bearing:
+
+| step | why it cannot be dropped |
+|---|---|
+| `pip install torch --index-url .../cpu` | the CPU wheel; the default pulls CUDA and multiplies image size for no benefit on Fargate |
+| `pip install seisbench pyocto s3fs boto3 pyarrow …` | `pyarrow` is the v3 Parquet output path — without it a job `ImportError`s before reading a byte |
+| `wget global-bundle.pem` | RDS trust store for DocumentDB — 2025-path only, unused by v3 |
+| `COPY src/` | the pipeline |
+| `COPY models/v3/` | the four weights above |
+
+It downloads **no weights**, so a build cannot vary with what upstream is
+serving that day. It previously pulled a 156 MB tarball from a personal site
+dated June 2023; that tarball predated `jma_wc`, so every worker fetched it at
+startup instead — 1,500 cold-start requests to an external host in the critical
+path. Details and the SHA-256 comparison that justified removing it are in
+[`sb_catalog/models/v3/phasenet/README.md`](sb_catalog/models/v3/phasenet/README.md).
+
+One asymmetry worth knowing: `picker.py`'s own `--weight` default is `instance`,
+which is **not** in the image, so the bare legacy entry point downloads on first
+run. The `work` subcommand campaigns use has its own parser defaulting to
+`jma_wc` and is unaffected.
 
 ## Architecture
 
