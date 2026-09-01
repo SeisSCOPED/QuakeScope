@@ -13,34 +13,76 @@ nobody had measured, and all of it had to be retracted
 
 ## 1. `--procs` scaling — the largest unknown
 
-**Status: being measured now** (jobs `procs-sweep-{1,2,4,8}`, job definition
-`quakescope_v3_worker:4`, image `dd4fcbc`, submitted 2026-09-01 04:35 UTC).
+**Status: being measured now.** Jobs `proctest-p{1,2,4,8}`, job definition
+`quakescope_v3_worker:4`, image `dd4fcbc`, submitted 2026-09-01 05:20 UTC. Ids
+in [`proctest.json`](../../proctest.json); they run on AWS and need no laptop
+attached.
 
-Job ids are in [`procs_sweep.json`](../../procs_sweep.json) at the repo root.
-They run on AWS and complete without a laptop attached. To read the result:
+### The first attempt was not a valid experiment
+
+Recorded because the flaw is easy to repeat. The first sweep gave every job
+`--max-shards 1`, so a job with `--procs P` claimed P shards from the live queue
+and its wall clock was **the maximum of P random draws** — while `--procs 1`
+drew once. Even under perfect scaling `procs=8` would finish later, purely
+because the max of eight draws exceeds one draw. "Flat wall clock means perfect
+scaling" was wrong.
+
+The draws are wildly unequal, which is what made this fatal rather than
+cosmetic. Two shards observed in that run:
+
+| shard | wall | station-day-channels |
+|---|--:|--:|
+| `2018219-2018239-9c91d08e08b6` | **23 s** | **0** — no data at all |
+| `2012031-2012051-52c578f41b6a` | 1145 s | 60 |
+
+A 50x spread, and some shards are entirely empty. Any design that hands
+different shards to different arms measures shard luck, not parallelism.
+
+### The design that replaces it
+
+Four campaign prefixes under `s3://quakescope-picks-2026/_proctest/p{1,2,4,8}`,
+each holding an **identical** `shards.jsonl` of the same 8 shards, with
+`--max-shards` set so `procs x max_shards = 8`:
+
+| arm | `--procs` | `--max-shards` | shards |
+|---|--:|--:|--:|
+| p1 | 1 | 8 | 8, sequential |
+| p2 | 2 | 4 | 8 |
+| p4 | 4 | 2 | 8 |
+| p8 | 8 | 1 | 8, all parallel |
+
+Every arm completes the same work, so wall clock is directly comparable and the
+speedup is `p1_wall / pN_wall`.
+
+The 8 shards are deliberately uniform — all 620 planned station-days, the same
+31 stations, consecutive 20-day windows through 2015 — so no single straggler
+sets `p8`'s wall clock while `p1` pays the sum. That skew, not parallelism, is
+what the first attempt actually measured.
+
+Picks land in the test prefixes, not in `scedc`, so the real catalogue stays
+clean. The work is duplicated four times; that is the price of a controlled
+experiment and comes to well under a dollar.
+
+### Reading it
 
 ```bash
-# wall clock per procs value - flat across P means perfect scaling
 python3 -c "
 import boto3, json
 b = boto3.client('batch', region_name='us-east-2')
-for p, jid in sorted(json.load(open('procs_sweep.json'))['jobs'].items(),
+for p, jid in sorted(json.load(open('proctest.json'))['jobs'].items(),
                      key=lambda x: int(x[0])):
     d = b.describe_jobs(jobs=[jid])['jobs'][0]
     el = (d['stoppedAt'] - d['startedAt']) / 1000 if d.get('stoppedAt') else None
     print(f\"procs={p}: {d['status']:10} {el and f'{el:.0f}s' or '-'}\")"
 ```
 
-Then pull the per-shard `stage profile` blocks from each job's CloudWatch log
-stream (`.jobs[0].container.logStreamName`) for the stage breakdown, and the
-`Completed <shard> in Ns (N station-day-channels)` lines for throughput.
+**You do not have to wait for `p1`.** It runs 8 shards sequentially and will take
+hours; `p8` runs them in parallel and should finish in roughly one shard's time.
+Comparing completed-shards-per-elapsed-minute answers the question long before
+`p1` ends, and `p1` can be killed once the rate is clear.
 
-**What to compare.** Each job runs P worker loops taking one shard each, so it
-completes P shards on the same 8 vCPU. If wall clock is flat from P=1 to P=8,
-scaling is perfect and the campaign costs ~1/8 of the current estimate. If it
-rises linearly, the cores were already busy and there is nothing to win. Also
-check `--procs 8` for an OOM or a memory-pressure stall — 16 GB across 8
-processes is 2 GB each, and the Parquet writer buffers a partition per process.
+Also check `p8` for an OOM or memory-pressure stall — 16 GB across 8 processes
+is 2 GB each, and the Parquet writer buffers a partition per process.
 
 Record the outcome here and update the cost figure in [README.md](README.md).
 
