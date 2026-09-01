@@ -31,9 +31,8 @@ throughput, less risk.
 
 Campaign estimate moves **~$16,400 to ~$11,000**.
 
-> ⚠️ **Do not set this yet — see item 0c.** `--procs > 1` currently breaks
-> graceful preemption: the parent traps no SIGTERM, so children are SIGKILLed
-> with their claims still held. Run at `--procs 1` until that is fixed.
+Safe to use as of 2026-09-01: the preemption bug that made `--procs > 1`
+dangerous is fixed and verified — item 0c.
 
 ### The thread count is the whole story
 
@@ -85,9 +84,16 @@ fires. The shard survives; the **worker does not**. Over a multi-day campaign at
 1,500 Spot workers the fleet decays instead of self-healing, and the dashboard
 shows it as a falling vCPU count with no failures anywhere.
 
-Not yet decided. Exiting non-zero would make Batch retry, at the cost of making
-every ordinary preemption look like a failure. Whichever way it goes, the
-campaign needs *something* that notices the fleet shrinking.
+Not yet decided. Exiting non-zero would make Batch retry — the hard-killed
+attempts of 2026-09-01 exited 137 and *were* retried, so the `evaluateOnExit`
+rule does work when the exit code is non-zero. The cost is that every ordinary
+preemption then looks like a failure in the console.
+
+**More pressing since 0c was fixed.** Preemption is now graceful in every
+configuration, so every preemption takes the exit-0 path and is never retried.
+What was an occasional leak is now the normal path. Whichever way it is
+decided, the campaign needs *something* that notices the fleet shrinking —
+the dashboard shows it only as a falling vCPU count with no failures anywhere.
 
 ## 0b. BLOCKER — no job definition can read restricted EarthScope
 
@@ -137,11 +143,11 @@ The I/O profile in item 2 deliberately uses Open Data networks so it is not
 blocked on this; per doc 19 both tiers use identical object layout, so the
 I/O question is answerable anonymously.
 
-## 0c. BLOCKER — `--procs > 1` breaks graceful preemption
+## 0c. FIXED — `--procs > 1` broke graceful preemption
 
-**This conditions item 0.** The 1.50x is real, but it is not safely usable until
-this is fixed, because it is bought by running the exact configuration that
-strands work on preemption.
+**Fixed and verified 2026-09-01.** Kept in full because the failure was silent
+in every direction — no error, no failed job, no alarm — and the shape of it is
+worth recognising again.
 
 `worker.py` `main()`:
 
@@ -210,7 +216,30 @@ Decide item 0a at the same time — it is the same signal path, and the two
 interact: 0a is about the graceful exit not being retried, 0c is about the
 graceful exit never happening.
 
-Until this lands, run campaigns at **`--procs 1`** and forgo the 1.50x.
+### The fix, and how it was verified
+
+`main()` now traps SIGTERM/SIGINT in the parent, forwards to each live child,
+and waits out a grace period (`SHUTDOWN_GRACE_SECONDS`, default 90 — inside
+Spot's ~120 s window) before escalating to `kill()`. It polls `is_alive()`
+rather than calling `join()`, because a plain `join()` can swallow the signal
+until a child happens to exit.
+
+Verified against the real worker, not a mock: two loops on `--procs 2`, both
+holding claims, SIGTERM sent to the **parent only** exactly as Docker delivers
+it:
+
+```
+Signal 15 - forwarding to 2 worker loops so they release their claims
+worker1 | Preempted while holding 2016030-2016050-2be66209dd1e - releasing it back
+worker0 | Preempted while holding 2016010-2016030-e5c832e16dd5 - releasing it back
+```
+
+Both claims gone from S3 afterwards; before the fix the same signal stranded
+both for the full 6 h lease.
+
+**This raises the priority of 0a.** Every preemption is now graceful, so every
+preemption now exits 0 — and therefore is never retried. The fleet-decay
+question is no longer occasional, it is the normal path.
 
 ## 1. How that was measured, and the two designs that were wrong
 
@@ -448,8 +477,8 @@ shards, which span whatever the queue hands them, and compare.
 | # | item | blocks | effort |
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
-| **0c** | **`--procs > 1` breaks graceful preemption** | **item 0's 1.50x; strands claims 6 h** | **~10 lines** |
-| 0a | preempted workers are not replaced | fleet stability on a long campaign | 1 h |
+| ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
+| **0a** | **preempted workers are not replaced** | **now the normal path — every preemption exits 0** | 1 h |
 | 0b | EarthScope credentials unwired | campaigns 3 and 5, ~$9,000 | IAM change |
 | 2 | EarthScope I/O profile | campaigns 3–5, ~$14,800 of the estimate | 2 h |
 | 9 | processed-vs-planned ratio | the cost basis | free, from item 1 |

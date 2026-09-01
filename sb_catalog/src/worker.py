@@ -371,15 +371,68 @@ def main(argv=None):
     if args.procs <= 1:
         loop(args, 0)
         return
+
     procs = [mp.Process(target=loop, args=(args, i)) for i in range(args.procs)]
     for p in procs:
         p.start()
-    try:
+
+    # Forward SIGTERM to the worker loops.
+    #
+    # Docker delivers SIGTERM to PID 1 only, and PID 1 here is this parent, which
+    # does nothing with it by default. The handler that releases a claim lives in
+    # loop(), which now runs in the children - so without this the parent died on
+    # the default action, the children never saw the signal, and ~120 s later the
+    # whole task was SIGKILLed with every claim still held. Those shards then sat
+    # unavailable for the full lease while the retried job found nothing to claim
+    # and exited 0, reporting SUCCEEDED having done no work. Measured 2026-09-01:
+    # two arms, exit 137 with no handler output, 8 stranded claims each.
+    #
+    # Only --procs 1 was ever safe, because there loop() runs in this process.
+    stopping = threading.Event()
+
+    def _forward(signum, frame):
+        if stopping.is_set():          # second signal: stop waiting, let it die
+            return
+        stopping.set()
+        logger.warning(
+            f"Signal {signum} - forwarding to {len(procs)} worker loops so they "
+            f"release their claims"
+        )
         for p in procs:
-            p.join()
-    except KeyboardInterrupt:
+            if p.is_alive():
+                try:
+                    os.kill(p.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    signal.signal(signal.SIGTERM, _forward)
+    signal.signal(signal.SIGINT, _forward)
+
+    # join() is not interruptible by a signal on all platforms, so poll instead:
+    # a plain join() can swallow the handler until the child happens to exit.
+    while any(p.is_alive() for p in procs):
+        time.sleep(0.5)
+        if stopping.is_set():
+            break
+
+    if stopping.is_set():
+        # Spot allows about two minutes between SIGTERM and SIGKILL. Give the
+        # loops most of it to finish the station-day they are on, flush Parquet
+        # and release the claim - that ordering is what keeps a manifest from
+        # ever describing picks that were not written.
+        deadline = time.time() + float(os.environ.get("SHUTDOWN_GRACE_SECONDS", "90"))
         for p in procs:
-            p.terminate()
+            p.join(timeout=max(0.0, deadline - time.time()))
+        for p in procs:
+            if p.is_alive():
+                logger.warning(
+                    f"Worker {p.pid} still running after the grace period; killing it. "
+                    f"Its claim will be reclaimed when the lease expires."
+                )
+                p.kill()
+    for p in procs:
+        p.join()
+
     # Any worker loop failing outright fails the node, for the same reason.
     if any(p.exitcode not in (0, None) for p in procs):
         sys.exit(1)
