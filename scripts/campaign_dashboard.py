@@ -57,6 +57,10 @@ QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
 # headline count is metadata-only and always exact; only the breakdowns are
 # capped, so the hourly job stays hourly as the catalogue grows.
 PARQUET_SCAN_CAP = int(os.environ.get("PARQUET_SCAN_CAP", "150"))
+# Batch jobs to describe per run. A 1,500-task array accumulates thousands of
+# finished children and describing them all took the hourly job past 10 minutes.
+DESCRIBE_CAP = int(os.environ.get("DESCRIBE_CAP", "1500"))
+LIVE_STATES = ("RUNNABLE", "STARTING", "RUNNING")
 TASK_VCPU = 8                       # per job definition
 
 # Campaigns whose data cannot currently be read, and why. Shown on the plan so
@@ -245,13 +249,66 @@ def gather(s3, b, campaigns):
 
     vcpu_now = vcpu_hours = 0.0
     status = {}
-    for st in ("RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"):
+    described = [0]
+    truncated = [False]
+    # list_jobs(jobQueue=...) does NOT enumerate the child tasks of an array
+    # job - it returns only the parents and any standalone jobs. Once the fleet
+    # moved to a 1,500-task array, every compute figure on this page silently
+    # went to near zero: it reported 0 vCPU in use against an actual 832.
+    # Children have to be listed per array id.
+    arrays = []
+    for st in ("RUNNABLE", "STARTING", "RUNNING"):
         try:
-            jobs = b.list_jobs(jobQueue=QUEUE, jobStatus=st)["jobSummaryList"]
+            for j in b.list_jobs(jobQueue=QUEUE, jobStatus=st)["jobSummaryList"]:
+                if j.get("arrayProperties", {}).get("size"):
+                    arrays.append(j["jobId"])
         except Exception:
+            pass
+    for st in ("RUNNABLE", "STARTING", "RUNNING", "SUCCEEDED", "FAILED"):
+        jobs = []
+        try:
+            jobs += b.list_jobs(jobQueue=QUEUE, jobStatus=st)["jobSummaryList"]
+        except Exception:
+            pass
+        # Only live states are enumerated per array. The finished children of a
+        # long-running array number in the thousands and paging them took the
+        # hourly job past ten minutes; they contribute nothing to "vCPU in use",
+        # and their contribution to vCPU-hours is reported as a lower bound
+        # rather than paid for on every run.
+        if st in LIVE_STATES:
+            for aid in set(arrays):
+                try:
+                    nxt = None
+                    while True:
+                        kw = {"arrayJobId": aid, "jobStatus": st}
+                        if nxt:
+                            kw["nextToken"] = nxt
+                        r = b.list_jobs(**kw)
+                        jobs += r["jobSummaryList"]
+                        nxt = r.get("nextToken")
+                        if not nxt:
+                            break
+                except Exception:
+                    pass
+        elif arrays:
+            truncated[0] = True
+        jobs = [j for j in jobs
+                if not j.get("arrayProperties", {}).get("size")]  # parents hold
+        if not jobs:                                              # no resources
             continue
-        if jobs:
-            status[st] = len(jobs)
+        status[st] = len(jobs)          # exact: counted before any describe cap
+        # describe_jobs is the expensive call and a big array has thousands of
+        # finished children. Cap it: the status counts above are already exact
+        # and free, and a capped sum is reported as a lower bound rather than
+        # dressed up as a total.
+        budget = DESCRIBE_CAP - described[0]
+        if budget <= 0:
+            truncated[0] = True
+            continue
+        if len(jobs) > budget:
+            jobs = jobs[:budget]
+            truncated[0] = True
+        described[0] += len(jobs)
         for chunk in [jobs[i:i+100] for i in range(0, len(jobs), 100)]:
             ids = [j["jobId"] for j in chunk]
             for d in b.describe_jobs(jobs=ids)["jobs"]:
@@ -269,7 +326,7 @@ def gather(s3, b, campaigns):
                 sampled=sampled, unreadable=unreadable,
                 picks=total_picks, bytes=total_bytes, files=total_files,
                 coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
-                status=status)
+                status=status, vcpu_partial=truncated[0])
 
 
 def human(n):
@@ -624,8 +681,12 @@ def render(g, examples):
         ("Catalogue size", human(g["bytes"]),
          f"{g['files']:,} Parquet object" + ("" if g["files"] == 1 else "s")),
         ("vCPU in use", f"{g['vcpu_now']:.0f}", "Batch jobs RUNNING now"),
-        ("vCPU-hours", f"{g['vcpu_hours']:,.1f}", "from job start/stop times"),
-        ("Spend (estimate)", f"${spend:,.2f}",
+        ("vCPU-hours", ("\u2265 " if g.get("vcpu_partial") else "")
+         + f"{g['vcpu_hours']:,.1f}",
+         "from job start/stop times" + (f"; a lower bound - only {DESCRIBE_CAP:,} "
+         "jobs are described per run" if g.get("vcpu_partial") else "")),
+        ("Spend (estimate)", ("\u2265 " if g.get("vcpu_partial") else "")
+         + f"${spend:,.2f}",
          f"vCPU-h x ${FARGATE_SPOT_RATE}/vCPU-h — not a billed figure"),
     ]
     tile_html = "".join(

@@ -38,6 +38,7 @@ import socket
 from typing import Any, Iterator, Optional
 
 import boto3
+from botocore.config import Config as BotoConfig
 import pandas as pd
 from botocore.exceptions import ClientError
 
@@ -77,7 +78,14 @@ class S3CampaignState:
         self.root = root.rstrip("/")
         self.bucket, self.prefix = _split_uri(self.root)
         self.lease_hours = lease_hours
-        self.s3 = client if client is not None else boto3.client("s3")
+        # Adaptive retries, not the default 4 fast ones. At 1,500 workers the
+        # claim protocol concentrates every request on one small prefix, S3
+        # throttles it, and an unretried SlowDown killed the worker outright -
+        # 1,000 of 1,500 tasks died this way. Adaptive mode also backs the whole
+        # fleet off rather than having it retry in lockstep.
+        self.s3 = client if client is not None else boto3.client(
+            "s3", config=BotoConfig(
+                retries={"max_attempts": 12, "mode": "adaptive"}))
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
 
     # ---------------------------------------------------------------- paths

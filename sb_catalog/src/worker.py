@@ -43,6 +43,10 @@ from .s3_state import S3CampaignState
 
 logger = logging.getLogger("worker")
 
+# Seconds over which array tasks stagger their first S3 calls. 180 spreads
+# 1,500 tasks to ~8 starts/s, well inside what a cold prefix absorbs.
+STARTUP_SPREAD_SECONDS = int(os.environ.get("STARTUP_SPREAD_SECONDS", "180"))
+
 
 class S3StateAdapter:
     """The slice of the SeisBenchDatabase interface the picking path uses,
@@ -215,6 +219,26 @@ def loop(args, proc_index: int = 0) -> None:
                 "cores, so per-stage attribution will be distorted. Use --procs 1.",
                 args.procs,
             )
+
+    # Spread the cold start. Every task's first act is to GET one shards.jsonl
+    # (32k lines, a single hot key), LIST complete/, and PUT a claim - so 1,500
+    # tasks launching together arrive as a burst on three prefixes that S3 has
+    # not yet partitioned for. That burst, not the sustained rate, is what
+    # returned SlowDown and killed 1,000 of 1,500 tasks: measured steady-state
+    # is 0.4 writes/s against a 3,500/s limit.
+    #
+    # Keyed to the array index rather than random, so the spread is even rather
+    # than merely uncorrelated, and reproducible when reading logs.
+    idx = os.environ.get("AWS_BATCH_JOB_ARRAY_INDEX")
+    if idx is not None and STARTUP_SPREAD_SECONDS > 0:
+        try:
+            wait = (int(idx) % max(int(STARTUP_SPREAD_SECONDS), 1))
+        except ValueError:
+            wait = 0
+        if wait:
+            logger.info(f"Staggering start by {wait}s (array index {idx}) so the "
+                        f"fleet does not arrive on S3 all at once")
+            time.sleep(wait)
 
     shards = state.read_shards()
     stations = state.get_stations()
