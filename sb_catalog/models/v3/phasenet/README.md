@@ -10,8 +10,60 @@ Place custom SeisBench PhaseNet weights here as a pair of files:
 They are copied into `/root/.seisbench/models/v3/phasenet/` at Docker build
 time and can then be selected at job submission with `--weight <weightname>`.
 
-The default weights (`instance`, plus the set from the SeisBench model
-repository baked in by the Dockerfile) remain available.
+## Every weight a 2026 campaign uses is committed here
+
+`jma_wc`, `obs` and `original` are upstream SeisBench weights, committed here
+deliberately rather than fetched at runtime.
+
+They were not baked in before. The Dockerfile's other source is a tarball from
+`munchmeyer.de` dated `230614` (June 2023), which predates `jma_wc`, so a
+worker running campaigns 1-3 downloaded 4.13 MB from `hifis-storage.desy.de`
+during startup — observed in the logs of the 2026-09-01 SCEDC smoke test:
+
+```
+Weight file jma_wc.pt.v1.partial not in cache. Downloading...
+Downloading from https://hifis-storage.desy.de/.../jma_wc.pt.v1
+```
+
+At 1,500 workers that is 1,500 cold-start fetches of an external academic host
+in the critical path, for a dependency the campaign does not control. Roughly
+7.7 MB in the image removes it.
+
+| weight | campaigns | files |
+|---|---|---|
+| `jma_wc` | 1-3 (SCEDC, NCEDC, EarthScope) | `.pt.v1`, `.json.v1` |
+| `obs` | 4 (OBS) | `.pt.v1`, `.json.v1` |
+| `original` | 5 (western) | `.pt.v1/.v2`, `.json.v1/.v2` |
+| `quakescope2026` | none this run - v7, see below | `.pt.v1`, `.json.v1` |
+
+`original` ships **both** v1 and v2. Which one SeisBench resolves depends on the
+version pip installs at image build time, and shipping only v1 would silently
+re-enable the download.
+
+Verified to load with the network blocked, from a cache holding only these
+files:
+
+```bash
+SEISBENCH_CACHE_ROOT=/tmp/sbtest python -c "
+import seisbench.models as sbm, socket
+socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(OSError('blocked'))
+for n in ['jma_wc','obs','original','quakescope2026']:
+    sbm.PhaseNet.from_pretrained(n)"
+```
+
+`jma_wc` and `quakescope2026` both report 1,070,899 parameters, consistent with
+v7 being the `jma_wc` fine-tune described below; `obs` and `original` are
+268,499 and 268,443.
+
+To add another upstream weight, fetch it and copy the pair in:
+
+```bash
+python -c "import seisbench.models as sbm; sbm.PhaseNet.from_pretrained('<name>')"
+cp ~/.seisbench/models/v3/phasenet/<name>.{pt,json}.v* .
+```
+
+The rest of the June 2023 tarball (`instance`, `stead`, `scedc`, ...) remains
+available for anything not listed above, but is not relied on by this campaign.
 
 ## Provenance of the 2026 re-run weights
 

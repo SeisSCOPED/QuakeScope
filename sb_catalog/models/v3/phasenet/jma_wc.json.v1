@@ -1,0 +1,19 @@
+{
+    "docstring": "PhaseNetWC model trained on the JMA (Japanese Meterological Agency) dataset. The model differs from a standard PhaseNet model in that each convolutional layer has double the number of filters as in a regular PhaseNet. See Naoi et al. (2024) for details (https://doi.org/10.1186/s40623-024-02091-8). Remember to cite the publication, if you use this model in your work.",
+    "model_args": {
+        "component_order": "ZNE",
+        "phases": "PSN",
+        "norm": "std",
+        "filter_factor": 2
+    },
+    "seisbench_requirement": "0.9.0",
+    "version": "1",
+    "default_args": {
+        "P_threshold": 0.1,
+        "S_threshold": 0.1,
+        "blinding": [
+            250,
+            250
+        ]
+    }
+}

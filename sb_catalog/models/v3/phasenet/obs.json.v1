@@ -1,0 +1,22 @@
+{
+  "docstring": "Model trained on OBS dataset using three seismometer and one hydrophone component. When using this model, please reference the OBS picking publication listed at https://github.com/seisbench/seisbench.",
+  "model_args": {
+    "in_channels": 4,
+    "norm_amp_per_comp": true,
+    "norm_detrend": true,
+    "component_order": "Z12H",
+    "phases": "PSN",
+    "filter_args": {
+      "??H": ["highpass"]
+    },
+    "filter_kwargs": {
+      "??H": {"freq": 0.5}
+    }
+  },
+  "seisbench_requirement": "0.4.0",
+  "default_args": {
+	"P_threshold": 0.2,
+	"S_threshold": 0.1
+  },
+  "version": "1"
+}

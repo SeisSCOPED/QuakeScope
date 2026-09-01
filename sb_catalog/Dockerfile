@@ -29,7 +29,13 @@ RUN wget https://munchmeyer.de/data/sbmodels_v3_230614.tgz \
     && rm -rf models/ \
     && rm -rf sbmodels_v3_230614.tgz
 
-# Send and merge local weights into the image
+# Send and merge local weights into the image.
+#
+# This COPY must stay AFTER the tarball above: the tarball is from June 2023 and
+# predates jma_wc, so anything a 2026 campaign actually uses is supplied here and
+# must win on conflict. Without it a worker downloads jma_wc from
+# hifis-storage.desy.de during startup - 1,500 cold-start fetches of an external
+# host in the critical path. See models/v3/phasenet/README.md.
 COPY models/v3/ /root/.seisbench/models/v3/
 
 
