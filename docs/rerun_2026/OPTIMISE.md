@@ -14,7 +14,35 @@ nobody had measured, and all of it had to be retracted
 ## 1. `--procs` scaling — the largest unknown
 
 **Status: being measured now** (jobs `procs-sweep-{1,2,4,8}`, job definition
-`quakescope_v3_worker:4`, 2026-09-01).
+`quakescope_v3_worker:4`, image `dd4fcbc`, submitted 2026-09-01 04:35 UTC).
+
+Job ids are in [`procs_sweep.json`](../../procs_sweep.json) at the repo root.
+They run on AWS and complete without a laptop attached. To read the result:
+
+```bash
+# wall clock per procs value - flat across P means perfect scaling
+python3 -c "
+import boto3, json
+b = boto3.client('batch', region_name='us-east-2')
+for p, jid in sorted(json.load(open('procs_sweep.json'))['jobs'].items(),
+                     key=lambda x: int(x[0])):
+    d = b.describe_jobs(jobs=[jid])['jobs'][0]
+    el = (d['stoppedAt'] - d['startedAt']) / 1000 if d.get('stoppedAt') else None
+    print(f\"procs={p}: {d['status']:10} {el and f'{el:.0f}s' or '-'}\")"
+```
+
+Then pull the per-shard `stage profile` blocks from each job's CloudWatch log
+stream (`.jobs[0].container.logStreamName`) for the stage breakdown, and the
+`Completed <shard> in Ns (N station-day-channels)` lines for throughput.
+
+**What to compare.** Each job runs P worker loops taking one shard each, so it
+completes P shards on the same 8 vCPU. If wall clock is flat from P=1 to P=8,
+scaling is perfect and the campaign costs ~1/8 of the current estimate. If it
+rises linearly, the cores were already busy and there is nothing to win. Also
+check `--procs 8` for an OOM or a memory-pressure stall — 16 GB across 8
+processes is 2 GB each, and the Parquet writer buffers a partition per process.
+
+Record the outcome here and update the cost figure in [README.md](README.md).
 
 Every measurement to date used `--procs 1` on an 8 vCPU task. If the other seven
 cores are idle, the campaign costs up to 8× what it needs to; if torch is

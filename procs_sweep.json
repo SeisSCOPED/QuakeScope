@@ -1,0 +1,10 @@
+{
+  "jobdef": "quakescope_v3_worker:4",
+  "image": "dd4fcbc",
+  "jobs": {
+    "1": "7da0d8f4-eb63-44a4-b485-4b842c5e0629",
+    "2": "af3ed5d1-309b-490a-a477-905037a963e6",
+    "4": "0f8d5796-fe78-42bc-ab03-ce7b2b6f41f6",
+    "8": "3726fdf2-7742-4897-85fe-b8cb19e7ed6b"
+  }
+}

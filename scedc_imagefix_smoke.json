@@ -1,0 +1,6 @@
+{
+  "job_id": "9b63303b-d81a-42c8-971b-e9163c4d85f3",
+  "jobdef": "quakescope_v3_worker:3",
+  "image": "5c612f6",
+  "campaign": "s3://quakescope-picks-2026/scedc"
+}
