@@ -78,23 +78,26 @@ def submit_job(
 ) -> str:
     """Submit a single test job. Returns job ID or empty string if dry-run."""
 
-    job_name = f"phase1-{campaign_name}-procs{procs}-profile{profile}"
-    env = [
-        {"name": "CAMPAIGN", "value": campaign_uri},
-        {"name": "WEIGHT", "value": weight},
-        {"name": "MAX_SHARDS", "value": str(max_shards)},
-        {"name": "PROCS", "value": str(procs)},
+    job_name = f"phase1-{campaign_name}-procs{procs}"
+
+    # Build command with parameters
+    cmd = [
+        "work",
+        "--campaign", campaign_uri,
+        "--weight", weight,
+        "--procs", str(procs),
+        "--max-shards", str(max_shards),
     ]
 
     if profile:
-        env.append({"name": "PROFILE", "value": "1"})
+        cmd.append("--profile")
 
     payload = {
         "jobName": job_name,
         "jobQueue": JOB_QUEUE,
         "jobDefinition": JOB_DEFINITION,
         "containerOverrides": {
-            "environment": env,
+            "command": cmd,
         },
         "retryStrategy": {
             "attempts": 1,  # Don't retry; we want to see failures

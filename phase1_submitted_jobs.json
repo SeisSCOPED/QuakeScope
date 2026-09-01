@@ -1,0 +1,46 @@
+{
+  "scedc": [
+    {
+      "job_id": "07f480c0-eb93-4db7-99d3-191b2ed0d8df",
+      "procs": 1,
+      "campaign": "scedc"
+    },
+    {
+      "job_id": "ad6b810d-c380-4ab7-8c14-0b0e69ba0f69",
+      "procs": 2,
+      "campaign": "scedc"
+    },
+    {
+      "job_id": "8e8e5d26-8223-435d-8a21-219be1e542bd",
+      "procs": 4,
+      "campaign": "scedc"
+    },
+    {
+      "job_id": "feb1d992-a44c-4b04-b08b-4854d7688870",
+      "procs": 8,
+      "campaign": "scedc"
+    }
+  ],
+  "earthscope": [
+    {
+      "job_id": "492749a7-e413-4506-bd05-d6d5993a0f8f",
+      "procs": 1,
+      "campaign": "earthscope"
+    },
+    {
+      "job_id": "c504e391-d53c-464c-9981-803951642bd2",
+      "procs": 2,
+      "campaign": "earthscope"
+    },
+    {
+      "job_id": "5a7f778a-5e18-4d74-a8cc-984dd37e48a5",
+      "procs": 4,
+      "campaign": "earthscope"
+    },
+    {
+      "job_id": "25de4d35-d974-49b2-8a62-2f3ca0f4e79f",
+      "procs": 8,
+      "campaign": "earthscope"
+    }
+  ]
+}
