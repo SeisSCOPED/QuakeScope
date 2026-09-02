@@ -357,6 +357,75 @@ event settles.
 preemption now exits 0 — and therefore is never retried. The fleet-decay
 question is no longer occasional, it is the normal path.
 
+## 0e. FIXED — a retry loop was swallowing the preemption
+
+**Found 2026-09-02 by the dry run, not by reading.** An arm exited 137 with four
+claims stranded, and the log says why:
+
+```
+Signal 15 - forwarding to 4 worker loops so they release their claims
+worker0 | FDSN request failed (1/8): Preempted. Sleeping 5 s.
+worker1 | FDSN request failed (1/8): Preempted. Sleeping 5 s.
+worker2 | FDSN request failed (1/8): Preempted. Sleeping 5 s.
+worker3 | FDSN request failed (1/8): Preempted. Sleeping 5 s.
+...
+worker1 | Load BG.AL4.  2018.156 @ ncedc
+```
+
+The SIGTERM landed inside an FDSN metadata request. That retry loop is a broad
+`except Exception ... sleep(5)`, so it caught the `Preempted` the handler raised,
+logged it as a failed request, and **retried**. All four loops carried on working
+after being told to stop, and Docker SIGKILLed the container ~120 s later.
+
+**This is item 0c's failure, reintroduced by a handler three modules away.** And
+it is not one handler: there are **19 broad `except Exception` clauses** in the
+package plus one bare `except:`. Which one absorbs a preemption depends only on
+where the signal happens to land — the EarthScope credential loop has the same
+shape, and the FDSN fetch happens at the *start* of every shard, which is exactly
+when a frequently-preempted worker is most likely to be interrupted.
+
+**Fix: `Preempted` now inherits from `BaseException`**, for the same reason
+`KeyboardInterrupt` and `SystemExit` do — it is control flow, not a failure. No
+`except Exception` can catch it, including the ones inside obspy, boto3 and
+seisbench. Auditing 19 handlers and hoping nobody adds a twentieth is a losing
+game. `tests/test_preemption_not_swallowed.py` pins it.
+
+**It also explains earlier evidence.** The first preemption test had 2 of 4 loops
+release and 2 not; that was attributed to a long `model.classify` overrunning the
+grace window. A swallowed signal is the better explanation, and it fits the
+exit-137 attempts in the original `es4` arm too.
+
+## 0f. OPEN — the Spot pool is volatile enough to exhaust the retry cap
+
+**Measured 2026-09-02.** A validation job was reclaimed **ten times in a row**,
+every one handled correctly by the 0a fix — and then hit Batch's retry ceiling
+and failed permanently:
+
+```
+mean attempt 10.2 min | median 7.1 | max 26.4
+cumulative 102.4 min | 2 shards completed | no OOM
+```
+
+`attempts: 10` is **Batch's maximum**; it cannot be raised. At a ~10 minute mean
+time to interruption, a worker's expected lifetime is about 100 minutes of
+runtime however the retries are configured.
+
+Two consequences for launch:
+
+1. **The campaign needs something that resubmits workers**, not just Batch
+   retries. The fleet now decays *visibly* (FAILED rather than silently
+   SUCCEEDED, which is the 0a fix working) but it still decays. This is the
+   concrete version of item 0a's closing note.
+2. **`lease_hours: 6` is mismatched to this pool.** A stranded claim removes a
+   shard from circulation for six hours. Combined with 0e, that deadlocked a
+   dry-run arm completely: all 8 shards claimed by dead attempts, retries
+   finding nothing to take. One hour is a better fit, and it is a per-submission
+   flag rather than a code change.
+
+Whether this reclaim rate is a transient capacity crunch in
+`niyiyu_earthscope` or normal for it is **not established** — one afternoon
+cannot tell. Worth sampling across a few days before sizing the fleet.
+
 ## 0d. FIXED — `--procs 4` ran out of memory on EarthScope data
 
 **Fixed 2026-09-02**, both halves of the product:
@@ -937,7 +1006,9 @@ push in the same direction.
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
 | ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
-| **0d** | **`--procs 4` OOMs on EarthScope at 16 GB** | **campaigns 3 and 5 — 60% of the campaign** | 2 h |
+| **0f** | **Spot reclaims exhaust the 10-attempt cap** | **the fleet still decays; needs worker resubmission** | 1 day |
+| ~~0e~~ | ~~a retry loop swallowed the preemption~~ | **fixed — `Preempted` is now a `BaseException`** | — |
+| ~~0d~~ | ~~`--procs 4` OOMs on EarthScope at 16 GB~~ | **fixed; 102 min at `--procs 4`, no OOM. Not a clean A/B** | — |
 | **0a** | **preempted workers are not replaced** | **decided by a live reclaim: must exit non-zero. Not yet implemented** | 1 h |
 | ~~0b~~ | ~~EarthScope credentials unwired~~ | **withdrawn — a stale `aws` CLI, not a blocker** | — |
 | 0b′ | one live restricted-network read on the current image | campaigns 3 and 5 | 15 min |
