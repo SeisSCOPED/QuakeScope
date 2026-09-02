@@ -227,6 +227,41 @@ def test_escalation_leaves_other_networks_alone():
     assert h.es_scope("ZI", 2018) == {"network": "FDSN:ZI", "year": 2018}
 
 
+def test_a_refused_exchange_escalates_too():
+    # A wrong scope can fail at either end. ZI (temporary) was refused at the
+    # exchange with an HTTP error, never reaching S3 - so escalation cannot be
+    # driven by the GET alone.
+    h = CompositeS3ObjectHelper()
+    seen = []
+
+    def fake(net, year=None):
+        seen.append(h.es_scope(net, year))
+        if "year" in h.es_scope(net, year):
+            raise RuntimeError("EarthScope refused credentials for scope ...")
+        return _Cred()
+
+    h.get_es_credential = fake
+    fs = h.get_es_filesystem("ZI", 2019)
+    assert fs is not None
+    assert seen == [{"network": "FDSN:ZI", "year": 2019},
+                    {"network": "FDSN:ZI"}]
+
+
+def test_a_refused_exchange_still_raises_when_both_fail():
+    h = CompositeS3ObjectHelper()
+
+    def fake(net, year=None):
+        raise RuntimeError("refused")
+
+    h.get_es_credential = fake
+    try:
+        h.get_es_filesystem("ZI", 2019)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("should raise once both scopings are refused")
+
+
 def test_denial_budget_covers_both_scopings():
     # ES_DENIED_ATTEMPTS bounds the retries in `_read_waveform_from_s3`: the
     # first denial re-requests the same scope (an expiry), the second flips it.

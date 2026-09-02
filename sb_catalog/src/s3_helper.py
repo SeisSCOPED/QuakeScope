@@ -340,7 +340,17 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         ) < self.ttl_threshold:
             if cred is not None:
                 logger.warning(f"EarthScope credential renewed for {scope}.")
-            self.credentials[key] = self.get_es_credential(net, year)
+            try:
+                self.credentials[key] = self.get_es_credential(net, year)
+            except RuntimeError:
+                # A wrong scope can fail at either end: refused here at the
+                # exchange, or accepted here and denied at the GET. Escalate on
+                # both, or the fallback only covers half the ways to be wrong.
+                # Terminates because escalate_scope_mode returns False once
+                # both scopings have been tried.
+                if not self.escalate_scope_mode(net):
+                    raise
+                return self.get_es_filesystem(net, year)
             self.set_es_filesystem(key)
         return self.es_fs[key]
 
@@ -365,9 +375,30 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                     )
             except Exception as exc:
                 last = exc
+                # Report the HTTP status and body, not just the class.
+                # "HTTPStatusError" alone is indistinguishable between "not
+                # entitled", "no such network-year" and "malformed parameter",
+                # and the retry loop then hides it five times over.
+                resp = getattr(exc, "response", None)
+                detail = f"{type(exc).__name__}"
+                if resp is not None:
+                    body = (resp.text or "").strip().replace("\n", " ")[:300]
+                    detail = f"HTTP {resp.status_code} {body}"
+                    # 4xx is a verdict, not congestion. Retrying a rejected
+                    # scope just burns the budget - 25 s per network here -
+                    # and buries the one line that says why.
+                    code = resp.status_code
+                    if 400 <= code < 500 and code != 429:
+                        raise RuntimeError(
+                            f"EarthScope refused credentials for scope "
+                            f"{scope} on role {EARTHSCOPE_ROLE}: {detail}. "
+                            f"This is a "
+                            f"verdict on the request, not congestion - check "
+                            f"the scope before retrying."
+                        ) from exc
                 logger.warning(
-                    f"EarthScope credential client might be busy "
-                    f"({attempt}/{ES_CREDENTIAL_ATTEMPTS}): {type(exc).__name__}. "
+                    f"EarthScope credential request failed for {scope} "
+                    f"({attempt}/{ES_CREDENTIAL_ATTEMPTS}): {detail}. "
                     f"Sleeping 5 seconds."
                 )
                 time.sleep(5)
