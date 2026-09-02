@@ -131,8 +131,32 @@ client.user.get_aws_credentials(
 ```
 
 Temporary networks — FDSN codes beginning with a digit or `X`/`Y`/`Z` — are
-also year-scoped, because the code is reassigned to unrelated deployments
-across years. That is most of this campaign: `XD`, `ZI`, `ZG`, `1D`, `1B`.
+also year-scoped. That is most of this campaign: `XD`, `ZI`, `ZG`, `1D`, `1B`.
+The [tutorial](https://docs.earthscope.org/sdk/s3-direct-access-tutorial#repository-direct-access)
+is explicit, and its own example uses a temporary network:
+
+> When requesting credentials for a temporary FDSN network (i.e. it starts with
+> digits 0-9 or letters `X`, `Y` or `Z`), you must **include `year`** in the
+> credential request
+
+> Temporary FDSN networks reuse classical 2-character FDSN network codes so
+> credentials must be scoped to a specific network-year prefix:
+> `miniseed/<NETWORK>/<YEAR>/*`.
+
+**Read the temporary-network section, not just the first example.** The
+tutorial's opening snippet passes `network` alone, which is correct for a
+permanent code and wrong for most of this campaign.
+
+The same page states the asymmetry that made this so hard to see, and it is
+worth quoting in full:
+
+> Credentials **allow listing the entire `miniseed/` prefix** on the access
+> point, including all network "subdirectories". All networks appear in
+> listings but **cannot be downloaded unless your credentials were issued for
+> that network**.
+
+Every diagnostic we ran began with a successful listing. By design, that
+listing would have succeeded no matter how wrong the credential was.
 
 Confirmed interactively from EC2 in us-east-2 on 2026-09-02: the same object
 that returns `AccessDenied` under an unscoped credential returns bytes under
