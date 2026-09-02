@@ -54,6 +54,17 @@ def main() -> None:
 
         return diag_main(sys.argv[2:])
 
+    # Same reason again, plus one specific to this subcommand: the survey has to
+    # reach EarthScope's RESTRICTED tier, which is 69% of the campaign's planned
+    # station-days, and that needs the refresh token. Running it from a laptop
+    # would mean using the token there, which risks invalidating the Secrets
+    # Manager copy - see the module docstring. In a task launched from
+    # quakescope_2026_earthscope the token is already injected.
+    if len(sys.argv) > 1 and sys.argv[1] == "hitrate":
+        from .hitrate import main as hitrate_main
+
+        return hitrate_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
