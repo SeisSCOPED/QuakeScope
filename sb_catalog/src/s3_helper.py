@@ -79,6 +79,22 @@ S3_CONFIG = {
 
 logger = logging.getLogger("picker")
 
+# earthscope_sdk logs credentials at DEBUG:
+#
+#     logger.debug(f"Refreshed tokens: {self._tokens}")     auth_flow.py
+#     logger.debug(f"Refresh token revoked: {refresh_token}")
+#
+# `worker.py` configures logging with `logging.basicConfig(level=DEBUG)` when
+# `--debug` is passed, and that sets the ROOT level, so those lines would be
+# emitted - writing the refresh token AND the access token to CloudWatch, where
+# anyone with logs:GetLogEvents on /aws/batch/job can read them.
+#
+# Pin the SDK's logger here rather than at each entry point: it is the library
+# that leaks, so the floor belongs next to the library, and then no future
+# caller can reintroduce it by configuring logging differently. DEBUG output
+# from our own modules is unaffected.
+logging.getLogger("earthscope_sdk").setLevel(logging.INFO)
+
 
 class S3ObjectHelper:
     def get_data_center(self, net):
