@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import hashlib
 import logging
 import os
 
@@ -303,10 +304,21 @@ def main():
 
     if ES_OAUTH2__REFRESH_TOKEN:
         environ = {"ES_OAUTH2__REFRESH_TOKEN": ES_OAUTH2__REFRESH_TOKEN}
-        logger.info(f"EarthScope refresh token applied: {ES_OAUTH2__REFRESH_TOKEN}")
+        # Never log the token itself. This logged it in full at INFO, so the
+        # credential went to stdout - and on Batch that is CloudWatch, readable
+        # by anyone with logs:GetLogEvents on /aws/batch/job.
+        #
+        # A truncated digest instead of the value, or of its last characters:
+        # it still answers the two operational questions - is a token set, and
+        # is it the one I just rotated to - while exposing no token material.
+        fp = hashlib.sha256(ES_OAUTH2__REFRESH_TOKEN.encode()).hexdigest()[:8]
+        logger.info(
+            f"EarthScope refresh token applied "
+            f"({len(ES_OAUTH2__REFRESH_TOKEN)} chars, sha256:{fp})"
+        )
     else:
         environ = {}
-        logger.info(f"EarthScope refresh token empty.")
+        logger.info("EarthScope refresh token empty.")
 
     environ["EARTHSCOPE_S3_ACCESS_POINT"] = EARTHSCOPE_S3_ACCESS_POINT
 

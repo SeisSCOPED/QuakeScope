@@ -178,6 +178,47 @@ Load ZI.CAMP.10  2019.187 @ earthscope
 Rotation: `es login` on a laptop, then `put-secret-value` with the new token.
 Nothing in the image or the job definition changes.
 
+## Is it safe that the image is public? (2026-09-01)
+
+`ghcr.io/seisscoped/quakescope` is **public** — an anonymous manifest pull
+returns 200. That is fine, and the design is the reason:
+
+- **The image carries no credential.** The Dockerfile copies `src/` and
+  `models/v3/` and nothing else; there is no `ARG`, no `ENV`, no token.
+- **The secret is injected at task start**, by Fargate, from Secrets Manager,
+  using the execution role. `containerProperties.secrets` stores the **ARN**,
+  not the value, so `describe-job-definitions` exposes nothing either.
+- Pulling the public image therefore yields no way to read restricted data.
+
+**The exposure is at runtime and inside the account, not in the registry.** The
+token exists as an environment variable in a running task, so it is reachable by
+anyone who can read that task's logs, exec into it, or assume the execution
+role. Three specifics found on 2026-09-01:
+
+1. **`submit_helper.py` logged the whole token at INFO** — `"EarthScope refresh
+   token applied: <token>"`. On Batch that goes to CloudWatch, readable with
+   `logs:GetLogEvents` on `/aws/batch/job`. **Fixed**: it now logs a length and
+   a truncated SHA-256, which still answers "is one set" and "is it the one I
+   rotated to". A CloudWatch search over the last 180 days found **no** matching
+   event, so the token was never actually written and does not need rotating on
+   this account.
+2. **`--debug` would leak it.** `worker.py` calls `logging.basicConfig(level=
+   DEBUG)`, which sets the **root** logger, and `earthscope_sdk`'s
+   `auth_flow.py` does `logger.debug(f"Refreshed tokens: {self._tokens}")`.
+   So `--debug` on an EarthScope campaign writes the refresh *and* access token
+   into CloudWatch. Not fixed — the safe change is to raise
+   `logging.getLogger("earthscope_sdk").setLevel(INFO)` regardless of `--debug`.
+   Until then, **do not pass `--debug` to a campaign that touches restricted
+   EarthScope.**
+3. **`SeisBenchBatchRole` carries `AmazonS3FullAccess`** and is both the job role
+   and the execution role. Unrelated to the image being public, but it means one
+   role compromise reaches every bucket in the account.
+
+**Also do not use the refresh token from a laptop.** `earthscope_sdk`'s refresh
+grant saves a rotated token to *local SDK state*, not back to Secrets Manager —
+so if EarthScope's Auth0 application has rotation enabled, one local run
+invalidates the credential every campaign job depends on.
+
 ## Open: EarthScope reads are much slower than SCEDC
 
 The same test then sat on `Load ZI.CAMP.10` for **25 minutes without a further
