@@ -109,6 +109,53 @@ rotated token to *local* state, not back to the secret — so it was not done.
 permanent ones (AK, TA, IU, II, N4, UU, UW, PB), which is exactly why they sit
 at ~82%. The restricted majority are temporary deployments.
 
+## Read-time downsampling, and what it is worth
+
+Everything above 100 Hz is now downsampled when it is read
+([17_launch_conventions.md](17_launch_conventions.md)). Only one stage changes:
+`model.classify` always ran at 100 Hz because SeisBench resampled its own copy,
+and `s3.get`/`mseed.parse` move the same bytes either way — but
+`amplitude_extractor` ran on the stream **as read**, so a 425 Hz trace cost
+4.25× what it needed to in Wood-Anderson and velocity.
+
+**Nominal SEED rates badly understate this.** Read out of MiniSEED record
+headers on 2018.041:
+
+| band | observed mix | mean rate | wall before/after |
+|---|---|--:|--:|
+| `DP` | 250 Hz 30%, **500 Hz 70%** | 425 | **1.80×** |
+| `CN` | **500 Hz 100%** | 500 | **1.99×** |
+| `HN` | 100 Hz 72%, **200 Hz 28%** | 128 | 1.07× |
+| `EH` | 100 Hz 78%, 200 Hz 22% | 122 | 1.05× |
+| `HH` | 100 Hz 94%, 200 Hz 6% | 106 | 1.01× |
+| `SH`, `BH` | 50 / 40 Hz | — | 1.00× (never resampled) |
+
+The band table assumed `DP` = 250 and `CN` = 250; both are mostly 500. And `HN`
+is not the flat 100 Hz it is listed as.
+
+**Campaign effect: ~5.1%, $10,262 → $9,737.**
+
+| campaign | before | after | saved |
+|---|--:|--:|--:|
+| scedc | $543 | $521 | 4.0% |
+| ncedc | $955 | $883 | 7.5% |
+| earthscope | $6,745 | $6,443 | 4.5% |
+| obs | $43 | $42 | 2.7% |
+| western | $1,976 | $1,847 | 6.5% |
+| **total** | **$10,262** | **$9,737** | **5.1%** |
+
+693,404 → 657,892 vCPU-hours.
+
+Two caveats. The rate mix comes from small samples — 18 to 20 objects per band
+on one day — so the `HN` 28%-at-200 figure in particular has wide error bars,
+and `HN` is 46% of the campaign, so it is where the estimate is most sensitive.
+And the resample stage's own cost is **assumed** at ~2% of wall, not measured; a
+`resample` profiling stage was added, so the next campaign run will report it.
+
+Memory is the other benefit and is not in this table: the decoded stream waits
+in `data_queue`, so a 500 Hz `DP` trace was occupying 5× what the model would
+ever use — in the queue that put `--procs 4` over 16 GB.
+
 ## Per campaign
 
 `--procs 4` throughout, EarthScope assumed to gain **1.4×** from it (less than

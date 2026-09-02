@@ -44,9 +44,9 @@ Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
 | Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
 | Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
-| Job definition | **`quakescope_v3_worker:7`** | image `b8589aa`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
-| Campaign job definitions | `scedc:4`, `ncedc:4`, `earthscope:5`, `obs:4`, `western:5` | all on `b8589aa`, all with the thread environment set. Re-pinned 2026-09-02 — see below |
-| Worker image | `ghcr.io/seisscoped/quakescope:b8589aa` | **535.6 MB compressed**, 9 layers |
+| Job definition | **`quakescope_v3_worker:8`** | image `f0ba9a1`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
+| Campaign job definitions | `scedc:5`, `ncedc:5`, `earthscope:6`, `obs:5`, `western:6` | all on `f0ba9a1`, all with the thread environment set. Re-pinned 2026-09-02 — see below |
+| Worker image | `ghcr.io/seisscoped/quakescope:f0ba9a1` | **535.6 MB compressed**, 9 layers |
 | Task role | `SeisBenchBatchRole` | S3 write confirmed by policy simulation |
 | EarthScope secret | `quakescope/earthscope-refresh-token` | injected as `ES_OAUTH2__REFRESH_TOKEN`; only the EarthScope and western job definitions carry it. Read back through boto3 and confirmed by policy simulation, 2026-09-01 |
 | Cost alerts | `QuakeScopeAWSWatch`, hourly | [15_monitoring.md](15_monitoring.md) |
@@ -85,7 +85,7 @@ ACTIVE and a submission can name it.
 
 ## The image is pulled 100k+ times, so it stays lean
 
-`b8589aa` is **535.6 MB compressed in 9 layers**, down from 1,343.6 MB in 13 —
+`f0ba9a1` is **535.6 MB compressed in 9 layers**, down from 1,343.6 MB in 13 —
 **2.51x, 808 MB less per pull**. Two changes did it, both to the base rather
 than the package list:
 
@@ -148,7 +148,7 @@ How to add one, and why the `.json` is the architecture rather than metadata:
 # smoke test one shard first - always
 aws batch submit-job --region us-east-2 \
   --job-name scedc-smoke --job-queue niyiyu_earthscope_missing_station \
-  --job-definition quakescope_v3_worker:7 \
+  --job-definition quakescope_v3_worker:8 \
   --container-overrides '{
     "command":["work",
       "--campaign","s3://quakescope-picks-2026/scedc",
@@ -166,7 +166,7 @@ defaults to the core count, so raising `--procs` without lowering threads gives
 8 processes x 8 threads on 8 vCPU and is *slower* than one process. `4 x 2` is
 the measured optimum — [OPTIMISE.md](OPTIMISE.md) item 0.
 
-`:7` and all five campaign definitions pin the five variables to 2, matching
+`:8` and all five campaign definitions pin the five variables to 2, matching
 their default `procs` of 4, so a submission that overrides nothing is already
 correct. The block above is kept explicit because **any submission that changes
 `--procs` must override them too** — and every definition before 2026-09-02 set
