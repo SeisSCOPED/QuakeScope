@@ -58,28 +58,29 @@ def _helper(monkeypatch_calls):
 
 
 def test_scope_carries_the_network():
-    scope = CompositeS3ObjectHelper.es_scope("AV", 2019)
-    assert scope["network"] == "FDSN:AV"
+    h = CompositeS3ObjectHelper()
+    assert h.es_scope("AV", 2019)["network"] == "FDSN:AV"
 
 
-def test_permanent_networks_are_not_year_scoped():
+def test_permanent_networks_are_not_year_scoped_by_default():
     # A permanent code means one deployment for all time, so a year would
     # fragment the cache into one credential per year for no benefit.
+    h = CompositeS3ObjectHelper()
     for net in ("AV", "CC", "NP", "BK", "CI"):
-        assert CompositeS3ObjectHelper.es_scope(net, 2019) == {
-            "network": f"FDSN:{net}"}
+        assert h.es_scope(net, 2019) == {"network": f"FDSN:{net}"}
 
 
-def test_temporary_networks_are_year_scoped():
+def test_temporary_networks_are_year_scoped_by_default():
     # FDSN reassigns codes beginning with a digit or X/Y/Z, so the same code is
     # a different experiment in a different year.
+    h = CompositeS3ObjectHelper()
     for net in ("XD", "ZI", "ZG", "1D", "7D", "YW"):
-        assert CompositeS3ObjectHelper.es_scope(net, 2018) == {
+        assert h.es_scope(net, 2018) == {
             "network": f"FDSN:{net}", "year": 2018}
 
 
 def test_year_omitted_when_unknown():
-    assert "year" not in CompositeS3ObjectHelper.es_scope("XD")
+    assert "year" not in CompositeS3ObjectHelper().es_scope("XD")
 
 
 def test_one_exchange_per_scope_not_per_object():
@@ -156,3 +157,80 @@ def test_update_forces_a_new_credential():
     # ... but not for a network that never had one.
     h.update_es_filesystem("UW", 2019)
     assert len(calls) == 2
+
+
+# --- the scoping is a guess, so it has to be correctable -------------------
+#
+# `default_scope_mode` encodes what EarthScope's docs say: temporary networks
+# want a year, permanent ones do not. That has been verified for exactly one
+# network (AV, permanent). If it is wrong for any other, the campaign must not
+# stall on it - a denial has to teach the worker the right scoping instead.
+
+
+def test_escalation_flips_a_temporary_network_to_network_only():
+    h = _helper([])
+    assert "year" in h.es_scope("XD", 2018)
+    assert h.escalate_scope_mode("XD") is True
+    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+
+
+def test_escalation_flips_a_permanent_network_to_year_scoped():
+    # The guess can be wrong in the other direction too.
+    h = _helper([])
+    assert "year" not in h.es_scope("NP", 2018)
+    assert h.escalate_scope_mode("NP") is True
+    assert h.es_scope("NP", 2018) == {"network": "FDSN:NP", "year": 2018}
+
+
+def test_escalation_gives_up_once_both_are_tried():
+    h = _helper([])
+    assert h.escalate_scope_mode("XD") is True
+    assert h.escalate_scope_mode("XD") is False     # nothing left to try
+    # And it stays on the second mode rather than oscillating.
+    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+
+
+def test_escalation_is_learned_once_per_network():
+    calls = []
+    h = _helper(calls)
+    h.get_filesystem("XD", 2018)
+    h.update_es_filesystem("XD", 2018, escalate=True)
+    calls.clear()
+    # Every later read on that network uses the corrected scoping, with no
+    # further exchange - the flip is remembered, not rediscovered per object.
+    for _ in range(500):
+        h.get_filesystem("XD", 2018)
+    assert calls == []
+    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+
+
+def test_escalation_discards_every_year_of_that_network():
+    # Credentials for 2018 and 2019 were both built under the old mode, so
+    # both are stale once the mode changes.
+    calls = []
+    h = _helper(calls)
+    h.get_filesystem("XD", 2018)
+    h.get_filesystem("XD", 2019)
+    assert len(calls) == 2
+    h.escalate_scope_mode("XD")
+    assert h.credentials == {} and h.es_fs == {}
+
+
+def test_escalation_leaves_other_networks_alone():
+    calls = []
+    h = _helper(calls)
+    h.get_filesystem("XD", 2018)
+    h.get_filesystem("ZI", 2018)
+    h.escalate_scope_mode("XD")
+    # ZI keeps its credential and its default scoping.
+    assert len(h.credentials) == 1
+    assert h.es_scope("ZI", 2018) == {"network": "FDSN:ZI", "year": 2018}
+
+
+def test_denial_budget_covers_both_scopings():
+    # ES_DENIED_ATTEMPTS bounds the retries in `_read_waveform_from_s3`: the
+    # first denial re-requests the same scope (an expiry), the second flips it.
+    # Anything less than 2 would abandon the station-day before the alternative
+    # scoping was ever tried.
+    from sb_catalog.src.s3_helper import ES_DENIED_ATTEMPTS
+    assert ES_DENIED_ATTEMPTS >= 2

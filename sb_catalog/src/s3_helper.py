@@ -237,6 +237,11 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # entry - two when the shard straddles a new year.
         self.credentials = {}                 # scope key -> AwsTemporaryCredentials
         self.es_fs = {}                       # scope key -> S3FileSystem
+        # Which scoping each network wants. Seeded from a guess, corrected by
+        # the first denial - the token exchange returns 200 for either scoping,
+        # so nothing short of a GET can tell them apart.
+        self.es_scope_mode = {}               # net -> mode, below
+        self.es_scope_tried = {}              # net -> {modes already denied}
         logger.info(
             f"EarthScope: open data anonymous for "
             f"{','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}; "
@@ -261,7 +266,20 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         return self.fs[dc]
 
     @staticmethod
-    def es_scope(net, year=None) -> dict:
+    def default_scope_mode(net) -> str:
+        """The scoping to TRY FIRST for a network. A guess, not a rule.
+
+        FDSN reserves codes beginning with a digit or X/Y/Z for temporary
+        deployments and reassigns them, so those are expected to need a year as
+        well as a network. That expectation comes from EarthScope's docs, not
+        from a measurement, and `escalate_scope_mode` exists because it may be
+        wrong in either direction - for a whole network, or for one year of one
+        network. Guessing right merely avoids a wasted denial.
+        """
+        return ("network+year" if net[:1] in ES_TEMPORARY_NETWORK_PREFIXES
+                else "network")
+
+    def es_scope(self, net, year=None) -> dict:
         """Query parameters that scope a credential to what this shard reads.
 
         Unscoped credentials for `s3-miniseed-v2` carry `s3:ListBucket` but not
@@ -269,15 +287,43 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         That asymmetry is why this looked for two weeks like a missing
         entitlement - listing works, so the role is obviously assumed, and the
         denial arrives only at the read.
-
-        Temporary networks (FDSN codes beginning with a digit or X/Y/Z) are
-        additionally scoped by year, because the same code is reassigned to
-        unrelated deployments across years.
         """
+        mode = self.es_scope_mode.setdefault(net, self.default_scope_mode(net))
         scope = {"network": f"FDSN:{net}"}
-        if year is not None and net[:1] in ES_TEMPORARY_NETWORK_PREFIXES:
+        if mode == "network+year" and year is not None:
             scope["year"] = int(year)
         return scope
+
+    def escalate_scope_mode(self, net) -> bool:
+        """Switch a network to the other scoping and discard what was cached
+        under the old one. Returns False once both have been tried.
+
+        The token exchange itself cannot tell us which scoping a network wants:
+        it returns 200 and a valid-looking credential either way, and only the
+        GET distinguishes them. So the scoping is *learned from a denial* - and
+        learned once per network per worker, not per object, since the flip is
+        remembered in `es_scope_mode`.
+        """
+        tried = self.es_scope_tried.setdefault(net, set())
+        current = self.es_scope_mode.setdefault(
+            net, self.default_scope_mode(net))
+        tried.add(current)
+        other = "network" if current == "network+year" else "network+year"
+        if other in tried:
+            return False
+        self.es_scope_mode[net] = other
+        # Drop every credential and filesystem held for this network, whichever
+        # year they were scoped to: they were all built under the old mode.
+        stale = [k for k in self.credentials if f'"FDSN:{net}"' in k]
+        for k in stale:
+            self.credentials.pop(k, None)
+            self.es_fs.pop(k, None)
+        logger.warning(
+            f"EarthScope: {net} denied under '{current}' scoping; retrying as "
+            f"'{other}'. If this is consistent for {net}, the default in "
+            f"`default_scope_mode` is wrong for it."
+        )
+        return True
 
     def get_es_filesystem(self, net, year=None):
         """Filesystem for one credential scope, built once and reused.
@@ -355,16 +401,19 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             config_kwargs=S3_CONFIG,
         )
 
-    def update_es_filesystem(self, net, year=None):
-        """Force a new credential for one scope, discarding the cached one.
+    def update_es_filesystem(self, net, year=None, escalate=False):
+        """Force a new credential after a denial, discarding the cached one.
 
-        Called after an AccessDenied that might be an expired token. It cannot
-        fix a credential that was never entitled - see `_read_waveform_from_s3`,
-        which bounds the retries for exactly that reason.
+        `escalate` switches to the other scoping first. A denial has two
+        plausible causes and they need opposite responses: an expired token
+        wants the same request again, a mis-scoped one wants a different
+        request. The caller tries them in that order, cheapest first.
         """
         if self.get_data_center(net) != "earthscope" or \
                 EarthScopeS3ObjectHelper.is_open_data(net):
             return                            # anonymous; nothing to renew
+        if escalate and self.escalate_scope_mode(net):
+            return self.get_es_filesystem(net, year)
         key = json.dumps(self.es_scope(net, year), sort_keys=True)
         self.credentials.pop(key, None)
         self.es_fs.pop(key, None)
@@ -680,10 +729,16 @@ class S3DataSource:
                     )
                     return obspy.Stream()
                 logger.debug(e.args[0])
-                self.s3helper.update_es_filesystem(net, year)
+                # First denial: assume an expired token and re-request the same
+                # scope. Second: assume the scope itself is wrong and flip it.
+                # Cheapest explanation first, and both are tried before the
+                # station-day is abandoned.
+                self.s3helper.update_es_filesystem(
+                    net, year, escalate=denied > 1)
                 logger.warning(
                     f"Credential refreshed after access denied "
-                    f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}"
+                    f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}; scope now "
+                    f"{self.s3helper.es_scope(net, year)}"
                 )
             except ClientError:
                 busy += 1
