@@ -770,7 +770,39 @@ real, and verify pick counts before and after. Compaction deletes its inputs and
 the bucket has versioning **off**, so a bug there loses picks. That is the reason
 this is not already done.
 
-## 6. Two correctness questions worth closing before their campaigns
+## 6. CLOSED — both correctness questions, 2026-09-02
+
+**`obs` and its missing hydrophone: not a problem.** `obs` declares
+`component_order: "Z12H"` and `in_channels: 4` against a `--components` default
+of `ZNE12`. Two facts settle it:
+
+- **There is no hydrophone to fetch.** Across the 3,389 obs-campaign stations
+  the band+instrument codes present are BH, CN, EH, EL, EP, HH, HN, SH, SL —
+  not one pressure channel (`?D`). And the URI builder appends the component
+  letter to the band+instrument code, so asking for `H` on a `BH` station
+  requests `BHH`, not `BDH`; adding `H` to `--components` could not reach a
+  hydrophone even where one existed.
+- **SeisBench handles both gaps.** A missing component is zero-filled —
+  byte-identical to supplying an explicit all-zero `H` — and `N`/`E` map onto
+  the `1`/`2` slots, so the two naming conventions in the campaign (820
+  `HHN`/`HHE` against 331 `HH1`/`HH2`) annotate identically. Pinned by
+  `tests/test_obs_components.py`.
+
+**`seisbench` is pinned to 0.12.5.** Unpinned, two builds of the same commit
+could differ — and not only in the library. SeisBench resolves which *weight
+version* to load from its own version, and the repo carries `original` at both
+`.v1` and `.v2`. Those share **byte-identical `.pt` tensors** but differ in
+`model_args`: `.v2` adds `norm: "std"`. So the resolved version is a property of
+the picks, not just of the install. 0.12.5 resolves `original` → `.v2`,
+`jma_wc` → `.v1`, `obs` → `.v1`, and is the version every 2026-09 measurement
+used. On a synthetic test the two `original` variants gave identical picks, so
+the exposure was latent rather than active.
+
+**`UL` has no metadata** — listed in `ncedc.txt` but `networks/UL.zip` does not
+exist, so it is absent from the queue. Still open; decide whether it belongs
+before calling NCEDC complete.
+
+## 6a. Superseded — the original statement of these questions
 
 **`obs` declares `component_order: Z12H`** — Z, two horizontals, and a
 hydrophone — against a `--components` default of `ZNE12`, which has no `H`. A

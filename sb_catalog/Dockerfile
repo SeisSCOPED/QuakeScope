@@ -40,8 +40,15 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 # obspy, which is the waveform layer. This line resolves to 68 packages;
 # trimming further means changing what the picker imports, not what is listed
 # here.
+# seisbench is PINNED. Unpinned, two builds of the same commit can differ, and
+# not only in the library: SeisBench resolves which *weight version* to load
+# from its own version, and the repo carries `original` at both .v1 and .v2.
+# Those two share byte-identical .pt tensors but differ in model_args - .v2 adds
+# `norm: "std"` - so the resolved version is a property of the picks, not just
+# of the install. 0.12.5 resolves original -> .v2, jma_wc -> .v1, obs -> .v1,
+# and is the version every 2026-09 measurement was made with.
 RUN pip install --no-cache-dir \
-    seisbench s3fs boto3==1.35.81 earthscope-sdk==1.0.0b0 pyarrow
+    seisbench==0.12.5 s3fs boto3==1.35.81 earthscope-sdk==1.0.0b0 pyarrow
 
 # NOT fetched here: truststore.pki.rds.amazonaws.com/global/global-bundle.pem.
 # It is the RDS trust store for DocumentDB, it is referenced nowhere in the
