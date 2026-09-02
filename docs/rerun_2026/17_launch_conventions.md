@@ -165,6 +165,61 @@ which counted one campaign and only the `HN`+`BH` case.
 `shard_id, stations, start, end, n_station_days` — so the correction takes
 effect on the next worker run and the immutable queues stand.
 
+### `EP`, `EL` and `SL` are not pickable at all (2026-09-02)
+
+Deep-learning phase pickers are trained on `BH`, `HH` and `EH`. Picking on a
+band no training set contains is out of distribution rather than merely
+second-best, so a station offering nothing else is **skipped**, not picked
+badly. Cost: 3,631 stations, 344,778 station-days, **0.31%** of the campaign.
+Another 379,633 station-days move onto a band that is in the training set.
+
+`SH` stays — the same instrument as `EH` at a lower rate, and BK uses it.
+
+`DP` stays, with a caveat rather than a change: only the **2014** nodal
+deployment is in miniSEED, the rest of EarthScope's nodal archive is still PH5.
+Most `DP` station-days should therefore *miss at read time* rather than pick,
+and the plan is consistent with that — 2,092,180 of 3,425,226 planned `DP`
+station-days (61%) belong to deployments starting in 2014.
+
+`CN` is SEED band `C` (250–1000 Hz) with instrument code `N`: a high-rate
+accelerometer. It sits last, so it is picked only where there is no `HN` either.
+
+### Everything above 100 Hz is downsampled at read time (2026-09-02)
+
+All three 2026 weights declare `sampling_rate = 100`. Traces recorded faster are
+brought down to 100 Hz **in `_read_waveform_from_s3`**, before the stream
+reaches the queue:
+
+| band | nominal | station-days | |
+|---|--:|--:|---|
+| `DP` | 250 Hz | 3,636,370 | 2.5× fewer samples |
+| `CN` | 250 Hz | 485,692 | 2.5× fewer samples |
+
+**3.7% of the campaign for certain**, plus any `HN` running at 200 Hz — `AK.PS09`
+measures 200, not the 100 the band table assumes, so the real figure is higher.
+
+Three reasons to do it at read time rather than leave it to `annotate`:
+
+- **Memory** — the decoded stream waits in `data_queue`, and that queue is what
+  put `--procs 4` over 16 GB ([OPTIMISE.md](OPTIMISE.md) item 0d).
+- **Amplitude cost** — `annotate` resamples its own copy, but
+  `amplitude_extractor` runs on the stream as read, so without this the
+  Wood-Anderson and velocity stages process 2.5× more samples than the picks
+  were made on.
+- **Comparability** — amplitudes are then measured on uniformly 100 Hz data.
+
+**The picks do not change.** `downsample_to_target` calls SeisBench's own
+resampler rather than reimplementing it, including its `zerophase=True` default
+— the `zerophase_resample` docstring warns that a different filter in
+application than in training causes out-of-distribution issues. Verified on
+synthetic 200, 250 and 500 Hz data through the real model: pick phases, times
+and probabilities identical, both branches of the resampler (integer ratio →
+lowpass + decimate, non-integer → FFT). `tests/test_downsampling.py` pins it.
+
+It only ever downsamples. A 40 Hz `BH` trace is left alone: upsampling at read
+time would inflate the very queue this is meant to relieve, and `annotate` does
+it anyway on a copy that is discarded straight after.
+
 Ties inside the 100 Hz group break on instrument code, by signal quality for
 small events: high-gain seismometer (`H`) > geophone (`P`) > low-gain (`L`) >
 accelerometer (`N`). Accelerometers do not clip on large events but have poor

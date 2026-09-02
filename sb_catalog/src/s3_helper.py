@@ -95,6 +95,45 @@ logger = logging.getLogger("picker")
 # from our own modules is unaffected.
 logging.getLogger("earthscope_sdk").setLevel(logging.INFO)
 
+# Every 2026 weight - jma_wc, original, obs - declares sampling_rate 100.
+TARGET_SAMPLING_RATE = 100.0
+
+
+def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
+    """Bring anything recorded above `target` down to it, in place.
+
+    Done at read time rather than left to SeisBench, for three reasons:
+
+    * **Memory.** The decoded stream sits in `data_queue` until a picker loop
+      takes it, so a 250 Hz DP trace occupies 2.5x what the model will ever use.
+      That queue is what put `--procs 4` over 16 GB (OPTIMISE item 0d).
+    * **Amplitude cost.** `annotate` resamples its own copy, but
+      `amplitude_extractor` runs on the stream as read - so without this the
+      Wood-Anderson and velocity stages process 2-2.5x more samples than the
+      picks were made on.
+    * **Comparability.** Amplitudes across the catalogue are then measured on
+      uniformly 100 Hz data instead of whatever each instrument happened to run
+      at.
+
+    **Uses SeisBench's own resampler**, not a reimplementation, so the picks are
+    unchanged: `annotate` sees traces already at its `sampling_rate` and skips
+    resampling them. Matching its `zerophase=True` default matters - the
+    docstring for `zerophase_resample` warns that a different filter in
+    application than in training causes out-of-distribution issues.
+
+    Only downsamples. A 40 Hz BH trace is left alone: upsampling it here would
+    inflate the queue for no benefit, and `annotate` will do it anyway on its
+    own copy, where the memory is short-lived.
+    """
+    from seisbench.models import WaveformModel
+
+    fast = obspy.Stream([tr for tr in stream
+                         if tr.stats.sampling_rate > target])
+    if not len(fast):
+        return stream
+    WaveformModel.resample(fast, target, zerophase=True)
+    return stream
+
 
 class S3ObjectHelper:
     def get_data_center(self, net):
@@ -561,9 +600,12 @@ class S3DataSource:
                     buff = io.BytesIO(raw)
                     with stage("mseed.parse", unit=size, unit_name="bytes"):
                         if sourcename:
-                            return obspy.read(buff, format="MSEED",
-                                              sourcename=sourcename)
-                        return obspy.read(buff)
+                            st = obspy.read(buff, format="MSEED",
+                                            sourcename=sourcename)
+                        else:
+                            st = obspy.read(buff)
+                    with stage("resample"):
+                        return downsample_to_target(st)
             except OSError as e:
                 if e.errno == 5:
                     logger.warning(f"Not authorized to access this resource: {uri}")
