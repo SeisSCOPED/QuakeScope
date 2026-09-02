@@ -342,12 +342,18 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                 logger.warning(f"EarthScope credential renewed for {scope}.")
             try:
                 self.credentials[key] = self.get_es_credential(net, year)
-            except RuntimeError:
+            except RuntimeError as exc:
                 # A wrong scope can fail at either end: refused here at the
                 # exchange, or accepted here and denied at the GET. Escalate on
                 # both, or the fallback only covers half the ways to be wrong.
                 # Terminates because escalate_scope_mode returns False once
                 # both scopings have been tried.
+                #
+                # Log the refusal BEFORE escalating. Escalation replaces one
+                # error with another, and without this the surviving message is
+                # the second attempt's - which explains why the fallback failed
+                # and says nothing about why the fallback was needed.
+                logger.warning(f"Scope {scope} refused: {exc}")
                 if not self.escalate_scope_mode(net):
                     raise
                 return self.get_es_filesystem(net, year)

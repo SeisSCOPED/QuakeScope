@@ -14,7 +14,7 @@ full GET - so the failure can be attributed to a layer rather than guessed at,
 and compares the restricted access point against an Open Data object taken over
 the identical code path as a control.
 
-    python -m src.picker diag-earthscope [NET ...]
+    python -m src.picker diag-earthscope [NET|NET:YEAR|NET:YEAR:DOY ...]
 """
 
 from __future__ import annotations
@@ -26,6 +26,21 @@ import time
 
 DEFAULT_NETS = ["CC", "UW"]          # one restricted, one open-data control
 DAY = ("2019", "187")
+
+
+def _parse(arg):
+    """`NET`, `NET:YEAR`, or `NET:YEAR:DOY`.
+
+    Temporary network codes are reused, so a network alone does not identify a
+    deployment - and asking for a network-year that never existed is refused at
+    the credential exchange, which looks exactly like a missing entitlement.
+    Testing one therefore means naming a year the network actually operated.
+    """
+    parts = arg.split(":")
+    net = parts[0]
+    year = parts[1] if len(parts) > 1 else DAY[0]
+    doy = parts[2] if len(parts) > 2 else DAY[1]
+    return net, year, doy
 
 
 def _t(fn, *a, **k):
@@ -48,7 +63,7 @@ def main(argv=None) -> None:
                             EARTHSCOPE_ROLE, CompositeS3ObjectHelper,
                             EarthScopeS3ObjectHelper)
 
-    nets = list(argv) if argv else DEFAULT_NETS
+    targets = [_parse(a) for a in (argv or DEFAULT_NETS)]
     print(f"=== EarthScope S3 diagnostic  {datetime.datetime.utcnow()}Z ===")
     # Fargate does not serve the EC2 IMDS address; it exposes
     # ECS_CONTAINER_METADATA_URI_V4. Probing the wrong one printed "laptop?"
@@ -78,12 +93,12 @@ def main(argv=None) -> None:
     cfg = Config(connect_timeout=10, read_timeout=30,
                  retries={"max_attempts": 1, "mode": "standard"})
 
-    for net in nets:
+    for net, yr, doy in targets:
         open_data = EarthScopeS3ObjectHelper.is_open_data(net)
         bucket = (EARTHSCOPE_OPEN_DATA_BUCKET if open_data
                   else EARTHSCOPE_RESTRICTED_ACCESS_POINT)
         tier = "OPEN DATA (anonymous)" if open_data else "RESTRICTED (role)"
-        print(f"\n--- {net}: {tier}\n    bucket/alias: {bucket}")
+        print(f"\n--- {net} {yr}.{doy}: {tier}\n    bucket/alias: {bucket}")
 
         host = f"{bucket}.s3.us-east-2.amazonaws.com"
         dt, ips, err = _t(socket.gethostbyname_ex, host)
@@ -95,8 +110,8 @@ def main(argv=None) -> None:
                   f"{'ok' if not err else err}")
 
         # LIST, via the same helper the worker uses.
-        prefix = helper.get_prefix(net, *DAY)
-        year = int(DAY[0])
+        prefix = helper.get_prefix(net, yr, doy)
+        year = int(yr)
         dt, ls, err = _t(lambda: helper.get_filesystem(net, year).ls(prefix))
         print(f"    LIST  {dt:7.1f} s  "
               f"{f'{len(ls)} objects' if ls is not None else err}")
