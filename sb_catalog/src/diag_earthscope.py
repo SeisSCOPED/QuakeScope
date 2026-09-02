@@ -96,7 +96,8 @@ def main(argv=None) -> None:
 
         # LIST, via the same helper the worker uses.
         prefix = helper.get_prefix(net, *DAY)
-        dt, ls, err = _t(lambda: helper.get_filesystem(net).ls(prefix))
+        year = int(DAY[0])
+        dt, ls, err = _t(lambda: helper.get_filesystem(net, year).ls(prefix))
         print(f"    LIST  {dt:7.1f} s  "
               f"{f'{len(ls)} objects' if ls is not None else err}")
         if not ls:
@@ -109,12 +110,12 @@ def main(argv=None) -> None:
             s3 = boto3.client("s3", region_name="us-east-2", config=cfg.merge(
                 Config(signature_version=botocore.UNSIGNED)))
         else:
-            c = helper.get_es_credential()
+            c = helper.get_es_credential(net, year)
             s3 = boto3.client(
                 "s3", region_name="us-east-2", config=cfg,
                 aws_access_key_id=c.aws_access_key_id,
-                aws_secret_access_key=c.aws_secret_access_key,
-                aws_session_token=c.aws_session_token)
+                aws_secret_access_key=helper._secret(c.aws_secret_access_key),
+                aws_session_token=helper._secret(c.aws_session_token))
 
         dt, r, err = _t(s3.head_object, Bucket=bucket, Key=key)
         size = f"{r['ContentLength'] / 1e6:.1f} MB" if r else err

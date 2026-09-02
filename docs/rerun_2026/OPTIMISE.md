@@ -402,7 +402,43 @@ So there are two distinct memory ceilings, and 0d only moved the second:
 Measure peak RSS on one high-rate shard before choosing — that is what 0d should
 have done, and its absence is why this ceiling was missed.
 
-## 0g. BLOCKER — restricted EarthScope `GetObject` is denied. Not a hang
+## 0g. FIXED — restricted EarthScope credentials were never scoped
+
+**Root cause, 2026-09-02.** The denial below is real and reproduces exactly as
+described. It is **not** an entitlement gap. An unscoped credential for
+`s3-miniseed-v2` carries `s3:ListBucket` and not `s3:GetObject`; the request
+has to name the network:
+
+```python
+client.user.get_aws_credentials(role="s3-miniseed-v2", network="FDSN:AV")
+```
+
+Verified interactively from EC2 in us-east-2 — the same object that returns
+`AccessDenied` unscoped returns bytes when scoped. Temporary networks (FDSN
+codes starting with a digit or X/Y/Z) additionally need `year=`, which is most
+of this campaign: `XD`, `ZI`, `ZG`, `1D`, `1B`.
+
+**Fixed** in `s3_helper.py`: `es_scope(net, year)` builds the parameters,
+`get_es_filesystem` caches one credential *per scope* — never per object, since
+a shard is thousands of GETs behind one token exchange — and `shard_planner`
+now groups stations per network so a shard needs one scope rather than several.
+`tests/test_credential_scope.py` and `tests/test_shard_networks.py` pin both.
+
+Requires **`earthscope-sdk>=1.8.0`**, the first release that forwards query
+parameters. The image's `boto3==1.35.81` pin had to go with it — `aioboto3`
+needs `botocore>=1.36.0`. `seisbench==0.12.5` is unmoved, so the picks are
+unaffected. See [19](19_earthscope_access.md) for the resolution detail.
+
+**What this unblocks:** the 19,510 restricted stations, ~87% of the EarthScope
+campaign. No request to EarthScope is needed, and none should be sent.
+
+**The lesson.** Listing succeeded at every stage, and that is what made this
+take two weeks: a successful LIST reads as proof the role is valid, so every
+hypothesis pointed at entitlement rather than at the shape of our own request.
+**LIST and GET are separate grants.** The evidence below is preserved because
+the diagnosis was sound and only the conclusion was wrong.
+
+---
 
 **Diagnosed 2026-09-02** with `python -m src.picker diag-earthscope`, running in
 the container on Fargate in us-east-2 with the secret injected. It walks the
@@ -439,17 +475,21 @@ other direction: it cites a container logging `Load ZI.CAMP.10 @ earthscope` as
 verification. That line is printed **before** the read. It proves the code
 reached the read, not that bytes came back.
 
-### The code already knew
+### The code did not know — it asserted
 
-`ES_DENIED_ATTEMPTS = 2` exists with a handler whose message is exactly right:
+`ES_DENIED_ATTEMPTS = 2` exists with a handler whose message was confident and
+wrong:
 
 > *refreshing the credential did not help, so this is an entitlement gap, not an
 > expiry. The role `s3-miniseed-v2` can list this access point but is not
 > permitted to read it. Ask EarthScope to grant `s3:GetObject` for network …*
 
-Someone diagnosed this before and wrote the correct error. **It did not fire in
-the dry run** — none of its messages appear in the arm logs — so the worker took
-a different path to failing. That path is not yet identified.
+Read as corroboration — someone had clearly hit this before and written it up —
+it was really the same wrong inference, committed earlier and then quoted back
+as evidence. A confident error message in the codebase is not a second opinion.
+
+The handler now names the credential scope it actually used, and says to check
+that scope *before* suspecting entitlement.
 
 ### Scale
 
@@ -462,13 +502,14 @@ campaign 5 as well as campaign 3.
 | EarthScope restricted | 78,041,471 | 69.1% |
 | plus western's EarthScope-routed share | ~20,301,703 | ~18% |
 
-**This is not a code fix.** It is a request to EarthScope to grant `s3:GetObject`
-on the `s3-miniseed-v2` role for the networks the campaign needs.
-[26_reproduce_earthscope_denial.md](26_reproduce_earthscope_denial.md) is a
-CLI-only reproduction to attach to that request.
+**It was a code fix after all** — one query parameter, per the resolution at the
+top of this item. The 78.0M restricted station-days and western's ~20.3M
+EarthScope-routed share are both unblocked, so the campaign is back to its full
+**112.9M planned station-days** rather than the 34.8M reachable without it.
 
-Until it is granted, the campaign is Open Data + SCEDC + NCEDC: **34.8M of
-112.9M planned station-days**.
+[26_reproduce_earthscope_denial.md](26_reproduce_earthscope_denial.md) is kept
+for its method, not its conclusion: §4a — `aws s3api` silently truncating keys
+at `#` — is a trap worth keeping written down.
 
 ## 0g-history. The symptom before it was diagnosed
 

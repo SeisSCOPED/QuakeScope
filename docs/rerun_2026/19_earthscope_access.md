@@ -76,17 +76,70 @@ fast — but only when the shard actually contains restricted networks, and it n
 names the role and the access point instead of raising `KeyError('earthscope')`
 once per station.
 
-## SDK version
+## SDK version — upgraded to 1.8.0 (2026-09-02)
 
-The tutorial's `get_boto3_session(role=...)` (refreshable, and the recommended
-form) and the `network=`/`year=` scoped credentials need **SDK ≥ 1.4**; the
-pinned environment has **1.3.0**, whose `get_aws_credentials(role=...)` is
-sufficient — it is what produced the output above.
+> **The paragraph that stood here was wrong on both counts, and it is what cost
+> the two weeks.** It said the upgrade was blocked by an `aioboto3` conflict,
+> and that scoping was unnecessary "since unscoped v2 credentials already read
+> every network tested". Neither held. Scoping is **required** — see below —
+> and the conflict was an artifact of how the environment was split, not a real
+> incompatibility.
 
-Upgrading to 1.8.0 is **blocked**: it pulls `aioboto3`, which conflicts with the
-pinned `aiobotocore==3.8.0`. Not worth destabilising the environment before
-launch, since unscoped v2 credentials already read every network tested,
-including temporary ones (`ZI`). Revisit after the campaign.
+`get_aws_credentials` takes query parameters only from **1.8.0**, and those
+parameters are what carry `network=FDSN:<NET>` to the token exchange. Without
+them the role gets an unscoped credential that can `ListBucket` but cannot
+`GetObject`.
+
+**The "conflict" was a split-resolver artifact.** `s3fs` and `boto3` sat in
+pixi's `[dependencies]` (conda) while `earthscope-sdk` sat in
+`[pypi-dependencies]`. The conda solve pinned `aiobotocore==3.8.0` for its
+`s3fs`; the SDK's `aioboto3` pins `aiobotocore==2.25.1` exactly; pixi cannot
+satisfy both because neither resolver sees the whole graph. Moving `s3fs` and
+`boto3` to `[pypi-dependencies]`, so one resolver owns the AWS stack, resolves
+immediately.
+
+The image had a second, unrelated pin: `boto3==1.35.81` caps `botocore<1.36.0`,
+while `aioboto3>=13.4.0` needs `botocore>=1.36.0`. That one is genuinely
+irreconcilable, so the **pin goes, not the SDK**. Resolved for cp312:
+
+```
+earthscope-sdk 1.8.0   boto3 1.40.61   botocore 1.40.61
+aioboto3 15.5.0        aiobotocore 2.25.1   s3fs 2026.7.0     (91 packages)
+```
+
+`seisbench==0.12.5` is unmoved, so the weight-version resolution that defines
+the picks is unchanged.
+
+## Scoping is what the whole blocker was
+
+An **unscoped** credential for `s3-miniseed-v2` carries `s3:ListBucket` and not
+`s3:GetObject`. Every listing succeeds; every read returns `AccessDenied`.
+
+That asymmetry is why this read as an entitlement gap for two weeks. Listing
+works, so the role is plainly assumed and plainly valid — and the denial only
+arrives at the read, where it looks like a permissions boundary rather than a
+malformed request. The section above even cited successful listings on four
+temporary networks as evidence that scoping was unnecessary. **Listing is not
+read access**, and that was the wrong inference from the right observation.
+
+```python
+client.user.get_aws_credentials(
+    role="s3-miniseed-v2",
+    network="FDSN:AV",        # required for every restricted GET
+    year=2019,                # additionally, for temporary networks only
+)
+```
+
+Temporary networks — FDSN codes beginning with a digit or `X`/`Y`/`Z` — are
+also year-scoped, because the code is reassigned to unrelated deployments
+across years. That is most of this campaign: `XD`, `ZI`, `ZG`, `1D`, `1B`.
+
+Confirmed interactively from EC2 in us-east-2 on 2026-09-02: the same object
+that returns `AccessDenied` under an unscoped credential returns bytes under
+`network=FDSN:AV`. One parameter is the entire difference.
+
+**It was our bug.** No ticket to EarthScope was warranted, and the report should
+not carry one.
 
 ## Effect on the western campaign
 
@@ -179,6 +232,9 @@ need.
 > not required for read access with this role" is contradicted by that
 > measurement: **listing is not read access**, and the scoping may well be
 > exactly what is missing.
+>
+> **It was.** Resolved 2026-09-02 — see "Scoping is what the whole blocker was"
+> above. The role was entitled the whole time; the request was malformed.
 
 **Verified in a running container.** A job on `ZI` - a restricted network -
 logged:

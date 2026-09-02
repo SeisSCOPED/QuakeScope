@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import io
+import json
 import logging
 import os
 import re
@@ -57,6 +58,9 @@ EARTHSCOPE_RESTRICTED_ACCESS_POINT = os.environ.get(
 # permissions problem rather than a renamed role.
 EARTHSCOPE_ROLE = os.environ.get("EARTHSCOPE_ROLE", "s3-miniseed-v2")
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
+# FDSN reserves codes beginning with a digit or X/Y/Z for temporary deployments,
+# and reassigns them, so a credential for one is additionally scoped by year.
+ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
 # Denied GETs to tolerate before concluding the role lacks the entitlement.
 ES_DENIED_ATTEMPTS = int(os.environ.get("ES_DENIED_ATTEMPTS", "2"))
@@ -225,12 +229,14 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # for EarthScope, so a public-bucket run neither stalls nor fails on it.
         # Open Data needs nothing, so it is always available.
         self.fs["earthscope_open"] = S3FileSystem(anon=True, config_kwargs=S3_CONFIG)
-        self.credential = None
 
-        # The restricted access point is credentialed lazily: a campaign that
-        # only touches Open Data networks should not fail, or even pause, on a
-        # role it never uses.
-        self.earthscope_restricted_ready = False
+        # Restricted EarthScope credentials are scoped per network (and per year
+        # for temporary networks), so there is no single "the" credential: both
+        # the credential and the filesystem built from it are cached by scope.
+        # A shard is planned within one network, so in practice this holds one
+        # entry - two when the shard straddles a new year.
+        self.credentials = {}                 # scope key -> AwsTemporaryCredentials
+        self.es_fs = {}                       # scope key -> S3FileSystem
         logger.info(
             f"EarthScope: open data anonymous for "
             f"{','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}; "
@@ -246,19 +252,53 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             net, sta, loc, cha, year, day, c
         )
 
-    def get_filesystem(self, net):
+    def get_filesystem(self, net, year=None):
         dc = self.get_data_center(net)
         if dc == "earthscope":
             if EarthScopeS3ObjectHelper.is_open_data(net):
                 return self.fs["earthscope_open"]
-            if not self.earthscope_restricted_ready:
-                self.credential = self.get_es_credential()
-                self.set_es_filesystem()
-            self.update_es_filesystem()
-            return self.fs["earthscope_restricted"]
+            return self.get_es_filesystem(net, year)
         return self.fs[dc]
 
-    def get_es_credential(self):
+    @staticmethod
+    def es_scope(net, year=None) -> dict:
+        """Query parameters that scope a credential to what this shard reads.
+
+        Unscoped credentials for `s3-miniseed-v2` carry `s3:ListBucket` but not
+        `s3:GetObject`: every LIST succeeds and every GET returns AccessDenied.
+        That asymmetry is why this looked for two weeks like a missing
+        entitlement - listing works, so the role is obviously assumed, and the
+        denial arrives only at the read.
+
+        Temporary networks (FDSN codes beginning with a digit or X/Y/Z) are
+        additionally scoped by year, because the same code is reassigned to
+        unrelated deployments across years.
+        """
+        scope = {"network": f"FDSN:{net}"}
+        if year is not None and net[:1] in ES_TEMPORARY_NETWORK_PREFIXES:
+            scope["year"] = int(year)
+        return scope
+
+    def get_es_filesystem(self, net, year=None):
+        """Filesystem for one credential scope, built once and reused.
+
+        Keyed by scope rather than fetched per object: a station-day shard is
+        thousands of GETs behind one credential, and the token exchange is an
+        OAuth round trip. Renewal is driven by expiry, not by call count.
+        """
+        scope = self.es_scope(net, year)
+        key = json.dumps(scope, sort_keys=True)
+        cred = self.credentials.get(key)
+        if cred is None or (
+            cred.expiration - datetime.datetime.now(tz=datetime.timezone.utc)
+        ) < self.ttl_threshold:
+            if cred is not None:
+                logger.warning(f"EarthScope credential renewed for {scope}.")
+            self.credentials[key] = self.get_es_credential(net, year)
+            self.set_es_filesystem(key)
+        return self.es_fs[key]
+
+    def get_es_credential(self, net, year=None):
         """
         Set 5 minutes buffer time to update credential
         """
@@ -267,12 +307,15 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # path helpers - including the dashboard job in CI - depend on the SDK.
         from earthscope_sdk import EarthScopeClient
 
+        scope = self.es_scope(net, year)
         last = None
         for attempt in range(1, ES_CREDENTIAL_ATTEMPTS + 1):
             try:
                 with EarthScopeClient() as client:
                     return client.user.get_aws_credentials(
-                        role=EARTHSCOPE_ROLE, ttl_threshold=self.ttl_threshold
+                        role=EARTHSCOPE_ROLE,
+                        ttl_threshold=self.ttl_threshold,
+                        **scope,
                     )
             except Exception as exc:
                 last = exc
@@ -292,34 +335,40 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             f"SCEDC/NCEDC buckets."
         ) from last
 
-    def set_es_filesystem(self):
+    @staticmethod
+    def _secret(value) -> str:
+        """SDK >= 1.4.1 returns the secret and session token as pydantic
+        `SecretStr`. Passing one to s3fs signs the request with the literal
+        string `**********`, which fails as a signature mismatch rather than as
+        a type error - so unwrap explicitly."""
+        return value.get_secret_value() if hasattr(value, "get_secret_value") else value
+
+    def set_es_filesystem(self, key):
+        credential = self.credentials[key]
         # Access-point requests are only valid in us-east-2; without the pin
         # s3fs may sign for another region and 400.
-        self.fs["earthscope_restricted"] = S3FileSystem(
-            key=self.credential.aws_access_key_id,
-            secret=self.credential.aws_secret_access_key,
-            token=self.credential.aws_session_token,
+        self.es_fs[key] = S3FileSystem(
+            key=credential.aws_access_key_id,
+            secret=self._secret(credential.aws_secret_access_key),
+            token=self._secret(credential.aws_session_token),
             client_kwargs={"region_name": "us-east-2"},
             config_kwargs=S3_CONFIG,
         )
-        self.earthscope_restricted_ready = True
 
-    def update_es_filesystem(self):
-        # No-op when EarthScope was never configured: self.credential is None and
-        # dereferencing it would AttributeError on the first refresh check.
-        if self.credential is None:
-            return                            # anonymous or not yet acquired
-        if (
-            self.credential.expiration - datetime.datetime.now(tz=datetime.timezone.utc)
-        ) < self.ttl_threshold:
-            # credential should be updated
-            self.credential = self.get_es_credential()
-            self.set_es_filesystem()
-            logger.warning(f"EarthScope credential renewed.")
-        else:
-            pass
+    def update_es_filesystem(self, net, year=None):
+        """Force a new credential for one scope, discarding the cached one.
 
-        return
+        Called after an AccessDenied that might be an expired token. It cannot
+        fix a credential that was never entitled - see `_read_waveform_from_s3`,
+        which bounds the retries for exactly that reason.
+        """
+        if self.get_data_center(net) != "earthscope" or \
+                EarthScopeS3ObjectHelper.is_open_data(net):
+            return                            # anonymous; nothing to renew
+        key = json.dumps(self.es_scope(net, year), sort_keys=True)
+        self.credentials.pop(key, None)
+        self.es_fs.pop(key, None)
+        return self.get_es_filesystem(net, year)
 
 
 class S3DataSource:
@@ -381,7 +430,10 @@ class S3DataSource:
         if not restricted:
             return
         try:
-            self.s3helper.get_filesystem(restricted[0])
+            # The shard's own first year: a temporary network's credential is
+            # year-scoped, so probing without one proves nothing about the days
+            # this shard will actually read.
+            self.s3helper.get_filesystem(restricted[0], self.start.year)
         except Exception as exc:
             n_sta = sum(1 for s in self.stations
                         if s.split(".")[0] in set(restricted))
@@ -418,7 +470,7 @@ class S3DataSource:
             for net in self.networks:
                 avail_uri[net] = []
                 # use the corresponding fs for the network
-                fs = self.s3helper.get_filesystem(net)
+                fs = self.s3helper.get_filesystem(net, day.year)
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
@@ -542,7 +594,7 @@ class S3DataSource:
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self._read_waveform_from_s3, uri, net,
-                                  sourcename),
+                                  sourcename, day.year),
                 timeout=STATION_DAY_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -553,7 +605,8 @@ class S3DataSource:
             )
             return obspy.Stream()
 
-    def _read_waveform_from_s3(self, uri, net, sourcename=None) -> obspy.Stream:
+    def _read_waveform_from_s3(self, uri, net, sourcename=None,
+                               year=None) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
 
@@ -584,7 +637,7 @@ class S3DataSource:
         # Bound the attempts and say what is actually wrong.
         denied = busy = 0
         while True:
-            fs = self.s3helper.get_filesystem(net)
+            fs = self.s3helper.get_filesystem(net, year)
             try:
                 # Separately timed: this is a HEAD round trip before every GET,
                 # which is pure latency and doubles the request count.
@@ -615,18 +668,19 @@ class S3DataSource:
                 if denied > ES_DENIED_ATTEMPTS:
                     logger.error(
                         f"Access denied {denied} times for {uri} - refreshing "
-                        f"the credential did not help, so this is an "
-                        f"entitlement gap, not an expiry. The role "
-                        f"{EARTHSCOPE_ROLE} can list this access point but is "
-                        f"not permitted to read it. Ask EarthScope to grant "
-                        f"s3:GetObject for network {net}, or restrict the "
-                        f"campaign to Open Data "
+                        f"the credential did not help, so this is not an "
+                        f"expiry. Credential scope was "
+                        f"{self.s3helper.es_scope(net, year)} on role "
+                        f"{EARTHSCOPE_ROLE}. An unscoped credential lists but "
+                        f"never reads, so first check that scope is reaching "
+                        f"the token exchange; if it is, the account genuinely "
+                        f"lacks {net}. Restrict the campaign to Open Data "
                         f"({','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}) "
-                        f"plus SCEDC/NCEDC. Skipping."
+                        f"plus SCEDC/NCEDC to proceed without it. Skipping."
                     )
                     return obspy.Stream()
                 logger.debug(e.args[0])
-                self.s3helper.update_es_filesystem()
+                self.s3helper.update_es_filesystem(net, year)
                 logger.warning(
                     f"Credential refreshed after access denied "
                     f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}"

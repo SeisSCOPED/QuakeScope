@@ -69,7 +69,7 @@ def _present(s3helper, archive: str, net: str, year: str, doy: str):
     prefix = s3helper.get_prefix(net, year, doy)
     try:
         names = [k.rsplit("/", 1)[-1]
-                 for k in s3helper.get_filesystem(net).ls(prefix)]
+                 for k in s3helper.get_filesystem(net, int(year)).ls(prefix)]
     except FileNotFoundError:
         return set()
     except Exception as exc:

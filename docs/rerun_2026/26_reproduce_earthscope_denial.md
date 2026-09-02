@@ -1,12 +1,40 @@
 # 26 — Reproducing the EarthScope read denial by hand
 
+> ## ✅ RESOLVED 2026-09-02 — and it was our bug
+>
+> The denial reproduced below is real, but the conclusion this document drew
+> from it was wrong. It is **not** an entitlement gap, and **no request should
+> be sent to EarthScope.**
+>
+> An unscoped credential for `s3-miniseed-v2` grants `s3:ListBucket` but not
+> `s3:GetObject`. Adding one query parameter to the token exchange fixes it:
+>
+> ```python
+> client.user.get_aws_credentials(role="s3-miniseed-v2", network="FDSN:AV")
+> ```
+>
+> Verified interactively from EC2 in us-east-2: the identical object that
+> returns `AccessDenied` unscoped returns bytes when scoped. Temporary networks
+> (codes starting with a digit or X/Y/Z) additionally need `year=`.
+>
+> Fixed in `s3_helper.py` via `es_scope()`, requiring `earthscope-sdk>=1.8.0`
+> — the first release that passes query parameters through. See
+> [19](19_earthscope_access.md).
+>
+> **Keep reading only for the method.** Steps 4–6 are still the right way to
+> take an S3 access problem apart, and §4a — that `aws s3api` silently truncates
+> keys at `#`, turning a readable object into a 404 — cost a day on its own and
+> will do so again.
+>
+> **The lesson worth carrying:** listing succeeded throughout, which read as
+> proof the role was fine and pointed every diagnosis at entitlement. LIST and
+> GET are separate grants. A successful listing says nothing about read access.
+
 A step-by-step to demonstrate the failure in item **0g** with nothing but the
 AWS CLI, in-region. No pipeline, no container, no Python.
 
 **What you are demonstrating:** `ListObjectsV2` on the restricted access point
-succeeds and `GetObject` returns `AccessDenied` — instantly, not slowly. The
-role is assumed correctly; it is simply not entitled to read. This is the
-evidence to attach to an entitlement request.
+succeeds and `GetObject` returns `AccessDenied` — instantly, not slowly.
 
 **Why EC2 and not a laptop.** EarthScope permit `ListObjectsV2` from anywhere
 but `GetObject` **only from us-east-2**. From a laptop a read returns 403, which
@@ -162,6 +190,9 @@ for a key that does not exist and 403 for one you may not read. Only the 403
 supports an entitlement claim. A ticket written from the CLI output would have
 been wrong, and EarthScope would rightly have rejected it.
 
+As it turned out, a ticket written from the *correct* 403 would also have been
+wrong — the request was unscoped. See the banner at the top.
+
 Use **boto3**, which encodes the key correctly:
 
 ```bash
@@ -274,7 +305,7 @@ aws ec2 terminate-instances --region us-east-2 --instance-ids i-XXXXXXXXXXXX
 
 | observation | reading |
 |---|---|
-| LIST ok, HEAD 403, GET AccessDenied | **the observed case** — entitlement, not transfer. Attach this to the request |
+| LIST ok, HEAD 403, GET AccessDenied | **the observed case** — an UNSCOPED credential. Add `network=FDSN:<NET>` (and `year=` for temporary networks) before suspecting entitlement |
 | LIST ok, HEAD 404, GET NoSuchKey | the key was mangled — almost certainly `#` via `aws s3api`. Retry with boto3 |
 | LIST ok, HEAD ok, GET AccessDenied | narrower than the observed case: read denied but metadata allowed |
 | everything hangs including Open Data | the instance or its network, not EarthScope |

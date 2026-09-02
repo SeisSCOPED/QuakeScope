@@ -15,8 +15,6 @@ numpy = ">=1.24.0"
 pandas = ">=1.5.0"
 matplotlib = ">=3.7.0"
 cartopy = ">=0.21.0"
-s3fs = ">=2023.1.0"
-boto3 = ">=1.35.0"
 jupyter = ">=1.0.0"
 jupyterlab = ">=3.6.0"
 ipywidgets = ">=8.0.0"
@@ -33,7 +31,19 @@ joblib = ">=1.3"
 seisbench = ">=0.3.5"
 pyocto = "*"
 pymongo = ">=4.0"
-earthscope-sdk = ">=1.0.0b0"
+# >=1.8.0: the first release taking query params on get_aws_credentials, which
+# is how a credential is scoped to a network. An unscoped one lists but cannot
+# read. See sb_catalog/Dockerfile for why boto3 could not stay pinned.
+earthscope-sdk = ">=1.8.0"
+# s3fs and boto3 moved here from [dependencies] (conda) so that ONE resolver
+# owns the whole AWS stack. Split across both, the conda solve pinned
+# aiobotocore==3.8.0 for its s3fs while the SDK's aioboto3 pins
+# aiobotocore==2.25.1 exactly, and pixi could not satisfy both - which is what
+# blocked this upgrade when it was first attempted and recorded in
+# docs/rerun_2026/19 as an aioboto3 conflict. It is a split-resolver artifact,
+# not a real incompatibility: pip resolves all of it together in the image.
+s3fs = ">=2023.1.0"
+boto3 = ">=1.35.0"
 
 [feature.cpu.dependencies]
 pytorch-cpu = ">=2.1"

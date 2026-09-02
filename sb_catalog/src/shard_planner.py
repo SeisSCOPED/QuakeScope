@@ -71,11 +71,16 @@ def plan(
     for 200 days rather than 5,844.
     """
     windows = _operating_windows(stations)
-    ids = sorted(stations["id"].astype(str))
     days = pd.date_range(start, end, freq="D")       # end inclusive
     shards = []
-    for i in range(0, len(ids), station_group_size):
-        group = ids[i: i + station_group_size]
+    # Chunk WITHIN a network, never across one. Restricted EarthScope
+    # credentials are scoped per network, so a shard that straddles a boundary
+    # forces a second token exchange for the sake of a few stations - and on a
+    # temporary network, whose credentials are also year-scoped, it would pay
+    # that on every day of the shard. Sorting alone nearly achieves this, since
+    # ids lead with the network code, but "nearly" still leaves one straddling
+    # shard per boundary, and there are 90+ networks in the western campaign.
+    for group in _network_groups(stations, station_group_size):
         for j in range(0, len(days), day_group_size):
             d0 = days[j].date()
             # END IS EXCLUSIVE, matching S3DataSource.load_waveforms, which does
@@ -98,6 +103,29 @@ def plan(
                 ),
             })
     return shards
+
+
+def _network_groups(stations: pd.DataFrame, size: int) -> list[list[str]]:
+    """Station ids in groups of `size`, never mixing network codes.
+
+    Ids are `NET.STA[.LOC]`, so the network is the leading component. Networks
+    are taken in sorted order, and stations sorted within each, so the grouping
+    is deterministic and `shard_id` stays stable across re-plans.
+
+    The cost is a partial final group per network - a 45-station network at
+    size 40 yields one group of 40 and one of 5 rather than a clean 45. That is
+    a slightly larger shard count, paid once, against a token exchange avoided
+    on every straddling shard.
+    """
+    by_net = {}
+    for sid in sorted(stations["id"].astype(str)):
+        by_net.setdefault(sid.split(".")[0], []).append(sid)
+    groups = []
+    for net in sorted(by_net):
+        ids = by_net[net]
+        for i in range(0, len(ids), size):
+            groups.append(ids[i: i + size])
+    return groups
 
 
 def _operating_windows(stations: pd.DataFrame) -> dict:

@@ -47,8 +47,23 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 # `norm: "std"` - so the resolved version is a property of the picks, not just
 # of the install. 0.12.5 resolves original -> .v2, jma_wc -> .v1, obs -> .v1,
 # and is the version every 2026-09 measurement was made with.
+#
+# earthscope-sdk is PINNED at 1.8.0, and boto3 is deliberately NOT pinned.
+#
+# 1.8.0 is the first release exposing `get_aws_credentials(**params)`, which is
+# what carries `network=FDSN:<NET>` (and `year=` for temporary networks) to the
+# token exchange. Without it the role receives an unscoped credential that can
+# LIST the access point but never GET from it - every listing succeeds, every
+# read returns AccessDenied. That asymmetry cost this campaign two weeks, read
+# as a missing entitlement, and was ours.
+#
+# boto3 was pinned at 1.35.81, and that pin is what blocked the upgrade: the SDK
+# requires aioboto3>=13.4.0, whose floor needs botocore>=1.36.0, while
+# boto3==1.35.81 caps it below 1.36.0. Resolving the two together is impossible,
+# so the pin goes rather than the SDK. Resolved for cp312: boto3 1.40.61,
+# aioboto3 15.5.0, aiobotocore 2.25.1, s3fs 2026.7.0, 91 packages.
 RUN pip install --no-cache-dir \
-    seisbench==0.12.5 s3fs boto3==1.35.81 earthscope-sdk==1.0.0b0 pyarrow
+    seisbench==0.12.5 s3fs boto3 earthscope-sdk==1.8.0 pyarrow
 
 # NOT fetched here: truststore.pki.rds.amazonaws.com/global/global-bundle.pem.
 # It is the RDS trust store for DocumentDB, it is referenced nowhere in the
