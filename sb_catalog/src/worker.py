@@ -170,8 +170,30 @@ def _log_instance_lifecycle() -> None:
         pass
 
 
-class Preempted(Exception):
-    """SIGTERM - Spot reclaim, or an operator stopping the job."""
+class Preempted(BaseException):
+    """SIGTERM - Spot reclaim, or an operator stopping the job.
+
+    **Deliberately a BaseException, not an Exception**, for the same reason
+    `KeyboardInterrupt` and `SystemExit` are: it is control flow, not a failure,
+    and it must reach the handler that releases the claim rather than being
+    treated as something to retry.
+
+    As an Exception it was swallowed. Observed 2026-09-02 on a dry-run arm: the
+    signal landed inside an FDSN metadata request, whose retry loop is a broad
+    `except Exception ... sleep(5)`, so all four loops logged
+
+        FDSN request failed (1/8): Preempted. Sleeping 5 s.
+
+    and carried on working after being told to stop. Docker SIGKILLed the
+    container ~120 s later - exit 137, four claims stranded for the full lease.
+    Exactly the failure the SIGTERM forwarding fix was meant to end, reintroduced
+    by a handler three modules away.
+
+    There are 19 broad `except Exception` handlers in this package and one bare
+    `except:`. Auditing them one by one is a losing game; making this
+    uncatchable-by-accident fixes all of them at once, including any added
+    later, and including the ones inside obspy, boto3 and seisbench.
+    """
 
 
 def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame) -> dict:

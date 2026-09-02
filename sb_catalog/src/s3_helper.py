@@ -647,7 +647,12 @@ class S3DataSource:
                 time.sleep(5)
             except (FileNotFoundError, ValueError, TypeError):
                 return obspy.Stream()
-            except:
+            except Exception:
+                # `except Exception`, never a bare `except:`. A bare clause also
+                # catches BaseException, which is what `worker.Preempted` is -
+                # so a preemption landing on this read would have been turned
+                # into an empty stream and the shard would have carried on
+                # working after being told to stop.
                 return obspy.Stream()
 
     def _generate_waveform_uris(
