@@ -432,6 +432,48 @@ unaffected. See [19](19_earthscope_access.md) for the resolution detail.
 **What this unblocks:** the 19,510 restricted stations, ~87% of the EarthScope
 campaign. No request to EarthScope is needed, and none should be sent.
 
+### Verified in-container on Fargate, us-east-2 (2026-09-02)
+
+`diag-earthscope` on `5c36d97`, the same code path the workers use:
+
+| network | kind | result |
+|---|---|--:|
+| `AV` 2019.187 | permanent | 10.4 MB @ **97.2 MB/s** |
+| `CC` 2019.187 | permanent | 18.0 MB @ **97.6 MB/s** |
+| `ZI` 2011.200 | temporary | 29.0 MB @ **96.4 MB/s** |
+| `XD` 2008.200 | temporary | 17.9 MB @ **97.0 MB/s** |
+| `1D` 2016.200 | temporary | 18.0 MB @ **97.5 MB/s** |
+| `UW` 2019.187 | open data | 27.9 MB @ 94.1 MB/s |
+
+Every one of these returned `AccessDenied` before the fix. Restricted
+EarthScope now reads at the same rate as Open Data, which also settles item 2:
+there was never an EarthScope throughput problem.
+
+### The two refusals mean opposite things
+
+EarthScope answers a bad credential request in two ways, and they need
+**opposite** responses:
+
+| status | body | meaning | response |
+|---|---|---|---|
+| **400** | `Temporary networks require a year` | scope shape is wrong | escalate: flip the scoping |
+| **404** | `network FDSN:ZI year 2019 not found` | scope is **right**, archive has no such network-year | treat as no data; change nothing |
+
+Escalating on the 404 was actively harmful, and briefly shipped: it flipped
+`ZI` to network-only, drew a 400 from the next request, and marked both
+scopings spent — so **every other year of that network would fail for the rest
+of the worker's life**. `ZI` 2019 does not exist; `ZI` 2011 reads at 96 MB/s
+and would have been lost with it. The diagnostic only missed it because 2011
+happened to be probed first. Now pinned by a regression test and re-verified in
+the deliberately hostile order (2019 then 2011).
+
+**404 is a property of the plan, not an error.** Temporary codes are reused,
+and our station metadata claims network-years the archive never held — the
+metadata lists `ZI` stations starting in 2019, and EarthScope has no `ZI` 2019
+at all. That belongs with the metadata-vs-archive gap in
+[25](25_metadata_vs_archive.md), and it means the planned station-day count is
+an overestimate by however many such network-years exist.
+
 **The lesson.** Listing succeeded at every stage, and that is what made this
 take two weeks: a successful LIST reads as proof the role is valid, so every
 hypothesis pointed at entitlement rather than at the shape of our own request.
