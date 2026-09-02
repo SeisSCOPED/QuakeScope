@@ -1,7 +1,12 @@
-# 26 — Reproducing the EarthScope read hang by hand
+# 26 — Reproducing the EarthScope read denial by hand
 
 A step-by-step to demonstrate the failure in item **0g** with nothing but the
-AWS CLI on an EC2 instance. No pipeline, no container, no Python.
+AWS CLI, in-region. No pipeline, no container, no Python.
+
+**What you are demonstrating:** `ListObjectsV2` on the restricted access point
+succeeds and `GetObject` returns `AccessDenied` — instantly, not slowly. The
+role is assumed correctly; it is simply not entitled to read. This is the
+evidence to attach to an entitlement request.
 
 **Why EC2 and not a laptop.** EarthScope permit `ListObjectsV2` from anywhere
 but `GetObject` **only from us-east-2**. From a laptop a read returns 403, which
@@ -16,28 +21,74 @@ instead — step 3.
 
 ---
 
+## 0. Try CloudShell first — it may save the whole exercise
+
+AWS CloudShell gives an in-region shell with the CLI already installed and
+nothing to launch or tear down. Open the console, **set the region to
+us-east-2**, and skip to step 3.
+
+Whether it satisfies EarthScope's region check depends on how that check is
+written — a condition on the AWS region will pass, one scoped to EC2 source-IP
+ranges may not. Thirty seconds to find out, and if it fails the EC2 route below
+still works.
+
 ## 1. Launch a scratch instance in us-east-2
 
 Region matters; nothing else does. `t3.micro` is enough — this is a request-shape
 test, not a throughput test.
 
+**An instance profile is required, not optional.** Without one the SSM agent has
+no credentials to register with and `start-session` fails with
+`TargetNotConnected`, which looks like a networking problem and is not. Create it
+once:
+
+```bash
+aws iam create-role --role-name EC2SSMProbe \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam attach-role-policy --role-name EC2SSMProbe \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+aws iam create-instance-profile --instance-profile-name EC2SSMProbe
+aws iam add-role-to-instance-profile \
+  --instance-profile-name EC2SSMProbe --role-name EC2SSMProbe
+```
+
+`EC2SSMProbe` already exists in this account as of 2026-09-02; check before
+creating it again.
+
+Then launch **with the profile attached**:
+
 ```bash
 aws ec2 run-instances --region us-east-2 \
   --image-id resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
   --instance-type t3.micro \
+  --iam-instance-profile Name=EC2SSMProbe \
   --metadata-options "HttpTokens=required" \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=es-hang-probe}]' \
-  --count 1
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=es-probe}]' \
+  --count 1 --query 'Instances[0].InstanceId' --output text
 ```
 
-Note the `InstanceId`, then connect. Session Manager avoids opening SSH:
+Wait for the agent to register — a minute or two after the instance is running:
 
 ```bash
+aws ssm describe-instance-information --region us-east-2 \
+  --filters "Key=InstanceIds,Values=i-XXXXXXXXXXXX" \
+  --query 'InstanceInformationList[0].PingStatus' --output text     # want: Online
 aws ssm start-session --region us-east-2 --target i-XXXXXXXXXXXX
 ```
 
-If SSM is not set up on the instance profile, launch it into a subnet with a
-public IP and use `--key-name` plus SSH instead. Either is fine.
+**If `TargetNotConnected` persists**, check these in order — the first two are
+the usual causes and neither is obvious from the error:
+
+1. `describe-instances … IamInstanceProfile` returns `null` → the profile did not
+   attach. `associate-iam-instance-profile` fixes it on a *running* instance, but
+   the agent may need `reboot-instances` to re-read credentials.
+2. `describe-instances … State.Name` is `terminated` or `shutting-down` → you are
+   waiting on an instance that no longer exists.
+3. The subnet has no route to the internet and no SSM VPC endpoints.
+
+Placing it in the campaign VPC (`vpc-0543376e`, public subnets behind
+`igw-b6f0e6de`) makes the test a closer match to what the Fargate workers see.
+A default VPC also works and is simpler.
 
 ## 2. Confirm you are actually in us-east-2
 
@@ -100,7 +151,7 @@ time aws s3api head-object --bucket "$AP" --key "$KEY"
 Expect `ContentLength` and `LastModified` back promptly. If this hangs, the
 problem is earlier than GET and that is itself the finding.
 
-## 6. Show that GET hangs
+## 6. Show that GET is denied
 
 This is the failure. Use an explicit short timeout so the shell returns rather
 than sitting there:
@@ -112,10 +163,10 @@ time aws s3api get-object \
   /tmp/out.mseed
 ```
 
-**Expected in the pipeline:** no bytes, no error, until something gives up. The
-worker's own bound is `STATION_DAY_TIMEOUT=900`, i.e. fifteen minutes — longer
-than the mean time to interruption in this Spot pool, so in production Spot kills
-the worker before the timeout fires and the claim strands.
+**Expected:** `An error occurred (AccessDenied) when calling the GetObject
+operation`, returned immediately. Measured from Fargate in us-east-2 with the
+production credential, the same three steps take 1.4 s / 0.0 s / 0.0 s — LIST
+returns 163 objects, HEAD returns 403, GET is denied.
 
 Try a 1 KB ranged read too. If the range succeeds and the full GET does not, the
 problem is transfer rather than authorisation:
@@ -167,9 +218,9 @@ aws ec2 terminate-instances --region us-east-2 --instance-ids i-XXXXXXXXXXXX
 
 | observation | reading |
 |---|---|
-| LIST ok, HEAD ok, ranged GET ok, full GET hangs | transfer-level: throttling, a stalled connection, or object size |
+| LIST ok, HEAD 403, GET AccessDenied | **the observed case** — entitlement, not transfer. Attach this to the request |
 | LIST ok, HEAD ok, ranged GET hangs | request-level: the access point is answering metadata but not data |
-| LIST ok, HEAD 403 | entitlement, not a hang — a different problem from 0g |
+| LIST ok, HEAD ok, GET AccessDenied | narrower than the observed case: read denied but metadata allowed |
 | everything hangs including Open Data | the instance or its network, not EarthScope |
 | all of it works from EC2 | the failure is specific to Fargate's networking, not the region — look at the public-subnet/IGW path and the absence of an S3 gateway endpoint |
 

@@ -464,7 +464,7 @@ campaign 5 as well as campaign 3.
 
 **This is not a code fix.** It is a request to EarthScope to grant `s3:GetObject`
 on the `s3-miniseed-v2` role for the networks the campaign needs.
-[26_reproduce_earthscope_hang.md](26_reproduce_earthscope_hang.md) is a
+[26_reproduce_earthscope_denial.md](26_reproduce_earthscope_denial.md) is a
 CLI-only reproduction to attach to that request.
 
 Until it is granted, the campaign is Open Data + SCEDC + NCEDC: **34.8M of
