@@ -1,0 +1,6 @@
+{
+  "job_id": "ae1357e5-2571-4055-9f8e-3b6219e28434",
+  "jobdef": "quakescope_2026_earthscope:5",
+  "campaign": "earthscope",
+  "out": "s3://quakescope-picks-2026/_hitrate/earthscope.json"
+}

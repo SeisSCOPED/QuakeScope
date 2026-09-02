@@ -44,7 +44,9 @@ Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
 | Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
 | Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
-| Job definition | **`quakescope_v3_worker:6`** | image `fe61788`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
+| Job definition | **`quakescope_v3_worker:7`** | image `b8589aa`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
+| Campaign job definitions | `scedc:4`, `ncedc:4`, `earthscope:5`, `obs:4`, `western:5` | all on `b8589aa`, all with the thread environment set. Re-pinned 2026-09-02 — see below |
+| Worker image | `ghcr.io/seisscoped/quakescope:b8589aa` | **535.6 MB compressed**, 9 layers |
 | Task role | `SeisBenchBatchRole` | S3 write confirmed by policy simulation |
 | EarthScope secret | `quakescope/earthscope-refresh-token` | injected as `ES_OAUTH2__REFRESH_TOKEN`; only the EarthScope and western job definitions carry it. Read back through boto3 and confirmed by policy simulation, 2026-09-01 |
 | Cost alerts | `QuakeScopeAWSWatch`, hourly | [15_monitoring.md](15_monitoring.md) |
@@ -67,6 +69,43 @@ is not evidence about any of those fields.
 `submit-job` below is unaffected — the overrides it uses (`command`,
 `environment`) long predate 2020. It is `register-job-definition` and
 `describe-job-definitions` that are lossy.
+
+**Re-pin every campaign definition, not just the worker.** On 2026-09-02 all
+five were still on `f195222` — **55 commits and three days behind**, so they
+predated the SIGTERM forwarding fix, the preemption exit code and both OOM
+fixes. A campaign launched from any of them would have hit the `--procs > 1`
+claim-stranding bug that destroyed two earlier measurements. **Every one also
+had the thread environment unset**, which with their default `procs=4` is 4
+processes x 8 threads on 8 vCPU — the configuration item 0 measured as *slower
+than a single process*. Both are invisible in the console; only
+`describe-job-definitions` through boto3 shows them.
+
+New revisions are additive, so re-pinning is reversible: the old revision stays
+ACTIVE and a submission can name it.
+
+## The image is pulled 100k+ times, so it stays lean
+
+`b8589aa` is **535.6 MB compressed in 9 layers**, down from 1,343.6 MB in 13 —
+**2.51x, 808 MB less per pull**. Two changes did it, both to the base rather
+than the package list:
+
+| | |
+|---|--:|
+| `python:3.12` → `python:3.12-slim` | −365 MB (410.9 → 46.2, measured) |
+| `pip --no-cache-dir` | the rest |
+
+The slim base is safe because every dependency resolves to a manylinux wheel for
+cp312 — 68 packages, zero sdists — so nothing is built from source and the
+toolchain in the full image was never used.
+
+**What cannot be removed**, though it looks removable: `matplotlib`, `pytz`,
+`lxml`, `sqlalchemy`, `pillow` and `tqdm` all arrive transitively — `obspy`
+requires `matplotlib`, `seisbench` requires `obspy`. Trimming past this point
+means changing what the picker imports, not what the Dockerfile lists.
+
+**There is no second image.** The dashboard runs on a GitHub Actions runner with
+a plain `pip install`, `pages.yml` only uploads static files, and the tutorials
+use the pixi environment — nothing automatic needs a container for plots.
 
 ## The five campaigns
 
@@ -109,7 +148,7 @@ How to add one, and why the `.json` is the architecture rather than metadata:
 # smoke test one shard first - always
 aws batch submit-job --region us-east-2 \
   --job-name scedc-smoke --job-queue niyiyu_earthscope_missing_station \
-  --job-definition quakescope_v3_worker:6 \
+  --job-definition quakescope_v3_worker:7 \
   --container-overrides '{
     "command":["work",
       "--campaign","s3://quakescope-picks-2026/scedc",
@@ -127,12 +166,12 @@ defaults to the core count, so raising `--procs` without lowering threads gives
 8 processes x 8 threads on 8 vCPU and is *slower* than one process. `4 x 2` is
 the measured optimum — [OPTIMISE.md](OPTIMISE.md) item 0.
 
-`:6` pins all five variables to 2 in the job definition, matching its default
-`procs` of 4, so a submission that overrides nothing is already correct. The
-block above is kept explicit because **any submission that changes `--procs`
-must override them too** — and revisions `:1`–`:4` set no thread environment at
-all. All five variables, not just `OMP_NUM_THREADS`, because `amp.wood_anderson`
-is 58% of runtime and threads through numpy/BLAS rather than torch.
+`:7` and all five campaign definitions pin the five variables to 2, matching
+their default `procs` of 4, so a submission that overrides nothing is already
+correct. The block above is kept explicit because **any submission that changes
+`--procs` must override them too** — and every definition before 2026-09-02 set
+no thread environment at all. All five variables, not just `OMP_NUM_THREADS`,
+because `amp.wood_anderson` threads through numpy/BLAS rather than torch.
 
 Then look at the picks, not just the exit code. To scale, submit an array job;
 workers are stateless, so adding more needs no cleanup and cancelling loses at
