@@ -128,20 +128,42 @@ time. SEED band codes carry standard sampling-rate ranges, so the ranking is a
 property of the code; rediscovering it per station-day would cost a metadata
 lookup to re-derive a constant.
 
-Ordered by |standard rate − 100 Hz|, since PhaseNet resamples to 100 Hz:
+Ordered by |standard rate − 100 Hz|, since PhaseNet resamples to 100 Hz —
+**except accelerometers, which sort last whatever their rate**:
 
-| | code | typical rate | \|Δ100\| |
-|--:|---|--:|--:|
-| 1 | `HH` | 100 | 0 |
-| 2 | `EH` | 100 | 0 |
-| 3 | `EP` | 100 | 0 |
-| 4 | `EL` | 100 | 0 |
-| 5 | `HN` | 100 | 0 |
-| 6 | `SH` | 50 | 50 |
-| 7 | `SL` | 50 | 50 |
-| 8 | `BH` | 40 | 60 |
-| 9 | `DP` | 250 | 150 |
-| 10 | `CN` | 250 | 150 |
+| | code | instrument | typical rate | \|Δ100\| |
+|--:|---|---|--:|--:|
+| 1 | `HH` | high-gain seismometer | 100 | 0 |
+| 2 | `EH` | high-gain short-period | 100 | 0 |
+| 3 | `EP` | geophone (nodal) | 100 | 0 |
+| 4 | `EL` | low-gain | 100 | 0 |
+| 5 | `SH` | high-gain short-period | 50 | 50 |
+| 6 | `SL` | low-gain short-period | 50 | 50 |
+| 7 | `BH` | high-gain broadband | 40 | 60 |
+| 8 | `DP` | geophone (nodal) | 250 | 150 |
+| 9 | **`HN`** | **accelerometer** | 100 | 0 |
+| 10 | **`CN`** | **accelerometer** | 250 | 150 |
+
+**Corrected 2026-09-02 by M. Denolle.** `HN` previously sat 5th, above `SH` and
+`BH`, because it is a 100 Hz code and the ordering was on rate proximity alone.
+That is wrong: **an accelerometer should be picked only when the station offers
+no seismometer or geophone at all.** Accelerometers do not clip on large events,
+but their SNR on the small ones that dominate a catalogue is poor — so picking
+one where a broadband exists loses exactly the events the catalogue is built to
+find. Rate proximity is a resampling convenience; instrument class is a property
+of the data.
+
+Scale of the change, measured across all five campaigns: **139
+station-locations, 528,758 station-days (0.47%)** — 460,279 that were taking
+`HN` over an available `BH`, and 68,479 over an `SH`. Nothing else moves.
+
+The earlier note dismissed this as "10 of 24,111 western-states stations",
+which counted one campaign and only the `HN`+`BH` case.
+
+**No queue rewrite is needed.** The band is chosen at read time in
+`s3_helper.load_waveforms`, not stored in `shards.jsonl` — the shard schema is
+`shard_id, stations, start, end, n_station_days` — so the correction takes
+effect on the next worker run and the immutable queues stand.
 
 Ties inside the 100 Hz group break on instrument code, by signal quality for
 small events: high-gain seismometer (`H`) > geophone (`P`) > low-gain (`L`) >

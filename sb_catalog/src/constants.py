@@ -476,28 +476,37 @@ NETWORK_MAPPING = {
 #   D     250-1000 Hz       250          150
 #   C     250-1000 Hz       250          150
 #
-# Ties inside the 100 Hz group are broken by instrument code, on signal quality
-# for small events: high-gain seismometer (H) > geophone (P) > low-gain (L) >
-# accelerometer (N). Accelerometers do not clip on large events but have poor
-# SNR on the small ones that dominate a catalogue.
+# **Except for accelerometers, which sort last regardless of rate.** Corrected
+# 2026-09-02 by M. Denolle: an accelerometer should be picked only when the
+# station has no seismometer at all. They do not clip on large events, but their
+# SNR on the small ones that dominate a catalogue is poor, and a catalogue built
+# from an accelerometer where a broadband was available loses exactly the events
+# it exists to find. Rate proximity is a resampling convenience; instrument
+# class is a property of the data, and it wins.
 #
-# Two orderings here are debatable, both rare, both left as the rule states:
-#   * HN (100 Hz accelerometer) outranks BH (40 Hz broadband). Better for large
-#     events, worse for small. Affects 10 of 24,111 western-states stations -
-#     those with HN and BH and no 100 Hz high-gain channel.
-#   * BH (40 Hz) outranks DP (250 Hz). Downsampling 250 -> 100 is lossless for
-#     the picking band while upsampling 40 -> 100 is not, so DP is arguably the
-#     better pick; |d 100| says otherwise. Stations carrying both are rare.
+# The previous order put HN (100 Hz accelerometer) above SH (50) and BH (40) on
+# |d 100| alone, and dismissed the conflict as affecting "10 of 24,111
+# western-states stations". Measured across all five 2026 campaigns it is 139
+# station-locations and 528,758 station-days - 0.47% - all of them HN chosen
+# over an available BH (460,279 sd) or SH (68,479 sd). Small, and wrong.
+#
+# Remaining tie-breaks, unchanged: within a rate group, high-gain seismometer
+# (H) > geophone (P) > low-gain (L). And BH (40 Hz) still outranks DP (250 Hz),
+# which is debatable - downsampling 250 -> 100 is lossless for the picking band
+# while upsampling 40 -> 100 is not, so DP is arguably better; |d 100| says
+# otherwise and stations carrying both are rare.
 CHANNEL_PRIORITY = [
+    # seismometers and geophones, by rate proximity to 100 Hz
     "HH",   # 100 Hz, high-gain seismometer
     "EH",   # 100 Hz, high-gain short-period
     "EP",   # 100 Hz, geophone (nodal)
     "EL",   # 100 Hz, low-gain
-    "HN",   # 100 Hz, accelerometer
     "SH",   #  50 Hz, high-gain short-period
     "SL",   #  50 Hz, low-gain short-period
     "BH",   #  40 Hz, high-gain broadband
     "DP",   # 250 Hz, geophone (nodal)
+    # accelerometers last: only when nothing above is offered
+    "HN",   # 100 Hz, accelerometer
     "CN",   # 250 Hz, accelerometer
 ]
 

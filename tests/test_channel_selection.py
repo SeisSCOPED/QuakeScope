@@ -21,22 +21,43 @@ def test_channel_selection():
     assert set(CHANNEL_PRIORITY) == {"EH", "HH", "BH", "HN", "EP", "DP",
                                      "EL", "SL", "SH", "CN"}
 
-    # Ordered by |standard rate - 100 Hz|: the 100 Hz group first, then S
-    # (~50), then B (40), then D/C (250).
     def rank(c):
         return CHANNEL_PRIORITY_INDEX[c]
-    for hi in ("HH", "EH", "EP", "EL", "HN"):
-        for lo in ("SH", "SL", "BH", "DP", "CN"):
+
+    # An accelerometer is picked only when the station offers no seismometer or
+    # geophone at all. Their SNR on the small events that dominate a catalogue
+    # is poor, so picking one where a broadband exists loses exactly the events
+    # the catalogue is for. This outranks rate proximity, which is only a
+    # resampling convenience.
+    for accel in ("HN", "CN"):
+        for other in ("HH", "EH", "EP", "EL", "SH", "SL", "BH", "DP"):
+            assert rank(other) < rank(accel), f"{other} should outrank {accel}"
+
+    # Everything else is ordered by |standard rate - 100 Hz|: the 100 Hz group
+    # first, then S (~50), then B (40), then D (250).
+    for hi in ("HH", "EH", "EP", "EL"):
+        for lo in ("SH", "SL", "BH", "DP"):
             assert rank(hi) < rank(lo), f"{hi} should outrank {lo}"
     assert rank("SH") < rank("BH") < rank("DP")
 
-    # Within the 100 Hz group, instrument quality for small events:
-    # high-gain seismometer > geophone > low-gain > accelerometer.
-    assert rank("HH") < rank("EP") < rank("EL") < rank("HN")
+    # Within a rate group, instrument quality for small events:
+    # high-gain seismometer > geophone > low-gain.
+    assert rank("HH") < rank("EP") < rank("EL")
+    assert rank("SH") < rank("SL")
 
     # A broadband station picks its 100 Hz channel, not its 40 Hz one.
     assert select_channel(["HH", "BH", "HN", "LH"]) == "HH"
     assert select_channel(["BH", "LH", "VH"]) == "BH"
+
+    # The correction of 2026-09-02: a station with an accelerometer and a
+    # broadband picks the broadband, even though HN is nearer 100 Hz. 139
+    # station-locations across the five campaigns are affected.
+    assert select_channel(["HN", "BH"]) == "BH"
+    assert select_channel(["HN", "SH"]) == "SH"
+    assert select_channel(["HN", "DP"]) == "DP"
+    # ...but an accelerometer-only station is still picked, not skipped.
+    assert select_channel(["HN"]) == "HN"
+    assert select_channel(["HN", "LH"]) == "HN"
 
     # A nodal deployment offering only a geophone still gets picked.
     assert select_channel(["DP"]) == "DP"
