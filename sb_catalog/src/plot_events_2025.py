@@ -1,5 +1,17 @@
-"""
-Plot results
+"""Scatter the 2025 catalogue's associated events. A 2025 artefact.
+
+**Not part of the 2026 workflow, and not runnable in the worker image.** It
+reads the `events` collection, which only the DocumentDB backend writes and only
+the association step fills - and the 2026 run is picker-only, keeps its state in
+S3, and ships neither `pymongo` nor an associator. Nothing imports this module.
+
+Kept, and renamed rather than deleted, because it is the only record of how the
+2025 catalogue was looked at. To run it you need the analysis-side dependencies
+(`pymongo`, `matplotlib`) and a live DocumentDB endpoint; the tutorials' pixi
+environment has them.
+
+The 2026 equivalent is `scripts/campaign_dashboard.py`, which reads Parquet from
+S3 and draws its own SVG.
 """
 
 import argparse
@@ -7,7 +19,7 @@ import argparse
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from .utils import SeisBenchDatabase
+from .mongo_db import SeisBenchDatabase
 
 
 def main():
