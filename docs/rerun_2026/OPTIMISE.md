@@ -357,7 +357,50 @@ event settles.
 preemption now exits 0 — and therefore is never retried. The fleet-decay
 question is no longer occasional, it is the normal path.
 
-## 0d. BLOCKER — `--procs 4` runs out of memory on EarthScope data
+## 0d. FIXED — `--procs 4` ran out of memory on EarthScope data
+
+**Fixed 2026-09-02**, both halves of the product:
+
+**1. The queue is now sized from a node budget, not per loop.**
+`--data_queue_size` defaulted to a flat 5 *per loop*, so the node's exposure was
+`5 x procs` and nothing counted it. `worker._resolve_queue_size` now divides a
+`NODE_STREAM_BUDGET` (default 8) by `--procs`, capped at the old 5:
+
+| `--procs` | per loop | node total |
+|--:|--:|--:|
+| 1 | 5 | 5 (unchanged) |
+| 2 | 4 | 8 |
+| **4** | **2** | **8** |
+| 8 | 1 | 8 |
+
+An explicit `--data_queue_size` still wins. The worker logs what it chose.
+
+**2. EarthScope reads now filter at the record level.**
+`_read_waveform_from_s3` takes a `sourcename`, and the EarthScope branch passes
+`NET.STA.LOC.CHA?`, so libmseed skips non-matching records **before** decoding
+them rather than decoding all 18-214 traces and calling `.select()` afterwards.
+
+Verified through the real method on `AK.PS09.2020.309`, comparing against what
+the old path kept after its `.select()`:
+
+```
+no sourcename (old behaviour)      traces  18  peak   696.0 MB
+sourcename=AK.PS09..HN?            traces   3  peak   489.2 MB
+identical (id, samples, checksum)  : True
+peak reduction                     : 1.42x
+```
+
+obspy takes **one** pattern — an `"a|b"` form raises rather than matching both —
+so the filter applies in the single-band case, which is what `CHANNEL_PRIORITY`
+always yields; more than one band falls back to a full read.
+
+Together these cut the dominant term ~2.5x at `--procs 4` (queue 5→2) and the
+per-stream size ~1.4x. **Not yet re-run on Batch** — the arm that OOMed should be
+repeated on the new image before campaign 3 is scheduled.
+
+The analysis that led here is kept below.
+
+## 0d-history. Why it ran out of memory
 
 **Found 2026-09-01 by the I/O profile, on the settled configuration.** The `es4`
 arm — `quakescope_v3_worker:6`, `--procs 4`, `OMP_NUM_THREADS=2`, 8 vCPU /

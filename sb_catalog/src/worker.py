@@ -53,6 +53,40 @@ STARTUP_SPREAD_SECONDS = int(os.environ.get("STARTUP_SPREAD_SECONDS", "180"))
 # from "this job is broken" when reading attempt histories.
 PREEMPTED_EXIT_CODE = int(os.environ.get("PREEMPTED_EXIT_CODE", "75"))
 
+# Ceiling on decoded station-day streams held across the whole node, used to
+# size `--data_queue_size` when it is left unset. See _resolve_queue_size.
+NODE_STREAM_BUDGET = int(os.environ.get("NODE_STREAM_BUDGET", "8"))
+
+
+def _resolve_queue_size(requested: int, procs: int) -> int:
+    """How many decoded station-days each loop may hold queued.
+
+    The queue holds **decoded** obspy Streams, not bytes: one EarthScope
+    station-day peaks around 0.4-0.5 GB. The default was a flat 5 per loop, so
+    the node's exposure was 5 x procs and nobody was counting - at `--procs 4`
+    that is ~20 station-days in flight, 10-15 GB, and it is what made the
+    EarthScope I/O profile die with
+
+        OutOfMemoryError: container killed due to memory usage
+
+    on 8 vCPU / 16 GB while the same image at `--procs 1` was untroubled
+    (OPTIMISE item 0d). SCEDC survived it only because it stores one object per
+    channel, so its streams are a fraction of the size.
+
+    Sizing from a NODE budget instead of per loop keeps that product bounded
+    however `--procs` is set. At the default budget of 8:
+
+        procs 1 -> 5   (capped, so single-process behaviour is unchanged)
+        procs 2 -> 4
+        procs 4 -> 2
+        procs 8 -> 1
+
+    An explicit `--data_queue_size` always wins; this only fills in the default.
+    """
+    if requested > 0:
+        return requested
+    return max(1, min(5, NODE_STREAM_BUDGET // max(procs, 1)))
+
 
 class S3StateAdapter:
     """The slice of the SeisBenchDatabase interface the picking path uses,
@@ -174,7 +208,7 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         weight=args.weight,
         p_threshold=args.p_threshold,
         s_threshold=args.s_threshold,
-        data_queue_size=args.data_queue_size,
+        data_queue_size=_resolve_queue_size(args.data_queue_size, args.procs),
         pick_queue_size=args.pick_queue_size,
         extent=None,
         classifier=False,          # the classifier is out for 2026
@@ -245,6 +279,14 @@ def loop(args, proc_index: int = 0) -> None:
             logger.info(f"Staggering start by {wait}s (array index {idx}) so the "
                         f"fleet does not arrive on S3 all at once")
             time.sleep(wait)
+
+    q = _resolve_queue_size(args.data_queue_size, args.procs)
+    logger.info(
+        f"Holding at most {q} decoded station-day(s) per loop "
+        f"({q * args.procs} across {args.procs} loop(s), budget "
+        f"{NODE_STREAM_BUDGET})"
+        + ("" if args.data_queue_size > 0 else " - sized from --procs")
+    )
 
     shards = state.read_shards()
     stations = state.get_stations()
@@ -371,7 +413,9 @@ def main(argv=None):
     ap.add_argument("--components", default="ZNE12")
     ap.add_argument("--p_threshold", default=0.2, type=float)
     ap.add_argument("--s_threshold", default=0.2, type=float)
-    ap.add_argument("--data_queue_size", default=5, type=int)
+    # 0 means "size it from --procs" - see _resolve_queue_size. An explicit
+    # value is always honoured.
+    ap.add_argument("--data_queue_size", default=0, type=int)
     ap.add_argument("--pick_queue_size", default=5, type=int)
     ap.add_argument("--procs", default=1, type=int,
                     help="Worker loops per node. Match to vCPUs, allowing for the "

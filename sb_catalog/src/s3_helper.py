@@ -456,15 +456,25 @@ class S3DataSource:
                     # earthscope object name has version number
                     uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
                     if len(uri) > 0:
+                        # Ask libmseed for the bands we will keep, so the rest
+                        # is never decoded. One EarthScope object holds every
+                        # channel for the station-day - a UW sample had 214
+                        # traces across 38 codes - and decoding all of them is
+                        # what made --procs 4 exceed 16 GB (OPTIMISE item 0d).
+                        wanted = [c for c in all_channels if not check[c]]
+                        if not wanted:
+                            continue
+                        # obspy takes ONE pattern - a "a|b" form raises rather
+                        # than matching both - so filter only in the single-band
+                        # case, which is what CHANNEL_PRIORITY always yields.
+                        # More than one band falls back to a full read, which is
+                        # correct, just not lean.
+                        sel = (f"{net}.{sta}.{loc}.{wanted[0]}?"
+                               if len(wanted) == 1 else None)
                         s = await self._read_with_timeout(
-                            uri[0], net, station, day
+                            uri[0], net, station, day, sourcename=sel
                         )
-                        for channel in all_channels:
-                            if check[channel]:
-                                logger.debug(
-                                    f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
-                                )
-                                continue
+                        for channel in wanted:
                             stream += s.select(channel=f"{channel}?", location=loc)
 
                 else:
@@ -478,7 +488,8 @@ class S3DataSource:
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
 
-    async def _read_with_timeout(self, uri, net, station, day) -> obspy.Stream:
+    async def _read_with_timeout(self, uri, net, station, day,
+                                 sourcename=None) -> obspy.Stream:
         """One object read, bounded by STATION_DAY_TIMEOUT.
 
         `wait_for` cannot kill the worker thread - it only stops waiting on it -
@@ -491,7 +502,8 @@ class S3DataSource:
         """
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self._read_waveform_from_s3, uri, net),
+                asyncio.to_thread(self._read_waveform_from_s3, uri, net,
+                                  sourcename),
                 timeout=STATION_DAY_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -502,9 +514,21 @@ class S3DataSource:
             )
             return obspy.Stream()
 
-    def _read_waveform_from_s3(self, uri, net) -> obspy.Stream:
+    def _read_waveform_from_s3(self, uri, net, sourcename=None) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
+
+        `sourcename` is a libmseed record selector, e.g. "AK.PS09..HH?". Records
+        that do not match are skipped **before** being decoded, which matters on
+        EarthScope: it stores one multi-channel object per station-day, and the
+        picker uses one band of it. Measured on AK.PS09 2020.309 (140 MB, 18
+        traces): peak allocation falls from 540 MB to 348 MB and the parse is
+        slightly faster, for a byte-identical selection.
+
+        The saving is smaller than the trace count suggests, because the traces
+        we keep are most of the samples - the 15 discarded on that station are
+        1 Hz state-of-health channels. It is larger on a station carrying
+        HH+BH+HN, where the discards are whole broadband sets.
 
         OSError#5: accessing non-authorized earthscope data. Return empty stream.
         PermissionError: EarthScope temporary credential expired. Refresh the credential and retry.
@@ -536,6 +560,9 @@ class S3DataSource:
                         raw = fs.read_bytes(uri)
                     buff = io.BytesIO(raw)
                     with stage("mseed.parse", unit=size, unit_name="bytes"):
+                        if sourcename:
+                            return obspy.read(buff, format="MSEED",
+                                              sourcename=sourcename)
                         return obspy.read(buff)
             except OSError as e:
                 if e.errno == 5:
