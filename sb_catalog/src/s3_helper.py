@@ -591,12 +591,18 @@ class S3DataSource:
             avail_uri = {}
             for net in self.networks:
                 avail_uri[net] = []
-                # use the corresponding fs for the network
-                fs = self.s3helper.get_filesystem(net, day.year)
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
                 try:
+                    # INSIDE the try: acquiring the filesystem can itself raise
+                    # FileNotFoundError, because a restricted EarthScope
+                    # credential is refused with 404 when the archive holds no
+                    # such network-year. Left outside, that escaped the handler
+                    # and failed the whole shard - 16 of 48 in the 2026-09-02
+                    # dry run, every one of them 5A/2018, which simply does not
+                    # exist. A network-year with no data is a day with no data.
+                    fs = self.s3helper.get_filesystem(net, day.year)
                     # One LIST per day per network. A SCEDC day prefix holds
                     # ~4,000 objects, so this is not free and is paid again for
                     # every day in the shard.

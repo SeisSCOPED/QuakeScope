@@ -299,3 +299,42 @@ def test_denial_budget_covers_both_scopings():
     # scoping was ever tried.
     from sb_catalog.src.s3_helper import ES_DENIED_ATTEMPTS
     assert ES_DENIED_ATTEMPTS >= 2
+
+
+def test_a_missing_network_year_does_not_fail_the_shard():
+    """The whole point of making the 404 a FileNotFoundError.
+
+    In the 2026-09-02 dry run the preflight caught it and continued, then the
+    listing loop re-raised it from OUTSIDE its own try block and killed the
+    shard anyway - 16 of 48, all 5A/2018, a network-year that does not exist.
+    Assert the acquisition sits inside the handler.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).parent.parent / "sb_catalog/src/s3_helper.py"
+    tree = ast.parse(src.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "load_waveforms")
+
+    guarded = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Try):
+            continue
+        catches_fnf = any(
+            h.type is not None
+            and "FileNotFoundError" in ast.dump(h.type)
+            for h in node.handlers
+        )
+        calls_get_fs = any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "get_filesystem"
+            for stmt in node.body for c in ast.walk(stmt)
+        )
+        if catches_fnf and calls_get_fs:
+            guarded = True
+    assert guarded, (
+        "get_filesystem must be called INSIDE the try that handles "
+        "FileNotFoundError - a 404 network-year otherwise fails the shard"
+    )
