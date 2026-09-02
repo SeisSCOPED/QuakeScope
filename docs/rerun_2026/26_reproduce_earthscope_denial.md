@@ -107,17 +107,18 @@ Must print `us-east-2`.
 
 ```bash
 sudo dnf install -y python3-pip
-pip3 install --user "earthscope-sdk==1.0.0b0"
+# `es` lives in earthscope-CLI. The SDK ships no console script at all.
+pip3 install --user earthscope-cli
 export PATH="$HOME/.local/bin:$PATH"
 
 es login          # opens a device-code flow; follow the URL it prints
-es user get-aws-credentials --role s3-miniseed-v2
+es user get-aws-credentials s3-miniseed-v2
 ```
 
 That prints temporary keys. Export them:
 
 ```bash
-eval "$(es user get-aws-credentials --role s3-miniseed-v2 --format env)"
+eval "$(es user get-aws-credentials s3-miniseed-v2 --format env)"
 # or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN by hand
 export AWS_DEFAULT_REGION=us-east-2
 ```
@@ -132,7 +133,7 @@ AP=earthscope-mseed-v2-4fdodyzpsz8u8uyi3pa9qsw9oid1suse2a-s3alias
 
 time aws s3api list-objects-v2 \
   --bucket "$AP" \
-  --prefix miniseed/AV/2018/135/ \
+  --prefix miniseed/AV/2019/187/ \
   --max-items 10 \
   --query 'Contents[].{Key:Key,Size:Size}' --output table
 ```
@@ -140,10 +141,65 @@ time aws s3api list-objects-v2 \
 Expect a table of objects in under a second. **Record the `Key` and `Size` of
 one of them** — the size matters for step 6.
 
+## 4a. The AWS CLI cannot address these keys
+
+**Every restricted object carries a `#N` version suffix** — there are no keys
+without one:
+
+```
+miniseed/AV/2019/187/ACH.AV.2019.187#1
+miniseed/AV/2019/187/ADAG.AV.2019.187#3
+miniseed/AV/2019/187/ADKI.AV.2019.187#2
+```
+
+`aws s3api` truncates the key at `#`, asks for `ACH.AV.2019.187`, and gets
+**404 / NoSuchKey**. That is the CLI mangling the request, not EarthScope's
+answer — and it points to the opposite conclusion: "the data is missing" rather
+than "the data is unreadable".
+
+**404 and 403 mean different things here.** With `s3:ListBucket`, S3 returns 404
+for a key that does not exist and 403 for one you may not read. Only the 403
+supports an entitlement claim. A ticket written from the CLI output would have
+been wrong, and EarthScope would rightly have rejected it.
+
+Use **boto3**, which encodes the key correctly:
+
+```bash
+python3 - <<'PY'
+import boto3, botocore
+AP  = "earthscope-mseed-v2-4fdodyzpsz8u8uyi3pa9qsw9oid1suse2a-s3alias"
+KEY = "miniseed/AV/2019/187/ACH.AV.2019.187#1"
+s3  = boto3.client("s3", region_name="us-east-2")
+print("caller:", boto3.client("sts").get_caller_identity()["Arn"])
+for label, fn in (
+    ("HEAD",     lambda: s3.head_object(Bucket=AP, Key=KEY)),
+    ("GET 1KB",  lambda: s3.get_object(Bucket=AP, Key=KEY, Range="bytes=0-1023")),
+    ("GET full", lambda: s3.get_object(Bucket=AP, Key=KEY)),
+):
+    try:
+        r = fn(); print(label, "OK", r.get("ContentLength"), "bytes")
+    except botocore.exceptions.ClientError as e:
+        print(label, e.response["Error"]["Code"])
+PY
+```
+
+**Confirmed 2026-09-02**, EC2 in us-east-2, fresh interactive login:
+
+```
+caller:   arn:aws:sts::457219964709:assumed-role/earthscope-idm-mseed-v2/euid=...
+HEAD      403: Forbidden
+GET 1KB   AccessDenied
+GET full  AccessDenied
+```
+
+The container reported the same denial using the campaign's own refresh token.
+**Two independent credentials, same result** — this is not a token problem, and
+LIST succeeds in both.
+
 ## 5. Show that HEAD works
 
 ```bash
-KEY=miniseed/AV/2018/135/ACH.AV.2018.135      # substitute a real key from step 4
+KEY=miniseed/AV/2019/187/ACH.AV.2018.135      # substitute a real key from step 4
 
 time aws s3api head-object --bucket "$AP" --key "$KEY"
 ```
@@ -219,7 +275,7 @@ aws ec2 terminate-instances --region us-east-2 --instance-ids i-XXXXXXXXXXXX
 | observation | reading |
 |---|---|
 | LIST ok, HEAD 403, GET AccessDenied | **the observed case** — entitlement, not transfer. Attach this to the request |
-| LIST ok, HEAD ok, ranged GET hangs | request-level: the access point is answering metadata but not data |
+| LIST ok, HEAD 404, GET NoSuchKey | the key was mangled — almost certainly `#` via `aws s3api`. Retry with boto3 |
 | LIST ok, HEAD ok, GET AccessDenied | narrower than the observed case: read denied but metadata allowed |
 | everything hangs including Open Data | the instance or its network, not EarthScope |
 | all of it works from EC2 | the failure is specific to Fargate's networking, not the region — look at the public-subnet/IGW path and the absence of an S3 gateway endpoint |
