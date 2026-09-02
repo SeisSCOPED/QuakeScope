@@ -61,6 +61,22 @@ ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 # FDSN reserves codes beginning with a digit or X/Y/Z for temporary deployments,
 # and reassigns them, so a credential for one is additionally scoped by year.
 ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
+
+
+class EarthScopeNetworkYearNotFound(FileNotFoundError):
+    """EarthScope has no such network-year: HTTP 404 from the token exchange.
+
+    Distinct from a wrong scope and from a missing entitlement. Temporary codes
+    are reused, so the campaign plan legitimately contains network-years the
+    archive never held - our station metadata says ZI has 2019 stations, and
+    EarthScope answers `network FDSN:ZI year 2019 not found`.
+
+    A FileNotFoundError because that is exactly what it is, and because the
+    listing loop already treats one as "nothing recorded that day" and moves
+    on. Anything stronger would abandon a shard over data that does not exist.
+    """
+
+
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
 # Denied GETs to tolerate before concluding the role lacks the entitlement.
 ES_DENIED_ATTEMPTS = int(os.environ.get("ES_DENIED_ATTEMPTS", "2"))
@@ -394,6 +410,18 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                     # scope just burns the budget - 25 s per network here -
                     # and buries the one line that says why.
                     code = resp.status_code
+                    # 404 means this network-year is not in the archive at
+                    # all. Not a scope error and not an entitlement error, so
+                    # it must NOT trigger escalation: flipping the scope would
+                    # ask a malformed question, get a 400, and then mark the
+                    # network as having exhausted both scopings - poisoning
+                    # every OTHER year of that network for the rest of the
+                    # worker's life. ZI 2019 does not exist; ZI 2011 reads at
+                    # 92 MB/s, and must keep doing so.
+                    if code == 404:
+                        raise EarthScopeNetworkYearNotFound(
+                            f"EarthScope has no {scope}: {detail}"
+                        ) from exc
                     if 400 <= code < 500 and code != 429:
                         raise RuntimeError(
                             f"EarthScope refused credentials for scope "
@@ -520,6 +548,14 @@ class S3DataSource:
             # year-scoped, so probing without one proves nothing about the days
             # this shard will actually read.
             self.s3helper.get_filesystem(restricted[0], self.start.year)
+        except EarthScopeNetworkYearNotFound as exc:
+            # The probe network has no data for this year. That is a fact about
+            # the archive, not about our credentials - the shard's other
+            # networks may well be readable - so it must not fail the shard.
+            logger.info(
+                f"EarthScope preflight: {exc}. Credentials are working; this "
+                f"network-year simply is not in the archive. Continuing."
+            )
         except Exception as exc:
             n_sta = sum(1 for s in self.stations
                         if s.split(".")[0] in set(restricted))

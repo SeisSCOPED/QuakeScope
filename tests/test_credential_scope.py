@@ -262,6 +262,36 @@ def test_a_refused_exchange_still_raises_when_both_fail():
         raise AssertionError("should raise once both scopings are refused")
 
 
+def test_a_missing_network_year_does_not_poison_the_network():
+    # ZI 2019 does not exist in the archive (404). ZI 2011 reads at 92 MB/s.
+    # Escalating on the 404 would flip ZI to network-only, get a 400 from the
+    # next request, mark both scopings spent - and take 2011 down with it.
+    from sb_catalog.src.s3_helper import EarthScopeNetworkYearNotFound
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    def fake(net, year=None):
+        calls.append(year)
+        if year == 2019:
+            raise EarthScopeNetworkYearNotFound("no such network-year")
+        return _Cred()
+
+    h.get_es_credential = fake
+
+    try:
+        h.get_es_filesystem("ZI", 2019)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("a missing network-year should surface as one")
+
+    # The scoping is untouched, so the years that DO exist still work.
+    assert h.es_scope("ZI", 2011) == {"network": "FDSN:ZI", "year": 2011}
+    assert h.get_es_filesystem("ZI", 2011) is not None
+    assert h.es_scope_tried.get("ZI", set()) == set()
+
+
 def test_denial_budget_covers_both_scopings():
     # ES_DENIED_ATTEMPTS bounds the retries in `_read_waveform_from_s3`: the
     # first denial re-requests the same scope (an expiry), the second flips it.
