@@ -1,3 +1,10 @@
+# Annotations are strings, never evaluated at runtime. That is what lets this
+# module refer to `SeisBenchDatabase` and `ObjectId` in signatures without
+# importing pymongo - the DocumentDB backend is not part of a v3 picking
+# campaign, and a picking job should not depend on a database driver it never
+# opens. See `mongo_db`.
+from __future__ import annotations
+
 import argparse
 import asyncio
 import datetime
@@ -9,18 +16,16 @@ from typing import Any, Optional
 
 import numpy as np
 import obspy
-import pyocto
 import seisbench
 import seisbench.models as sbm
 import seisbench.util as sbu
-from bson import ObjectId
 
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
 from .parquet_writer import ParquetPickWriter
 from .profiling import stage
 from .s3_helper import S3DataSource
-from .utils import SeisBenchDatabase, parse_year_day
+from .utils import parse_year_day
 
 logger = logging.getLogger("picker")
 
@@ -158,7 +163,14 @@ def main() -> None:
     logger.info(f"Delaying this job for {delay} sec.")
     time.sleep(delay)
 
-    # Set up data base for results and data source
+    # Set up data base for results and data source.
+    #
+    # Imported here, not at module scope: this is the 2025 DocumentDB entry
+    # point. A v3 campaign runs `worker.py`, which supplies its own
+    # S3-backed adapter and never reaches this line, so importing pymongo
+    # eagerly would make every picking job carry a driver it never opens.
+    from .mongo_db import SeisBenchDatabase
+
     db = SeisBenchDatabase(args.db_uri, args.database)
     s3 = S3DataSource(
         stations=args.stations,
@@ -318,7 +330,14 @@ class S3MongoSBBridge:
     def run_association(self, t0: datetime.datetime, t1: datetime.datetime):
         """
         Runs the phase association for the provided time range and the extent defined in self.extent.
+
+        Not part of a 2026 campaign: association needs `db.get_picks` and
+        `db.write_events`, which only the DocumentDB backend implements - the
+        v3 `S3StateAdapter` does not. `pyocto` is therefore imported here rather
+        than at module scope, so a picking-only image does not need it at all.
         """
+        import pyocto
+
         t0 = self._date_to_datetime(t0)
         t1 = self._date_to_datetime(t1)
         stations = self.db.get_stations(self.extent)

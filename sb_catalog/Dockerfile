@@ -5,13 +5,28 @@ FROM python:3.12
 WORKDIR /code
 
 # install dependencies
-# pytorch-cpu
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# pytorch-cpu. torchvision and torchaudio are not imported anywhere in the
+# pipeline - seisbench needs only torch - and they are not small.
+RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# SeisBench
+# SeisBench.
 # pyarrow is required by parquet_writer, which is the v3 output path - without
 # it a picking job ImportErrors before it reads a byte.
-RUN pip install seisbench pyocto ipython s3fs pymongo boto3==1.35.81 tqdm joblib earthscope-sdk==1.0.0b0 pyarrow
+#
+# Deliberately NOT installed. Verified by importing worker and picker in a venv
+# built without them: none appears in sys.modules, and the tests pass.
+#   pyocto       only `picker.run_association`, which needs DocumentDB
+#   pymongo      only the DocumentDB backend, now isolated in `mongo_db`
+#   ipython      interactive only
+#   joblib       unused since the nested Parallel was removed
+#   torchvision  seisbench needs torch alone, and these are not small
+#   torchaudio
+# tqdm is also dropped from this line but still arrives: it is a declared
+# seisbench dependency, so pip installs it either way.
+#
+# The two DocumentDB imports are local to their call sites, so the picker runs
+# without either driver. Re-adding one should mean a new import, not a habit.
+RUN pip install seisbench s3fs boto3==1.35.81 earthscope-sdk==1.0.0b0 pyarrow
 
 # get AWS DocumentDB public key
 RUN wget https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem

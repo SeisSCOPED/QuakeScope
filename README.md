@@ -216,7 +216,7 @@ It does five things, and each one is load-bearing:
 | step | why it cannot be dropped |
 |---|---|
 | `pip install torch --index-url .../cpu` | the CPU wheel; the default pulls CUDA and multiplies image size for no benefit on Fargate |
-| `pip install seisbench pyocto s3fs boto3 pyarrow …` | `pyarrow` is the v3 Parquet output path — without it a job `ImportError`s before reading a byte |
+| `pip install seisbench s3fs boto3 pyarrow …` | `pyarrow` is the v3 Parquet output path — without it a job `ImportError`s before reading a byte. `pyocto` is deliberately absent: it is only used by `run_association`, which needs DocumentDB and is not part of a picking campaign |
 | `wget global-bundle.pem` | RDS trust store for DocumentDB — 2025-path only, unused by v3 |
 | `COPY src/` | the pipeline |
 | `COPY models/v3/` | the four weights above |
