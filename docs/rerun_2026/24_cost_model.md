@@ -149,8 +149,11 @@ is not the flat 100 Hz it is listed as.
 Two caveats. The rate mix comes from small samples — 18 to 20 objects per band
 on one day — so the `HN` 28%-at-200 figure in particular has wide error bars,
 and `HN` is 46% of the campaign, so it is where the estimate is most sensitive.
-And the resample stage's own cost is **assumed** at ~2% of wall, not measured; a
-`resample` profiling stage was added, so the next campaign run will report it.
+The resample stage's own cost is **no longer assumed**: measured at **12.7% of
+wall** on an all-`DP`/`CN` NCEDC shard, against the 2% allowed for here — six
+times higher. That cuts the downsampling saving from 5.1% to **3.1%** and moves
+the campaign to **~$9,940**. The tables above still show the 2% figures; treat
+$9,940 as the current number.
 
 Memory is the other benefit and is not in this table: the decoded stream waits
 in `data_queue`, so a 500 Hz `DP` trace was occupying 5× what the model would

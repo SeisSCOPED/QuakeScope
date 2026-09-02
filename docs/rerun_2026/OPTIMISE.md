@@ -357,6 +357,51 @@ event settles.
 preemption now exits 0 — and therefore is never retried. The fleet-decay
 question is no longer occasional, it is the normal path.
 
+## 0h. BLOCKER — high-rate bands still OOM at `--procs 4`
+
+**Found 2026-09-02, on `c4bcd21` with the item 0d fix in place.** An NCEDC arm
+completed one shard and was then killed:
+
+```
+attempts: [(1, 'OutOfMemoryError: container killed due to memory usage')]
+Completed 2018141-2018142-202ee85e425d in 538.1s (28 station-day-channels)
+```
+
+**The queue budget was not the whole problem.** Item 0d bounded what waits in
+`data_queue`, and that part works. But the peak is upstream of the queue, in the
+read path itself:
+
+```
+raw = fs.read_bytes(uri)      137 MB for one station-day-channel
+obspy.read(buff)              decoded at the FULL native rate
+downsample_to_target(st)      only now reduced to 100 Hz
+```
+
+These stations are `DP`/`CN` at 250–500 Hz. A 500 Hz day is 43.2M samples per
+trace; three components decode to roughly a gigabyte before anything is
+downsampled, and obspy's decimate allocates a filtered copy on top. Four loops
+doing that at once exceeds 16 GB regardless of how small the queue is.
+
+So there are two distinct memory ceilings, and 0d only moved the second:
+
+| | where | fixed? |
+|---|---|---|
+| decoded streams waiting in `data_queue` | after the read | yes — node budget |
+| **full-rate decode + resample working copy** | **inside the read** | **no** |
+
+**Options, and this needs a decision rather than a default:**
+
+1. **Drop `DP` and `CN` from `CHANNEL_PRIORITY`.** Together they are 4.1M
+   station-days, **3.6% of the campaign**, and `DP` is largely unreadable anyway
+   — only the 2014 nodal deployment is in miniSEED, the rest is still PH5. This
+   removes the high-rate case entirely rather than engineering around it.
+2. **Raise memory to 32 GB** for campaigns carrying high-rate bands. Costs
+   memory-GB-hours, not vCPU-hours.
+3. **`--procs 2` on those campaigns.** Gives up part of the parallel speed-up.
+
+Measure peak RSS on one high-rate shard before choosing — that is what 0d should
+have done, and its absence is why this ceiling was missed.
+
 ## 0g. BLOCKER — restricted EarthScope reads hang. 69% of the campaign
 
 **Found 2026-09-02 by the second dry run, on `c4bcd21` — every fix included.**
@@ -1052,6 +1097,7 @@ push in the same direction.
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
 | ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
+| **0h** | **high-rate bands OOM at `--procs 4`** | **NCEDC and any DP/CN campaign; 0d fixed the queue, not the read** | 2 h |
 | **0g** | **restricted EarthScope reads hang** | **69% of planned station-days; campaigns 3 and 5 cannot be scheduled** | unknown |
 | **0f** | **Spot reclaims exhaust the 10-attempt cap** | **the fleet still decays; needs worker resubmission** | 1 day |
 | ~~0e~~ | ~~a retry loop swallowed the preemption~~ | **fixed — `Preempted` is now a `BaseException`** | — |
