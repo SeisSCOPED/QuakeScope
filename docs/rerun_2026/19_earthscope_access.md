@@ -166,6 +166,20 @@ $ simulate_principal_policy(SeisBenchBatchRole,
 The role's trust policy is `ecs-tasks.amazonaws.com`, which is what both roles
 need.
 
+> ⚠️ **The "verified in a running container" evidence below does not show what
+> it claims** (2026-09-02). `Load ZI.CAMP.10 @ earthscope` is printed **before**
+> the read. It proves the code reached the read, not that bytes came back.
+> Measured with `diag-earthscope` from Fargate in us-east-2: `LIST` returns 163
+> objects in 1.4 s, then `HEAD` returns **403** and `GetObject` returns
+> **AccessDenied** in 0.0 s. The role is assumed successfully and is not
+> entitled to read. See [OPTIMISE.md](OPTIMISE.md) item 0g.
+>
+> The same section's claim that "all four temporary networks listed without
+> network- or year-scoped credentials, so the scoping the tutorial describes is
+> not required for read access with this role" is contradicted by that
+> measurement: **listing is not read access**, and the scoping may well be
+> exactly what is missing.
+
 **Verified in a running container.** A job on `ZI` - a restricted network -
 logged:
 

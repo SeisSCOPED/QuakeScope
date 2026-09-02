@@ -402,7 +402,75 @@ So there are two distinct memory ceilings, and 0d only moved the second:
 Measure peak RSS on one high-rate shard before choosing — that is what 0d should
 have done, and its absence is why this ceiling was missed.
 
-## 0g. BLOCKER — restricted EarthScope reads hang. 69% of the campaign
+## 0g. BLOCKER — restricted EarthScope `GetObject` is denied. Not a hang
+
+**Diagnosed 2026-09-02** with `python -m src.picker diag-earthscope`, running in
+the container on Fargate in us-east-2 with the secret injected. It walks the
+request apart, and the answer is unambiguous:
+
+```
+--- AV: RESTRICTED (role)
+DNS   2 ms      TCP 443  1 ms  ok
+LIST      1.4 s   163 objects
+HEAD      0.0 s   403 Forbidden
+GET 1 KB  0.0 s   AccessDenied: arn:aws:sts::457219964709:assumed-role/earthscope-...
+GET full  0.0 s   AccessDenied
+--- UW: OPEN DATA (anonymous)
+GET full  0.3 s   27.9 MB at 97.0 MB/s
+```
+
+Same for `CC`. **Nothing hangs** — the denial is instant. DNS and TCP are fine.
+The role *is* assumed (the ARN is in EarthScope's account, 457219964709). That
+role can **list** the access point and is **not permitted to read it**.
+
+> **An earlier framing of this item said "reads hang". That was wrong** — it came
+> from reading a worker log filtered for the wrong keywords, where four minutes
+> of silence looked like a stall. Corrected here.
+
+### This is item 0b, and withdrawing it was too broad
+
+Item 0b established that the *plumbing* is correct: the secret is wired, the
+execution role is right, and `simulate_principal_policy` allows reading it. All
+of that is true, and none of it tests whether the assumed role can read S3.
+**Listing succeeded, which looked like proof and was not.**
+
+[19_earthscope_access.md](19_earthscope_access.md) makes the same mistake in the
+other direction: it cites a container logging `Load ZI.CAMP.10 @ earthscope` as
+verification. That line is printed **before** the read. It proves the code
+reached the read, not that bytes came back.
+
+### The code already knew
+
+`ES_DENIED_ATTEMPTS = 2` exists with a handler whose message is exactly right:
+
+> *refreshing the credential did not help, so this is an entitlement gap, not an
+> expiry. The role `s3-miniseed-v2` can list this access point but is not
+> permitted to read it. Ask EarthScope to grant `s3:GetObject` for network …*
+
+Someone diagnosed this before and wrote the correct error. **It did not fire in
+the dry run** — none of its messages appear in the arm logs — so the worker took
+a different path to failing. That path is not yet identified.
+
+### Scale
+
+Three of the four dry-run arms failed on this one cause: `esr1` and `esr4` on
+`AV`, and **`west4` on `2F`** — western is ~70% EarthScope-routed, so this gates
+campaign 5 as well as campaign 3.
+
+| | planned station-days | share |
+|---|--:|--:|
+| EarthScope restricted | 78,041,471 | 69.1% |
+| plus western's EarthScope-routed share | ~20,301,703 | ~18% |
+
+**This is not a code fix.** It is a request to EarthScope to grant `s3:GetObject`
+on the `s3-miniseed-v2` role for the networks the campaign needs.
+[26_reproduce_earthscope_hang.md](26_reproduce_earthscope_hang.md) is a
+CLI-only reproduction to attach to that request.
+
+Until it is granted, the campaign is Open Data + SCEDC + NCEDC: **34.8M of
+112.9M planned station-days**.
+
+## 0g-history. The symptom before it was diagnosed
 
 **Found 2026-09-02 by the second dry run, on `c4bcd21` — every fix included.**
 Both restricted-EarthScope arms died at exit 137 having picked nothing. The log
@@ -1097,8 +1165,8 @@ push in the same direction.
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
 | ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
-| **0h** | **high-rate bands OOM at `--procs 4`** | **NCEDC and any DP/CN campaign; 0d fixed the queue, not the read** | 2 h |
-| **0g** | **restricted EarthScope reads hang** | **69% of planned station-days; campaigns 3 and 5 cannot be scheduled** | unknown |
+| ~~0h~~ | ~~high-rate bands OOM at `--procs 4`~~ | **`quakescope_2026_highrate:1` registered at 32 GB** | — |
+| **0g** | **restricted EarthScope `GetObject` is denied** | **~87% of planned station-days once western is counted. Needs an entitlement from EarthScope, not a code change** | external |
 | **0f** | **Spot reclaims exhaust the 10-attempt cap** | **the fleet still decays; needs worker resubmission** | 1 day |
 | ~~0e~~ | ~~a retry loop swallowed the preemption~~ | **fixed — `Preempted` is now a `BaseException`** | — |
 | ~~0d~~ | ~~`--procs 4` OOMs on EarthScope at 16 GB~~ | **fixed; 102 min at `--procs 4`, no OOM. Not a clean A/B** | — |
