@@ -15,7 +15,7 @@ Briefing deck for the non-operational audience:
 | Bucket | `s3://quakescope-picks-2026`, us-east-2 | created; public access blocked; versioning off |
 | Campaign prefix | `s3://quakescope-picks-2026/western` | — |
 | Job definition | `quakescope_v3_worker:2` | image pinned to `9abd01c`; no `--classifier` |
-| Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
+| Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 12000 | ENABLED |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
 | Task role | `SeisBenchBatchRole` | S3 write to the new bucket confirmed by policy simulation |
 | Station list | `sb_catalog/configs/networks/western_states.csv` | 24,111 stations, 122 networks, true state polygons |

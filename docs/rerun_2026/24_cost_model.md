@@ -206,6 +206,24 @@ unit of work, and 31% uses a model that costs 0.35× the inference. **Do not rea
 the agreement as confirmation** — it is two errors cancelling, and they will not
 cancel if either input moves.
 
+## A cost line that is not compute
+
+Since February 2024 AWS charges **$0.005/hour per public IPv4 address**, and
+Fargate task ENIs with `assignPublicIp: ENABLED` — which these are — each hold
+one. The compute environment has no NAT and no VPC endpoints, so public IPs are
+how tasks reach ECR, S3 and EarthScope's FDSN service at all.
+
+| | |
+|---|--:|
+| worker-hours (657,892 vCPU-hr ÷ 8 vCPU) | 82,236 |
+| public IPv4 at $0.005/hr | **$411** |
+| against ~$9,940 of compute | **+4.1%** |
+
+Not worth re-architecting away — going private needs a NAT gateway, and NAT data
+processing at $0.045/GB across ~1.1 PB of reads would cost far more — but it
+belongs in the total. **Unverified against an actual bill**: Cost Explorer is
+blocked on this account by an organisation SCP.
+
 ## What would tighten this
 
 1. **The EarthScope restricted hit rate.** 69% of planned station-days, and on

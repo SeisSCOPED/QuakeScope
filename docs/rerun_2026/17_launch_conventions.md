@@ -98,7 +98,7 @@ execution role. It trusts `ecs-tasks.amazonaws.com` and carries
 | | |
 |---|---|
 | Region | us-east-2 |
-| Compute environment | `niyiyu_earthscope` (FARGATE_SPOT, maxvCpus 4000) |
+| Compute environment | `niyiyu_earthscope` (FARGATE_SPOT, maxvCpus 12000) |
 | Job queue | `niyiyu_earthscope_missing_station` |
 | Fargate Spot quota | 12,000 vCPU (`L-36FBB829`) |
 | Job definition | `quakescope_v3_worker` |
@@ -109,8 +109,14 @@ starts tomorrow would run different code from one that started today.
 
 A job is a **worker, not a shard**: it claims from the queue until the queue is
 empty, so you choose how many workers to run rather than submitting one job per
-unit of work. `maxvCpus` on the compute environment (4000) binds before the
-account quota (12,000), and is the number to raise first.
+unit of work. `maxvCpus` and the account quota are **both 12,000**, so neither
+binds first — at 8 vCPU per worker that is 1,500 concurrent workers, which is
+exactly the campaign target with no headroom above it.
+
+Note the **on-demand** quota is a different and much smaller number:
+`L-3032A538` is **140 vCPU**, i.e. 17 workers. That matters only if an
+on-demand fallback compute environment is ever added
+([OPTIMISE.md](OPTIMISE.md) item 0f-plan).
 
 ## Channels: one code per station-location
 
@@ -131,18 +137,19 @@ lookup to re-derive a constant.
 Ordered by |standard rate − 100 Hz|, since PhaseNet resamples to 100 Hz —
 **except accelerometers, which sort last whatever their rate**:
 
-| | code | instrument | typical rate | \|Δ100\| |
+| | code | instrument | nominal | observed |
 |--:|---|---|--:|--:|
-| 1 | `HH` | high-gain seismometer | 100 | 0 |
-| 2 | `EH` | high-gain short-period | 100 | 0 |
-| 3 | `EP` | geophone (nodal) | 100 | 0 |
-| 4 | `EL` | low-gain | 100 | 0 |
-| 5 | `SH` | high-gain short-period | 50 | 50 |
-| 6 | `SL` | low-gain short-period | 50 | 50 |
-| 7 | `BH` | high-gain broadband | 40 | 60 |
-| 8 | `DP` | geophone (nodal) | 250 | 150 |
-| 9 | **`HN`** | **accelerometer** | 100 | 0 |
-| 10 | **`CN`** | **accelerometer** | 250 | 150 |
+| 1 | `HH` | high-gain seismometer | 100 | 106 |
+| 2 | `EH` | high-gain short-period | 100 | 122 |
+| 3 | `SH` | high-gain short-period | 50 | 50 |
+| 4 | `BH` | high-gain broadband | 40 | 40 |
+| 5 | `DP` | geophone (nodal) | 250 | **425** |
+| 6 | **`HN`** | **accelerometer** | 100 | **128** |
+| 7 | **`CN`** | **accelerometer** | 250 | **500** |
+
+`EP`, `EL` and `SL` were removed from the list entirely — see below. The
+observed column is measured from MiniSEED record headers; the nominal figures
+the ordering was built on understate three of the seven.
 
 **Corrected 2026-09-02 by M. Denolle.** `HN` previously sat 5th, above `SH` and
 `BH`, because it is a 100 Hz code and the ordering was on rate proximity alone.

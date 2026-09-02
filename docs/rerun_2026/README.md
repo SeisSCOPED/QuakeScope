@@ -43,7 +43,7 @@ Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
 |---|---|---|
 | Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
-| Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
+| Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 12000 | ENABLED |
 | Job definition | **`quakescope_v3_worker:8`** | image `f0ba9a1`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
 | Campaign job definitions | `scedc:5`, `ncedc:5`, `earthscope:6`, `obs:5`, `western:6` | all on `f0ba9a1`, all with the thread environment set. Re-pinned 2026-09-02 — see below |
 | Worker image | `ghcr.io/seisscoped/quakescope:f0ba9a1` | **535.6 MB compressed**, 9 layers |

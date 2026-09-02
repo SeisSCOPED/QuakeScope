@@ -552,6 +552,74 @@ release and 2 not; that was attributed to a long `model.classify` overrunning th
 grace window. A swallowed signal is the better explanation, and it fits the
 exit-137 attempts in the original `es4` arm too.
 
+## 0f-plan. What to do about the reclaim rate
+
+Reviewed 2026-09-02 by the `aws-cloud-architect` agent against the live account.
+Its findings, with one correction below.
+
+**The pool is the shape, not the AZ.** Of 18 recently stopped tasks, **12 (67%)
+had `stopCode: SpotInterruption`**, split 5/3/4 across us-east-2a/b/c. That rules
+out a single-AZ pool or a CE misconfiguration and points at scarcity for the
+8 vCPU / 16 GB x86 shape itself. AWS publishes **no interruption-rate advisor for
+Fargate Spot** — the EC2 Spot Instance Advisor and `get-spot-placement-score` are
+EC2-only — so this has to be measured, not looked up.
+
+**Watch ECS, not Batch.** There are currently **zero EventBridge rules** in this
+account and region. The rule to add is on
+`source: aws.ecs, detail-type: "ECS Task State Change"`, not Batch's Job State
+Change: the ECS event fires within seconds of a reclaim, whereas Batch's `FAILED`
+only fires after all ten attempts are spent — about 100 minutes late at the
+measured rate. Feed it to a small Lambda that tops the fleet back up to target
+with fresh `submit-job` calls, each getting a fresh attempt budget, plus a
+5-minute scheduled sweep as a backstop. Effectively $0 at this event volume.
+
+**Rejected, with reasons:** array jobs (each child hits the same 10-attempt cap,
+and the S3 claim protocol already provides the coordination); Step Functions
+(per-transition billing for multi-day churn at this population); SQS (duplicates
+a queue-depth signal S3 already exposes); over-submitting (gives the sawtooth
+being seen now, not steady state).
+
+**On-demand fallback needs a quota increase first.** Fargate Spot and on-demand
+cannot be blended in one Fargate CE — that is an EC2-CE concept — so it would be
+two CEs on one queue with `order`. But this account's **Fargate on-demand quota
+is 140 vCPU** (`L-3032A538`): 17 concurrent 8-vCPU workers, **1.1% of a
+1,500-worker target**. Building the fallback before raising it would be
+decoration. And cap it deliberately when built: a sustained Spot crunch could
+otherwise reprice the fleet at roughly 3× with no alarm.
+
+**No early warning exists.** EC2-style Capacity Rebalance has no Fargate Spot
+equivalent. The ~2 minute `SIGTERM` at actual reclamation is the only signal, and
+the worker already uses it. Do not design around a notice that does not exist.
+
+**The public subnets are right.** Placement already spreads across all three AZs.
+Going private would need a NAT gateway — interface endpoints cannot carry the
+external EarthScope FDSN traffic — and NAT data processing at $0.045/GB across
+~1.1 PB would dwarf what public IPs cost.
+
+### Two corrections to the review
+
+- **`evaluateOnExit` is present**, contrary to the finding. The agent read the
+  job definition through the local `aws` CLI v2.0.34, which strips it — the trap
+  in [README.md](README.md). boto3 shows
+  `{attempts: 10, evaluateOnExit: [retry on Spot interruption, exit otherwise]}`.
+  A good demonstration that the guardrail applies to reviewers too.
+- **`maxvCpus` is 12,000, not 4,000** as recorded elsewhere in these docs. The
+  agent is right and the older note was stale.
+
+### A cost line nobody had counted
+
+Since February 2024 AWS charges **$0.005/hour per public IPv4 address**,
+including Fargate task ENIs with `assignPublicIp: ENABLED` — which these are.
+
+| | |
+|---|--:|
+| campaign worker-hours (657,892 vCPU-hr ÷ 8) | 82,236 |
+| public IPv4 at $0.005/hr | **$411** |
+| against ~$9,940 of compute | **+4.1%** |
+
+Not worth re-architecting away, since NAT would cost more, but it belongs in the
+estimate. Unverified against a bill — Cost Explorer is blocked by the org SCP.
+
 ## 0f. OPEN — the Spot pool is volatile enough to exhaust the retry cap
 
 **Measured 2026-09-02.** A validation job was reclaimed **ten times in a row**,
