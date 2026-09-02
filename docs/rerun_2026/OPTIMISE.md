@@ -357,6 +357,50 @@ event settles.
 preemption now exits 0 — and therefore is never retried. The fleet-decay
 question is no longer occasional, it is the normal path.
 
+## 0g. BLOCKER — restricted EarthScope reads hang. 69% of the campaign
+
+**Found 2026-09-02 by the second dry run, on `c4bcd21` — every fix included.**
+Both restricted-EarthScope arms died at exit 137 having picked nothing. The log
+shows the credential exchange working perfectly and the *first read* hanging:
+
+```
+16:30:38 worker1 | POST https://login.earthscope.org/oauth/token          200 OK
+16:30:38 worker1 | GET  .../beta/user/credentials/aws/s3-miniseed-v2      200 OK
+16:30:39 worker1 | Done preparing inventory for the assigned stations
+16:30:39 worker1 | Load AV.ACH.  2018.142 @ earthscope
+         (silence - four minutes, all four loops)
+         Signal 15 - forwarding to 4 worker loops so they release their claims
+         (SIGKILL)
+```
+
+**This is doc 19's symptom exactly** — "sat on `Load ZI.CAMP.10` for 25 minutes
+without a further log line". Item 2 dismissed that as an artefact of the stale
+image. It is not: it reproduces on an image containing every fix made since.
+That dismissal is withdrawn.
+
+What is established:
+
+- **Credentials are fine.** Both HTTP calls return 200, the s3-miniseed-v2 role
+  is assumed, and `Done preparing inventory` follows. This is not item 0b.
+- **Listing is fine.** The hit-rate survey listed 310,347 restricted
+  station-days with **zero errors** and took three minutes. `ls` works.
+- **It is the GET that hangs.** The first `read_bytes` on the restricted access
+  point produces no further log line.
+- **Open Data is unaffected** — AK reads at 90.3 MB/s through the same code.
+
+`STATION_DAY_TIMEOUT` is 900 s, so a hung read holds the loop for **15 minutes**
+before the timeout fires — longer than the mean time to interruption in this
+pool, so in practice Spot kills the worker first and the claim strands.
+
+**Not yet diagnosed.** Candidates, cheapest first: the access-point alias needs
+a different addressing style or region pin for GET than for LIST; the temporary
+credentials carry list-but-not-get; a request is being retried silently inside
+`s3fs`/botocore. `scripts/check_earthscope_getobject.sh` exists from an earlier
+round and is the place to start.
+
+**Nothing about campaigns 3 or 5 can be costed or scheduled until this is
+closed.** It is 69% of planned station-days and ~66% of the estimate.
+
 ## 0e. FIXED — a retry loop was swallowing the preemption
 
 **Found 2026-09-02 by the dry run, not by reading.** An arm exited 137 with four
@@ -724,9 +768,11 @@ tested and [19_earthscope_access.md](19_earthscope_access.md) records the
 standing suspicion that it is badly wrong — an earlier test sat on
 `Load ZI.CAMP.10` for 25 minutes.
 
-That 25-minute stall is now known to have been the stale image, not EarthScope.
-It is no longer evidence of anything, which means the question is **fully open
-again**, not resolved.
+> **That dismissal was wrong, and is withdrawn (2026-09-02).** It said the
+> 25-minute stall "is now known to have been the stale image, not EarthScope",
+> reasoning from the unbounded retry loops that image contained. The symptom
+> reproduces on `c4bcd21`, which carries every fix made since. See item **0g**:
+> restricted EarthScope reads hang, and it is the top launch blocker.
 
 **Do this before launching campaign 3.** Run `--profile` on five EarthScope
 shards on `quakescope_v3_worker:4` and compare `s3.get` seconds and MB against
@@ -1006,6 +1052,7 @@ push in the same direction.
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
 | ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
+| **0g** | **restricted EarthScope reads hang** | **69% of planned station-days; campaigns 3 and 5 cannot be scheduled** | unknown |
 | **0f** | **Spot reclaims exhaust the 10-attempt cap** | **the fleet still decays; needs worker resubmission** | 1 day |
 | ~~0e~~ | ~~a retry loop swallowed the preemption~~ | **fixed — `Preempted` is now a `BaseException`** | — |
 | ~~0d~~ | ~~`--procs 4` OOMs on EarthScope at 16 GB~~ | **fixed; 102 min at `--procs 4`, no OOM. Not a clean A/B** | — |
