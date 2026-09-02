@@ -17,9 +17,15 @@ from sb_catalog.src.constants import (CHANNEL_PRIORITY, CHANNEL_PRIORITY_INDEX,
 
 
 def test_channel_selection():
-    # The set the 2025 study processed, and nothing else.
-    assert set(CHANNEL_PRIORITY) == {"EH", "HH", "BH", "HN", "EP", "DP",
-                                     "EL", "SL", "SH", "CN"}
+    # The bands a deep-learning picker is trained on (BH, HH, EH, and SH as the
+    # same instrument at a lower rate), the nodal geophone, and accelerometers
+    # as a last resort. EP, EL and SL were dropped 2026-09-02: no training set
+    # contains them, so picking on one is out of distribution rather than
+    # merely second-best.
+    assert set(CHANNEL_PRIORITY) == {"HH", "EH", "SH", "BH", "DP", "HN", "CN"}
+    for gone in ("EP", "EL", "SL"):
+        assert gone not in CHANNEL_PRIORITY
+        assert select_channel([gone]) is None, f"{gone} must not be pickable"
 
     def rank(c):
         return CHANNEL_PRIORITY_INDEX[c]
@@ -30,20 +36,15 @@ def test_channel_selection():
     # the catalogue is for. This outranks rate proximity, which is only a
     # resampling convenience.
     for accel in ("HN", "CN"):
-        for other in ("HH", "EH", "EP", "EL", "SH", "SL", "BH", "DP"):
+        for other in ("HH", "EH", "SH", "BH", "DP"):
             assert rank(other) < rank(accel), f"{other} should outrank {accel}"
 
     # Everything else is ordered by |standard rate - 100 Hz|: the 100 Hz group
     # first, then S (~50), then B (40), then D (250).
-    for hi in ("HH", "EH", "EP", "EL"):
-        for lo in ("SH", "SL", "BH", "DP"):
+    for hi in ("HH", "EH"):
+        for lo in ("SH", "BH", "DP"):
             assert rank(hi) < rank(lo), f"{hi} should outrank {lo}"
     assert rank("SH") < rank("BH") < rank("DP")
-
-    # Within a rate group, instrument quality for small events:
-    # high-gain seismometer > geophone > low-gain.
-    assert rank("HH") < rank("EP") < rank("EL")
-    assert rank("SH") < rank("SL")
 
     # A broadband station picks its 100 Hz channel, not its 40 Hz one.
     assert select_channel(["HH", "BH", "HN", "LH"]) == "HH"
@@ -59,9 +60,11 @@ def test_channel_selection():
     assert select_channel(["HN"]) == "HN"
     assert select_channel(["HN", "LH"]) == "HN"
 
-    # A nodal deployment offering only a geophone still gets picked.
+    # A nodal deployment offering only a geophone still gets picked. Note that
+    # outside the 2014 campaign most DP station-days are not in miniSEED yet,
+    # so these are expected to miss at read time rather than pick.
     assert select_channel(["DP"]) == "DP"
-    assert select_channel(["EP", "DP"]) == "EP"
+    assert select_channel(["EP", "DP"]) == "DP"   # EP is no longer pickable
 
     # Unlisted bands are ignored, not ranked. LH is 1 Hz: no usable arrival.
     assert select_channel(["LH", "VH", "UH"]) is None

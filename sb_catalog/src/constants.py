@@ -495,19 +495,30 @@ NETWORK_MAPPING = {
 # which is debatable - downsampling 250 -> 100 is lossless for the picking band
 # while upsampling 40 -> 100 is not, so DP is arguably better; |d 100| says
 # otherwise and stations carrying both are rare.
+# **Low-gain and short-period-geophone bands were dropped 2026-09-02** by
+# M. Denolle: deep-learning phase pickers are trained on BH, HH and EH, so
+# picking on a band no training set contains is not a marginal choice, it is
+# out of distribution. `EP`, `EL` and `SL` are gone; a station offering nothing
+# else is skipped rather than picked badly. Cost: 3,631 stations and 344,778
+# station-days, 0.31% of the campaign. A further 379,633 station-days move to a
+# band that is in the training set.
 CHANNEL_PRIORITY = [
-    # seismometers and geophones, by rate proximity to 100 Hz
+    # what the pickers are actually trained on, by rate proximity to 100 Hz
     "HH",   # 100 Hz, high-gain seismometer
     "EH",   # 100 Hz, high-gain short-period
-    "EP",   # 100 Hz, geophone (nodal)
-    "EL",   # 100 Hz, low-gain
     "SH",   #  50 Hz, high-gain short-period
-    "SL",   #  50 Hz, low-gain short-period
     "BH",   #  40 Hz, high-gain broadband
+    # nodal geophone. Kept, but note that only the 2014 deployment is in
+    # miniSEED - the rest of EarthScope's nodal archive is still PH5 - so most
+    # DP station-days are expected to miss rather than pick. 61% of planned DP
+    # station-days start in 2014, which is consistent with that.
     "DP",   # 250 Hz, geophone (nodal)
-    # accelerometers last: only when nothing above is offered
+    # accelerometers last: only when nothing above is offered. Whether a picker
+    # trained on BH/HH/EH should be used on HN at all is an open question, and
+    # it is 46% of the campaign - see 17_launch_conventions.md.
     "HN",   # 100 Hz, accelerometer
-    "CN",   # 250 Hz, accelerometer
+    "CN",   # 250-1000 Hz, accelerometer (SEED band C, corner >= 10 s).
+            # 169 stations, 0.4%; shares HN's open question.
 ]
 
 CHANNEL_PRIORITY_INDEX = {c: i for i, c in enumerate(CHANNEL_PRIORITY)}
