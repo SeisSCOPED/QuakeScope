@@ -67,7 +67,38 @@ filling stalls — I/O waits, single-threaded stretches — not from unused core
 1.5x is the size of that gap. Do not expect more from this axis; the remaining
 multiples are in items 2 and 3.
 
-## 0a. Preempted workers are not replaced
+## 0a. FIXED — preempted workers now exit non-zero, so Batch retries them
+
+**Fixed 2026-09-02.** `worker.py` exits **75** (`PREEMPTED_EXIT_CODE`) on the
+graceful preemption path instead of 0, in both process modes:
+
+- `loop()`'s `except Preempted:` handler, which covers `--procs 1`;
+- `main()`, which now reports preemption **before** inspecting child exit codes,
+  so the node's fate no longer depends on whether every child happened to
+  release inside the grace period.
+
+**No job-definition change is needed, and that is the point.** The existing
+rules were already correct; the exit code was the only missing piece:
+
+```
+1. {onStatusReason: "Your Spot Task was interrupted.", action: retry}
+2. {onReason: "*", action: exit}
+```
+
+Rule 1 fires only for a genuine Spot reclaim, so an operator `TerminateJob`
+carries a different `statusReason`, falls to rule 2, and is **not** retried —
+the emergency stop in [15_monitoring.md](15_monitoring.md) still works. Verified
+against the `es4` arm, which exited 1 with `statusReason` "Your Spot Task was
+interrupted." and *was* retried, while its OOM attempt reported "Essential
+container in task exited" and was not.
+
+75 rather than 1 so that "preempted" stays separable from "this job is broken"
+when reading attempt histories.
+
+The analysis that led here is kept below, because the mechanism is easy to
+forget and the failure was invisible in every direction.
+
+## 0a-history. Preempted workers were not replaced
 
 Found while reading the sweep. On SIGTERM the worker releases its claim and
 calls `sys.exit(0)` — deliberate and correct for the *shard*, which returns to

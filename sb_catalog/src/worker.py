@@ -47,6 +47,12 @@ logger = logging.getLogger("worker")
 # 1,500 tasks to ~8 starts/s, well inside what a cold prefix absorbs.
 STARTUP_SPREAD_SECONDS = int(os.environ.get("STARTUP_SPREAD_SECONDS", "180"))
 
+# Exit code used when a worker stops because it was preempted. Non-zero so that
+# Batch evaluates `evaluateOnExit` at all - see the long comment at the
+# `except Preempted` handler. Distinct from 1 so that "preempted" is separable
+# from "this job is broken" when reading attempt histories.
+PREEMPTED_EXIT_CODE = int(os.environ.get("PREEMPTED_EXIT_CODE", "75"))
+
 
 class S3StateAdapter:
     """The slice of the SeisBenchDatabase interface the picking path uses,
@@ -317,8 +323,34 @@ def loop(args, proc_index: int = 0) -> None:
                 f"to the queue"
             )
             state.release(holding["shard"])
-        logger.info(f"Exiting on signal after {n_done} shards")
-        sys.exit(0)
+        # Exit NON-ZERO on a preemption, deliberately.
+        #
+        # Batch only consults `evaluateOnExit` for a FAILED attempt. An attempt
+        # that exits 0 is a success, so the rule
+        #
+        #   {onStatusReason: "Your Spot Task was interrupted.", action: retry}
+        #
+        # never fires - even though Batch sets statusReason to exactly that
+        # string. Observed on a real reclaim 2026-09-01: two workers released
+        # their claims cleanly, exited 0, were recorded SUCCEEDED having done no
+        # work, and were never replaced. The shard survives (it returns to the
+        # queue and resumes from its checkpoint); the WORKER does not, so over a
+        # multi-day campaign at 1,500 Spot workers the fleet decays with no
+        # failures visible anywhere.
+        #
+        # The exit code is the only lever - no wording of the rule can rescue an
+        # exit-0 attempt. The cost is cosmetic: ordinary preemptions now appear
+        # as failed attempts in the console, and the catch-all
+        # {onReason: "*", action: exit} still stops a genuinely broken job from
+        # burning all 10 attempts.
+        #
+        # PREEMPTED_EXIT_CODE is distinct from 1 so "preempted" is separable
+        # from "this job is broken" when reading attempt histories.
+        logger.info(
+            f"Exiting on signal after {n_done} shards "
+            f"(exit {PREEMPTED_EXIT_CODE} so Batch retries this worker)"
+        )
+        sys.exit(PREEMPTED_EXIT_CODE)
 
     logger.info(f"Queue drained for this worker: {n_done} shards done, {n_failed} failed")
     if n_done == 0 and n_failed > 0:
@@ -432,6 +464,21 @@ def main(argv=None):
                 p.kill()
     for p in procs:
         p.join()
+
+    # Report preemption explicitly, before looking at child exit codes.
+    #
+    # Otherwise the node's exit code is decided by a race. A child that released
+    # its claim inside the grace period exits PREEMPTED_EXIT_CODE; one that was
+    # still inside a long `model.classify` call when the grace ran out is
+    # kill()ed and exits -9; and if every child happened to finish cleanly the
+    # parent fell through to exit 0 and was never retried. All three happened on
+    # 2026-09-01 - three reclaims exited 0 and were not retried, one exited 1 and
+    # was. Whether the fleet self-heals must not depend on that timing.
+    if stopping.is_set():
+        logger.info(
+            f"Node preempted - exiting {PREEMPTED_EXIT_CODE} so Batch retries it"
+        )
+        sys.exit(PREEMPTED_EXIT_CODE)
 
     # Any worker loop failing outright fails the node, for the same reason.
     if any(p.exitcode not in (0, None) for p in procs):
