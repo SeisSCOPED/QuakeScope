@@ -912,8 +912,14 @@ complete.</p>
 <tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
 
 <h2>Where the catalogue lives</h2>
-<p class="cap">The picks are Parquet on S3, Hive-partitioned by network, year and
-month. Read them with anything that speaks Parquet; no database to connect to.</p>
+<p class="cap"><strong>Public-read, no account needed.</strong> The picks are
+Parquet on S3, Hive-partitioned by network, year and month. Read them with
+anything that speaks Parquet; there is no database to connect to and no
+credentials to obtain. <code>claims/</code> and <code>progress/</code> are
+internal and stay private; picks, manifests and run provenance are open.</p>
+<p class="cap">&#8594; <a href="https://colab.research.google.com/github/SeisSCOPED/QuakeScope/blob/main/tutorials/read_the_catalogue.ipynb"><strong>Open the tutorial notebook in Colab</strong></a>
+&#8212; installs, reads, plots, and re-queries the original waveforms from FDSN
+with ObsPy to draw the picks on the record.</p>
 <div class="loc">
 <div class="row"><span>bucket</span><code>s3://{BUCKET}</code></div>
 <div class="row"><span>region</span><code>{REGION}</code></div>
@@ -921,19 +927,43 @@ month. Read them with anything that speaks Parquet; no database to connect to.</
 <div class="row"><span>manifests</span><code>s3://{BUCKET}/&lt;campaign&gt;/manifests/&lt;shard&gt;.json</code></div>
 <div class="row"><span>run metadata</span><code>s3://{BUCKET}/&lt;campaign&gt;/runs/&lt;run_id&gt;.json</code></div>
 </div>
-<pre class="snip">import pandas as pd
+<pre class="snip">pip install pandas pyarrow s3fs
 
-# one campaign, with partition pruning - no LIST, no scan
+# ---------------------------------------------------------------
+import pandas as pd
+
+# anon=True is REQUIRED and is the whole point: the read is
+# unauthenticated. Without it pandas looks for credentials that a
+# reader has no reason to have, and fails before reaching S3.
+ANON = {{"anon": True}}
+
+# one month, with partition pruning - only matching files are fetched
 df = pd.read_parquet(
     "s3://{BUCKET}/scedc/picks/",
-    filters=[("network", "=", "CI"), ("year", "=", 2019)],
+    filters=[("network", "=", "CI"), ("year", "=", 2014), ("month", "=", 9)],
+    storage_options=ANON,
 )
 
-# or exactly the objects a shard wrote, from its manifest
-import json, boto3
-m = json.load(boto3.client("s3", region_name="{REGION}").get_object(
-    Bucket="{BUCKET}", Key="scedc/manifests/&lt;shard&gt;.json")["Body"])
-df = pd.concat(pd.read_parquet(f["path"]) for f in m["files"])</pre>
+# which model made them, and at what thresholds
+import json, urllib.request
+run = json.load(urllib.request.urlopen(
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/scedc/runs/"
+    + df["rid"].iloc[0] + ".json"))
+
+# or exactly the objects one shard wrote, from its manifest
+m = json.load(urllib.request.urlopen(
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/scedc/manifests/&lt;shard&gt;.json"))
+df = pd.concat(pd.read_parquet(f["path"], storage_options=ANON)
+               for f in m["files"])</pre>
+<p class="cap"><strong>Columns.</strong> <code>tid</code> trace id
+<code>NET.STA.LOC</code> &middot; <code>cha</code> band &middot;
+<code>pha</code> P or S &middot; <code>peak</code> the arrival time &middot;
+<code>conf</code> model score, floored at 0.2 &middot; <code>amp</code>
+Wood-Anderson displacement in metres &middot; <code>amp_raw</code> peak counts
+before response removal &middot; <code>rid</code> run id, joins to
+<code>runs/</code>. <code>conf</code> is a detection score, not a probability
+of correctness; the 0.2 floor is permissive on purpose so you can pick your
+own threshold.</p>
 
 <footer>
 <strong>Two pick counts, both true.</strong> The tile counts picks in shards
