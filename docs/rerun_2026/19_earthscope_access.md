@@ -118,25 +118,17 @@ supplied to the job — properly via Secrets Manager and
 `containerProperties.secrets`, never baked into a job definition in plaintext.
 SCEDC, NCEDC and the Open Data eight are anonymous and unaffected.
 
-## Credentials in the container (2026-08-30) — ⚠️ NOT TRUE OF ANY CURRENT JOB DEFINITION
+## Credentials in the container (2026-08-30) — re-verified 2026-09-01
 
-> **Checked 2026-09-01: the wiring described below is not present.** All 30
-> active `quakescope*` job definitions report `secrets=0`;
-> `quakescope_2026_earthscope:2` specifically returns `"secrets": null` and
-> `"environment": []`. The secret itself is healthy
-> (`quakescope/earthscope-refresh-token`, last changed 2026-08-30, last accessed
-> 2026-08-31) — only the job-definition wiring is missing.
->
-> There is a second problem underneath it. Fargate injects
-> `containerProperties.secrets` using the **execution** role, and these
-> definitions set no `executionRoleArn` at all — only `jobRoleArn`. The policy
-> named below is attached to the job role, which is not the role that performs
-> the injection, so adding `secrets:` alone would fail at task startup.
->
-> This blocks 81% of the EarthScope queue (123,771 of 153,208 shards are fully
-> restricted). See [OPTIMISE.md](OPTIMISE.md) item 0b. The section below records
-> the intended design; treat it as a specification to implement, not a
-> description of what is deployed.
+> **A retraction posted here on 2026-09-01 was itself wrong, and is withdrawn.**
+> It claimed no job definition carried the secret and that none set an execution
+> role. Both claims came from `aws batch describe-job-definitions` run through
+> the **`aws-cli/2.0.34`** on this laptop — a 2020 build whose service model
+> predates `secrets`, `executionRoleArn`, `platformCapabilities`,
+> `networkConfiguration` and `evaluateOnExit`, so it drops all of them from its
+> output without a warning. Re-checked through boto3 1.40.61, the wiring is
+> present and complete. **Audit job definitions with boto3, not the local CLI**
+> — see [OPTIMISE.md](OPTIMISE.md) item 0b.
 
 The refresh token lives in Secrets Manager and is injected as an environment
 variable by Batch, never baked into a job definition:
@@ -147,8 +139,32 @@ policy : QuakeScopeEarthScopeSecretRead on SeisBenchBatchRole, scoped to that AR
 wiring : containerProperties.secrets -> ES_OAUTH2__REFRESH_TOKEN
 ```
 
-Only `quakescope_2026_earthscope:2` and `quakescope_2026_western:2` carry it.
+Only `quakescope_2026_earthscope:2/:4` and `quakescope_2026_western:2` carry it.
 SCEDC, NCEDC and the Open Data eight are anonymous and do not.
+
+**Deployed state, read back through boto3 on 2026-09-01:**
+
+```
+quakescope_2026_earthscope:4
+  secrets          : [{name: ES_OAUTH2__REFRESH_TOKEN,
+                       valueFrom: arn:...:secret:quakescope/earthscope-refresh-token-bGo4vN}]
+  executionRoleArn : arn:aws:iam::073795725844:role/SeisBenchBatchRole
+  jobRoleArn       : arn:aws:iam::073795725844:role/SeisBenchBatchRole
+```
+
+Fargate injects `containerProperties.secrets` with the **execution** role, and
+here the execution and job roles are the same role, so the
+`QuakeScopeEarthScopeSecretRead` policy above is on the role that performs the
+injection. Confirmed by simulation rather than by reading the policy:
+
+```
+$ simulate_principal_policy(SeisBenchBatchRole,
+      'secretsmanager:GetSecretValue', <the token ARN>)
+-> allowed
+```
+
+The role's trust policy is `ecs-tasks.amazonaws.com`, which is what both roles
+need.
 
 **Verified in a running container.** A job on `ZI` - a restricted network -
 logged:

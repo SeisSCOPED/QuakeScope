@@ -44,15 +44,29 @@ Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
 | Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
 | Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 4000 | ENABLED |
-| Job definition | **`quakescope_v3_worker:3`** | image `5c612f6`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only |
+| Job definition | **`quakescope_v3_worker:6`** | image `fe61788`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
 | Task role | `SeisBenchBatchRole` | S3 write confirmed by policy simulation |
-| EarthScope secret | `quakescope/earthscope-refresh-token` | injected as `ES_OAUTH2__REFRESH_TOKEN`; only the EarthScope and western job definitions carry it |
+| EarthScope secret | `quakescope/earthscope-refresh-token` | injected as `ES_OAUTH2__REFRESH_TOKEN`; only the EarthScope and western job definitions carry it. Read back through boto3 and confirmed by policy simulation, 2026-09-01 |
 | Cost alerts | `QuakeScopeAWSWatch`, hourly | [15_monitoring.md](15_monitoring.md) |
 
 **Re-register the job definition whenever the image changes.** A campaign runs
 whatever revision the job definition pins, and a stale pin is invisible until
 you read worker logs — `:2` pinned a pre-fix image for eleven days and cost a
 day of debugging. The image tag is the commit's short SHA.
+
+**Register it with boto3, cloning the previous revision field by field.** The
+`aws` CLI on this laptop is `aws-cli/2.0.34`, which neither reads nor writes
+`platformCapabilities`, `executionRoleArn`, `networkConfiguration`,
+`fargatePlatformConfiguration`, `secrets` or `evaluateOnExit`. A revision
+registered through it comes out with none of them and cannot run on a Fargate
+queue at all — `:5` was registered that way, failed submission with *"Job Queue
+is attached to Compute Environment that can not run Jobs with capability EC2"*,
+and was deregistered. Read revisions back through boto3 too; that CLI's output
+is not evidence about any of those fields.
+
+`submit-job` below is unaffected — the overrides it uses (`command`,
+`environment`) long predate 2020. It is `register-job-definition` and
+`describe-job-definitions` that are lossy.
 
 ## The five campaigns
 
@@ -95,7 +109,7 @@ How to add one, and why the `.json` is the architecture rather than metadata:
 # smoke test one shard first - always
 aws batch submit-job --region us-east-2 \
   --job-name scedc-smoke --job-queue niyiyu_earthscope_missing_station \
-  --job-definition quakescope_v3_worker:4 \
+  --job-definition quakescope_v3_worker:6 \
   --container-overrides '{
     "command":["work",
       "--campaign","s3://quakescope-picks-2026/scedc",
@@ -108,12 +122,17 @@ aws batch submit-job --region us-east-2 \
       {"name":"VECLIB_MAXIMUM_THREADS","value":"2"}]}'
 ```
 
-**`--procs` and the thread count must move together.** The job definition sets
-no thread environment, so torch defaults to the core count; raising `--procs`
-without lowering threads gives 8 processes x 8 threads on 8 vCPU and is *slower*
-than one process. `4 x 2` is the measured optimum — [OPTIMISE.md](OPTIMISE.md)
-item 0. All five variables, because `amp.wood_anderson` is 58% of runtime and
-threads through numpy/BLAS rather than torch.
+**`--procs` and the thread count must move together.** Left unset, torch
+defaults to the core count, so raising `--procs` without lowering threads gives
+8 processes x 8 threads on 8 vCPU and is *slower* than one process. `4 x 2` is
+the measured optimum — [OPTIMISE.md](OPTIMISE.md) item 0.
+
+`:6` pins all five variables to 2 in the job definition, matching its default
+`procs` of 4, so a submission that overrides nothing is already correct. The
+block above is kept explicit because **any submission that changes `--procs`
+must override them too** — and revisions `:1`–`:4` set no thread environment at
+all. All five variables, not just `OMP_NUM_THREADS`, because `amp.wood_anderson`
+is 58% of runtime and threads through numpy/BLAS rather than torch.
 
 Then look at the picks, not just the exit code. To scale, submit an array job;
 workers are stateless, so adding more needs no cleanup and cancelling loses at
@@ -144,16 +163,25 @@ compute — they are not additive shares.
 
 **Cost, extrapolated from that one shard:** 4.43 s per *planned* station-day
 (only 100 of the shard's 460 planned station-days held data), giving
-**~1.11M vCPU-hours and ~$16,400** at $0.0148/vCPU-hr. That lands within 4% of
-the independent ~$15,800 in [21_queues_written.md](21_queues_written.md).
+**~1.11M vCPU-hours and ~$16,400** at $0.0148/vCPU-hr, or **~$11,000** after the
+1.50x from `--procs 4` / `OMP_NUM_THREADS=2` ([OPTIMISE.md](OPTIMISE.md) item 0).
 
-That figure is at `--procs 1`. **At the settled `--procs 4` /
-`OMP_NUM_THREADS=2` it is ~1.50x faster, so ~740k vCPU-hours and ~$11,000** —
-measured 2026-09-01 across four arms on eight pinned identical shards,
-[OPTIMISE.md](OPTIMISE.md) item 0.
+> ⚠️ **Both figures above are superseded.** They apply SCEDC + `jma_wc`
+> economics to all five campaigns, and 90% of the campaign is neither: EarthScope
+> reads 1.88× cheaper per unit of work, and 31% of planned station-days use a
+> weight costing 0.35× the inference. Rebuilt per campaign from node wall clock,
+> the central estimate is **~$10,500 at a 40% hit rate, in a range of
+> $5,100–$24,600** — see [24_cost_model.md](24_cost_model.md). It lands near
+> ~$11,000 only because two large errors cancel; do not read that as
+> confirmation.
 
-**Treat it as one sample.** It is CI, in 2010, at `--procs 1`. EarthScope is 60%
-of that total and its I/O is still unprofiled. See [OPTIMISE.md](OPTIMISE.md).
+**Two other measurements from 2026-09-01 revise this table.** EarthScope reads at
+**90.3 MB/s**, 7.8x the same-day SCEDC control, so the `s3.get` line above is a
+cross-region SCEDC property and not a pipeline problem (item 4). And
+`amp.wood_anderson`'s 58% is shard-specific — it is 20% on EarthScope, where
+`model.classify` is 69% (item 3).
+
+**Treat it as one sample.** It is CI, in 2010, at `--procs 1`.
 
 ## Things that were fixed by running, not by reading
 
@@ -179,6 +207,8 @@ Recorded because they are the argument for the smoke-test discipline above.
 
 | | |
 |---|---|
+| [24_cost_model.md](24_cost_model.md) | **cost, rebuilt per campaign — supersedes every earlier figure** |
+| [23_amplitude_review.md](23_amplitude_review.md) | WA taper, `wa_min_conf`, whole-day deconvolution |
 | [11_launch_plan.md](11_launch_plan.md) | the five campaigns, networks, weights |
 | [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) | platform decision, stage measurements, **and how to read either catalog** (§6) |
 | [17_launch_conventions.md](17_launch_conventions.md) | weights, thresholds, channel policy, naming |

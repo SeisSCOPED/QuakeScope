@@ -46,8 +46,10 @@ Pinning `procs x threads = 8` turned that same `procs=8` arm into `7,7,7,1,7,7,7
 — evenly loaded — and moved it from 1.06x to 1.52x. **Never raise `--procs`
 without lowering the thread count to match.**
 
-The Batch job definition sets no thread environment at all, so this must be
-passed per submission (or added to the job definition):
+Revisions `:1`–`:4` set no thread environment at all. **`quakescope_v3_worker:6`
+pins all five to 2**, matching its default `procs` of 4, so a submission that
+overrides nothing now gets the measured optimum instead of the worst case. Any
+submission that changes `--procs` still has to override them together:
 
 ```
 OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS,
@@ -84,49 +86,126 @@ fires. The shard survives; the **worker does not**. Over a multi-day campaign at
 1,500 Spot workers the fleet decays instead of self-healing, and the dashboard
 shows it as a falling vCPU count with no failures anywhere.
 
-Not yet decided. Exiting non-zero would make Batch retry — the hard-killed
-attempts of 2026-09-01 exited 137 and *were* retried, so the `evaluateOnExit`
-rule does work when the exit code is non-zero. The cost is that every ordinary
-preemption then looks like a failure in the console.
+### Observed in production, 2026-09-01 21:47:50 UTC
 
-**More pressing since 0c was fixed.** Preemption is now graceful in every
-configuration, so every preemption takes the exit-0 path and is never retried.
-What was an occasional leak is now the normal path. Whichever way it is
-decided, the campaign needs *something* that notices the fleet shrinking —
-the dashboard shows it only as a falling vCPU count with no failures anywhere.
+A real Spot reclaim took both SCEDC arms of the I/O profile in the same second,
+on `quakescope_v3_worker:6`. It settles the question, because it produced the
+one combination that cannot be argued with:
 
-## 0b. BLOCKER — no job definition can read restricted EarthScope
+| | sc1 | sc4 |
+|---|---|---|
+| `--procs` | 1 | 4 |
+| claims released | 1 of 1 | **4 of 4** |
+| exit code | 0 | 0 |
+| Batch status | **SUCCEEDED** | **SUCCEEDED** |
+| `statusReason` | `Your Spot Task was interrupted.` | `Your Spot Task was interrupted.` |
+| retried | **no** | **no** |
+| shards completed | 0 | 0 |
 
-**81% of the EarthScope queue cannot currently run.** Found 2026-09-01 while
-setting up the I/O profile.
+The job definition's rule is
+`{onStatusReason: "Your Spot Task was interrupted.", action: retry}`, and Batch
+set `statusReason` to **exactly that string** — and still did not retry.
+**`evaluateOnExit` is only consulted for a failed attempt.** An attempt that
+exits 0 is a success, so no rule is evaluated, no matter what the status reason
+says. Nothing about the rule can be tuned to fix this; the exit code is the only
+lever.
 
-[19_earthscope_access.md](19_earthscope_access.md) states that
-`quakescope_2026_earthscope:2` and `quakescope_2026_western:2` carry
-`ES_OAUTH2__REFRESH_TOKEN` through `containerProperties.secrets`. They do not:
+### Worse than "always leaks": at `--procs > 1` it is a coin flip
+
+A fourth preemption the same afternoon, on the `es4` arm, exited **1** and *was*
+retried — the opposite of the two above at the same `--procs 4`. The mechanism
+is [worker.py:437](../../sb_catalog/src/worker.py#L437):
+
+```python
+if any(p.exitcode not in (0, None) for p in procs):
+    sys.exit(1)
+```
+
+A child that releases its claim within `SHUTDOWN_GRACE_SECONDS` exits 0; a child
+still running when the grace expires is `p.kill()`ed and exits −9. So the
+parent's exit code — and therefore whether Batch retries the worker at all —
+depends on whether every loop happened to finish in time:
+
+| event | loops that released | parent exit | retried |
+|---|---|--:|---|
+| sc4, 21:47:50 | 4 of 4 | 0 | no |
+| sc4, 21:57:48 | 4 of 4 | 0 | no |
+| sc4, 22:25:30 | 4 of 4 | 0 | no |
+| **es4, 21:50:44** | **2 of 4** | **1** | **yes** |
+
+In the es4 case workers 1 and 2 never logged `Preempted while holding`. The
+likely reason is that a Python signal handler only runs between bytecodes, and
+these loops were inside a `model.classify` call that averages **20.8 s** at
+`--procs 4`; under memory pressure (see item 0d) a child can miss the 90 s
+window entirely.
+
+So at `--procs 1` the fleet always decays, and at `--procs > 1` it decays by an
+amount nobody can predict. Both are bad, and they are bad in a way that looks
+identical on the dashboard.
+
+**The decision is forced: the graceful preemption path has to exit non-zero,
+deliberately, rather than as a side effect of which child won a race.** The cost
+is cosmetic — ordinary preemptions appear as failed attempts in the console —
+and the `evaluateOnExit` catch-all `{onReason: "*", action: exit}` already stops
+a genuinely broken job from consuming all 10 attempts.
+
+Note what this cost here: two of four measurement arms died 9 minutes in having
+completed no shard, and had to be resubmitted by hand. At 1,500 workers over
+days, nobody is resubmitting by hand.
+
+**The same event verified the 0c fix in production.** All four of sc4's loops
+released their claims from a real SIGTERM delivered to PID 1 by the platform,
+not a hand-sent signal. Before the fix these four shards would have been
+stranded for the full 6 h lease.
+
+**Still needed either way:** something that notices the fleet shrinking. The
+dashboard shows it only as a falling vCPU count with no failures anywhere.
+
+## 0b. WITHDRAWN — the EarthScope credentials were wired all along
+
+**The blocker recorded here on 2026-09-01 did not exist.** It claimed that no
+job definition carried `ES_OAUTH2__REFRESH_TOKEN` and that none set an
+`executionRoleArn`. Both were artefacts of the tool used to look, and the entry
+is withdrawn rather than deleted because the way it went wrong will recur.
+
+**The local `aws` CLI is `aws-cli/2.0.34`, built mid-2020.** Its service model
+predates several Batch fields, and it drops every one of them from
+`describe-job-definitions` output silently — no warning, no error, just absent
+keys that read exactly like `null`:
 
 ```
-$ aws batch describe-job-definitions --status ACTIVE \
-    | jq '.jobDefinitions[] | select(.jobDefinitionName|test("quakescope"))
-          | "\(.jobDefinitionName):\(.revision) secrets=\(.containerProperties.secrets//[]|length)"'
-... every one of the 30 active definitions reports secrets=0
+secrets   executionRoleArn   platformCapabilities
+networkConfiguration   fargatePlatformConfiguration   evaluateOnExit
 ```
 
-`quakescope_2026_earthscope:2` specifically returns `"secrets": null` and
-`"environment": []`.
+The same definition, read two ways on the same day:
 
-**The secret itself is fine** — `quakescope/earthscope-refresh-token` exists in
-us-east-2, last changed 2026-08-30, last accessed 2026-08-31. It is the wiring
-that is missing, so this is a job-definition fix, not a credentials problem.
+| | via `aws-cli/2.0.34` | via boto3 1.40.61 |
+|---|---|---|
+| `secrets` | absent → read as 0 | `ES_OAUTH2__REFRESH_TOKEN` → the secret ARN |
+| `executionRoleArn` | absent | `arn:...:role/SeisBenchBatchRole` |
+| `platformCapabilities` | absent | `["FARGATE"]` |
+| `evaluateOnExit` | absent | Spot-interruption retry + `*` exit |
 
-**And wiring it needs an IAM change.** Fargate injects
-`containerProperties.secrets` using the **execution** role, and none of these
-definitions set `executionRoleArn` at all — only `jobRoleArn`
-(`SeisBenchBatchRole`). The policy doc 19 describes,
-`QuakeScopeEarthScopeSecretRead`, is attached to the job role, which is not the
-role that performs the injection. So adding `secrets:` alone would fail at task
-startup.
+**Audit job definitions with boto3, not the local CLI.** `describe-job-definitions`
+through that CLI cannot be used as evidence of absence for anything added to the
+Batch API after 2020.
 
-Scale of what is blocked, from the written queue:
+What is actually deployed, confirmed through boto3 and by policy simulation:
+`quakescope_2026_earthscope:2/:4` and `quakescope_2026_western:2` carry the
+secret; the execution role is `SeisBenchBatchRole`, the same role the job runs
+as, so the `QuakeScopeEarthScopeSecretRead` inline policy is on the role that
+performs the injection; and simulating `secretsmanager:GetSecretValue` against
+the token ARN for that role returns **allowed**. Detail and the read-back are in
+[19_earthscope_access.md](19_earthscope_access.md).
+
+**Still worth one live check before campaigns 3 and 5.** Configuration being
+correct is not the same as a container having read a restricted network on this
+image. Doc 19's evidence for that is a log line from an earlier build. One shard
+on a restricted network under `quakescope_2026_earthscope:4` settles it; it is
+minutes, not an IAM project.
+
+For the record, the shard split this was thought to block:
 
 | | shards | share |
 |---|--:|--:|
@@ -134,14 +213,15 @@ Scale of what is blocked, from the written queue:
 | mixed | 3,496 | 2% |
 | all Open Data (anonymous) | 25,941 | 17% |
 
-Campaigns 3 and 5 both route to EarthScope, so this gates ~$9,000 of the
-estimate. Do not schedule either until a job definition demonstrably reads a
-restricted network — the evidence doc 19 cites is a log line from a container
-that no current definition reproduces.
+The I/O profile in item 2 uses Open Data networks regardless, so it never
+depended on this either way.
 
-The I/O profile in item 2 deliberately uses Open Data networks so it is not
-blocked on this; per doc 19 both tiers use identical object layout, so the
-I/O question is answerable anonymously.
+**This is the second time a document has asserted deployed state that nobody
+read back from the account, and the first correction was wrong in the same
+direction as the thing it corrected.** Both the original claim and its
+retraction were written from a description rather than a live read. The habit
+that catches it is not scepticism, it is `boto3.describe_*` and
+`simulate_principal_policy`.
 
 ## 0c. FIXED — `--procs > 1` broke graceful preemption
 
@@ -237,9 +317,137 @@ worker0 | Preempted while holding 2016010-2016030-e5c832e16dd5 - releasing it ba
 Both claims gone from S3 afterwards; before the fix the same signal stranded
 both for the full 6 h lease.
 
+**Confirmed again by a real reclaim on 2026-09-01 21:47:50 UTC**, this time with
+the signal delivered by the platform to PID 1 rather than by hand: all four
+loops of a `--procs 4` worker released their claims. See item 0a, which the same
+event settles.
+
 **This raises the priority of 0a.** Every preemption is now graceful, so every
 preemption now exits 0 — and therefore is never retried. The fleet-decay
 question is no longer occasional, it is the normal path.
+
+## 0d. BLOCKER — `--procs 4` runs out of memory on EarthScope data
+
+**Found 2026-09-01 by the I/O profile, on the settled configuration.** The `es4`
+arm — `quakescope_v3_worker:6`, `--procs 4`, `OMP_NUM_THREADS=2`, 8 vCPU /
+**16 GB** — was killed by Batch after 31 minutes:
+
+```
+attempt 1: exit=1  reason=OutOfMemoryError: container killed due to memory usage
+```
+
+It had completed exactly one shard of four. `es1` — the same image, same data,
+same 16 GB, `--procs 1` — completed its shard with no trouble. The variable is
+the process count.
+
+**Why EarthScope and not SCEDC.** EarthScope stores one multi-channel object per
+station-day and it is downloaded and parsed *whole*: a UW sample held 214 traces
+across 38 channel codes, of which the picker uses three. SCEDC and NCEDC store
+one object per channel, so a station-day parses only the band it needs. Four
+concurrent whole-station-day parses do not fit in 16 GB; four concurrent
+single-band parses do. This is the same asymmetry item 2 predicted would cost
+*bandwidth* — it does not (item 2), it costs *memory* instead.
+
+**This is the risk that was accepted when `4 x 2` was chosen over `8 x 1`.**
+Item 0 took `4 x 2` explicitly because "four processes hold half the Parquet
+write buffers of eight — the memory ceiling flagged in
+[16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) §4". That reasoning was
+right about the direction and wrong about the margin: four is still too many
+when the archive is EarthScope. §4 also names the lever —
+`flush_threshold` buffers a partition at ~800 MB resident **per partition per
+process**, and says to lower it if the process sweep shows memory pressure. It
+now has.
+
+**Nothing here invalidates item 0's 1.50x.** That sweep ran on SCEDC, where the
+memory shape is different, and its ranking stands for SCEDC and NCEDC.
+
+### Where the memory actually goes, measured
+
+On a real Open Data object, `PS09.AK.2020.309` — 140.4 MB, 18 traces,
+64.9M samples — parsed three ways with `tracemalloc`:
+
+| | peak | traces kept |
+|---|--:|--:|
+| `obspy.read(buff)` | 542.5 MB | 18 |
+| `read()` then `.select()` — **what the worker does** | 540.4 MB | 3 |
+| `read(sourcename="AK.PS09..HN?")` | **347.7 MB** | 3 (identical) |
+
+**Two things follow, and the second matters more.**
+
+**1. Filtering at read time is worth 1.6x, not the 70x the trace count
+suggests.** [`_read_waveform_from_s3`](../../sb_catalog/src/s3_helper.py) calls
+`obspy.read(buff)` with no filter, decodes all 18 traces, and
+[the caller](../../sb_catalog/src/s3_helper.py) then `.select()`s three — so the
+full stream and the copy are both resident. ObsPy passes `sourcename` to
+libmseed as a record-level selection, so non-matching records are never decoded.
+Output is byte-identical and parse is slightly faster (0.58 → 0.49 s).
+
+But **"214 traces of which we use three" overstates the waste.** It is true by
+count and false by volume: on PS09 the 15 discarded traces are almost all 1 Hz
+state-of-health channels (`VCO`, `VEA`, `VM0`, `VKI`), and the three kept are
+51.8M of the 64.9M samples. The gain is station-dependent — larger on a station
+carrying `HH`+`BH`+`HN`, where the discards are whole broadband sets.
+
+**2. The dominant term is the in-flight queue, not the parse.**
+[picker.py:383](../../sb_catalog/src/picker.py#L383) is
+`asyncio.Queue(data_queue_size)` holding **decoded** Streams, default **5**. Per
+process that is ~5 queued plus ~2 in flight at ~0.4–0.5 GB each ≈ 3 GB; at
+`--procs 4` that is 10–15 GB before torch and the Parquet buffers. That is the
+16 GB, and it is why `es1` at `--procs 1` was untroubled on the same data.
+
+### Options, cheapest first
+
+1. **`--data_queue_size 1` on the EarthScope campaigns.** No code change — it is
+   already a CLI flag — and it cuts the dominant term ~3x. Try this first.
+2. **Pass `sourcename` at read.** Small, contained change; 1.6x here and more on
+   multi-band stations; also removes the redundant `.select()` copy.
+3. **Raise memory to 32 GB** for the EarthScope and western job definitions.
+   Fargate allows 8 vCPU with up to 60 GB. Works, costs memory-GB-hours, and
+   hides the cause rather than fixing it.
+4. **Lower `--flush-threshold`** from 4M rows. Free, but trades against the
+   Parquet fragmentation of item 5, which is already bad.
+5. **Run EarthScope at `--procs 2`.** Gives up part of the 1.50x on the majority
+   of the campaign. Last resort.
+
+### Checked and cleared: the band mix is not a hidden multiplier
+
+Worth recording because the station-count view of it is alarming and wrong.
+
+Selected band across the EarthScope campaign, weighted by operating windows
+clipped with the planner's own `_operating_windows` / `_overlap_days` — the
+total reconciles exactly with the 67,983,975 station-days in
+[21_queues_written.md](21_queues_written.md):
+
+| band | nominal Hz | stations | station-days | % sd | % samples |
+|---|--:|--:|--:|--:|--:|
+| HN | 100 | 6,883 | 27,360,362 | 40.2% | 42.0% |
+| HH | 100 | 12,682 | 20,294,599 | 29.9% | 31.1% |
+| BH | 40 | 9,347 | 8,197,403 | 12.1% | 5.0% |
+| EH | 100 | 5,542 | 7,862,261 | 11.6% | 12.1% |
+| SH | 50 | 1,094 | 1,946,817 | 2.9% | 1.5% |
+| DP | 250 | 11,967 | 1,835,562 | 2.7% | 7.0% |
+| others | | 4,331 | 486,971 | 0.7% | 1.2% |
+
+**Station-day-weighted mean: 95.9 Hz — 0.96x a uniform 100 Hz assumption.** No
+correction needed.
+
+Two things that look like problems and are not:
+
+- **`DP` is 23.1% of stations but 2.7% of station-days.** Nodal deployments are
+  numerous and short. Counting stations overstates it 9x.
+- **`HN` chosen over an available `BH`: 119 stations, 0.2%.** The
+  `CHANNEL_PRIORITY` comment sizes this as "10 of 24,111" for western states;
+  EarthScope is 5x that rate and still negligible.
+
+**The caveat that remains.** Those percentages use the *nominal* rates in the
+`CHANNEL_PRIORITY` comment, and spot checks show the comment is not accurate for
+EarthScope: `PS09.AK` runs `HN` at **200 Hz** (not 100), and twelve sampled AK
+`BH` channels run at **50 Hz** (not 40). Selection is unaffected — only the
+priority *order* matters there — but any memory or cost model keyed to those
+annotations is off by whatever the real rates are. `HN` is 40.2% of the campaign,
+so if 200 Hz is common rather than a PS09 quirk the weighted mean moves
+materially. Sampling record headers with 8 KB range reads answers it for a few
+cents; it does not need a run.
 
 ## 1. How that was measured, and the two designs that were wrong
 
@@ -293,7 +501,73 @@ for n, c in json.load(open('omptest.json'))['arms'].items():
     print(f\"{n}: procs={c['procs']}x{c['threads']}  {n_put/el:.2f}/min\")"
 ```
 
-## 2. EarthScope I/O — 60% of the campaign, unprofiled
+## 2. RESOLVED — EarthScope I/O is not the problem. It reads 10x *faster*
+
+**Measured 2026-09-01** on `quakescope_v3_worker:6` (image `fe61788`), campaign
+prefix `_iotest2/es1`, `--procs 1` on 8 vCPU so it is like-for-like with the
+`--procs 1` SCEDC baseline in [README.md](README.md). Shard
+`2020309-2020312-acb849e20ec5`: 36 AK stations (Open Data, us-east-2), 3 days,
+108 planned station-days, **73 processed, 782.3 s, 66,992 picks**.
+
+A **same-day SCEDC control** ran on the same image at the same `--procs 1`
+(`_iotest2/sc1`, shard `2015135-2015138-878a471d41d6`, 31 CI stations, 36 of 93
+planned station-days, 719.7 s), so the comparison does not rest on the older
+baseline:
+
+| | EarthScope (AK, us-east-2) | SCEDC control, same day | SCEDC baseline (2010) |
+|---|--:|--:|--:|
+| `s3.get` throughput | **90.3 MB/s** | 11.6 MB/s | 8.8 MB/s |
+| `s3.get` seconds | 34.71 | 121.53 | 502.18 |
+| `s3.get` share of wall | **4.4%** | 16.9% | 24.6% |
+| MB per station-day-channel | 43.0 | 39.3 | 44.2 |
+| seconds per processed station-day-channel | **10.7** | 20.0 | 20.4 |
+
+The control reproduces the old baseline's throughput to within 30% and its
+seconds-per-processed-unit to within 2%, which is the check that the harness
+measures anything at all. **EarthScope reads 7.8x faster than SCEDC measured the
+same afternoon**, and moves 9% more bytes per station-day-channel — not the
+multiple the object layout suggested.
+
+**The standing suspicion was wrong in both of its parts.**
+
+1. *"EarthScope transfers far more bytes, because it stores one multi-channel
+   object per station-day and the picker uses three of ~214 traces."* It does
+   not: 43.0 MB per station-day-channel against SCEDC's 44.3. Whatever the
+   object layout costs, it does not show up as bytes on the wire.
+2. *"EarthScope reads slowly — an earlier test sat on `Load ZI.CAMP.10` for 25
+   minutes."* Already known to have been the stale image. At 90.3 MB/s,
+   EarthScope is the **fastest** archive measured, and `s3.get` falls from a
+   quarter of the shard to 4%.
+
+**This also resolves item 4, and confirms item 4a's reframing.** The unexplained
+8.8 MB/s was a property of *SCEDC*, not of the pipeline: it is the one archive
+that is cross-region **and** has no gateway endpoint. Read same-region, the same
+code moves data at 90.3 MB/s. There is no I/O bug to find.
+
+### What it moved instead: the cost basis, and not favourably
+
+The stage mix on EarthScope-like data is a different shape:
+
+| stage | seconds | %wall | per unit |
+|---|--:|--:|---|
+| `model.classify` | 543.87 | **69.4** | 7.450 s/call |
+| `amp.wood_anderson` | 157.14 | 20.1 | 2.346 ms/pick |
+| `amp.velocity` | 80.12 | 10.2 | 1.196 ms/pick |
+| `s3.get` | 34.71 | 4.4 | 90.3 MB/s |
+| `mseed.parse` | 16.87 | 2.2 | 185.8 MB/s |
+| `s3.list` / `s3.head` / parquet | 0.44 | 0.0 | |
+
+**Inference is now the dominant stage at 69.4%, not `amp.wood_anderson`.** That
+is the reverse of the SCEDC baseline, where `wood_anderson` was 58% and
+`classify` 32%. Item 3 is still worth doing, but on EarthScope — 60% of the
+campaign — it is worth far less than the SCEDC shard implied.
+
+**And both of today's shards cost ~1.7x the estimate's cost basis** — see item 9,
+which this promotes from a hypothetical to the largest open number in the
+campaign. It is *not* an EarthScope effect: the SCEDC control is the worse of
+the two.
+
+## 2a. Superseded — the original statement of the question
 
 EarthScope stores **one multi-channel object per station-day**, downloaded and
 parsed whole; a UW sample held 214 traces across 38 channel codes of which the
@@ -316,39 +590,52 @@ shards on `quakescope_v3_worker:4` and compare `s3.get` seconds and MB against
 the SCEDC baseline. Two hours; it either confirms the estimate or changes the
 campaign plan.
 
-## 3. `amp.wood_anderson` is 58% of runtime
+## 3. `amp.wood_anderson` is 20–58% of runtime, and inference is the bigger lever
 
-1,179 s of a 2,038 s shard, at 10.262 ms/pick over 114,939 picks. The largest
-single stage, larger than inference, and the biggest lever left in the picker
-itself.
+**Revised 2026-09-01.** The "58%" was one shard. Across the three shards now
+measured the ranking *flips*, and `model.classify` is the larger stage in both of
+the newer ones:
 
-Already done, and not to be redone: the deconvolution was hoisted out of the
-per-pick loop (5.3× on that stage, and *more correct* — the old 33 s window was
-ill-conditioned), the per-pick path moved to numpy, and a nested
+| shard | `amp.wood_anderson` | `model.classify` | ms/pick |
+|---|--:|--:|--:|
+| README baseline, CI 2010 | **57.9%** | 32.5% | 10.262 |
+| `sc1`, CI 2015 | 32.3% | **54.0%** | 5.979 |
+| `es1`, AK 2020 | 20.1% | **69.5%** | 2.346 |
+
+No code changed between them that touches amplitude — the difference is the
+data. So neither number is "the" share; the stage mix depends on the shard, and
+a lever sized from one shard is sized wrong.
+
+**Weighted by where the campaign actually is** — EarthScope is 60% of planned
+station-days — inference dominates and `amp.wood_anderson` is the *smaller*
+target. Prefer work on `model.classify` (batching, or the arm64/quantisation
+route in item 7) over further amplitude work.
+
+Already done on amplitude, and not to be redone: the deconvolution was hoisted
+out of the per-pick loop (5.3× on that stage, and *more correct* — the old 33 s
+window was ill-conditioned), the per-pick path moved to numpy, and a nested
 `joblib.Parallel` that oversubscribed every core was removed. What remains is the
 deconvolution of a day-long trace, not the per-pick work.
 
-A 2× here is ~$4,000 of the campaign.
+## 4. RESOLVED — the 8.8 MB/s was SCEDC, not the pipeline
 
-## 4. `s3.get` ran at 8.8 MB/s
+It was a SCEDC artefact, exactly as item 4a predicted. Measured same-region on
+the same image and the same `--procs 1`:
 
-Against 46.6 MB/s same-region and 24.1 MB/s cross-region measured in
-[16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) §2. That is 3–5× slower
-than expected and costs 502 s of a 2,038 s shard.
+| archive | region | gateway endpoint | `s3.get` |
+|---|---|---|--:|
+| EarthScope (`es1`) | us-east-2, same as compute | none | **90.3 MB/s** |
+| SCEDC (`sc1`) | **us-west-2, cross-region** | none | 11.6 MB/s |
+| SCEDC (2010 baseline) | us-west-2, cross-region | none | 8.8 MB/s |
 
-Unexplained, but the candidate list narrowed on 2026-09-01. The measurement was
-taken on SCEDC, which is the **only cross-region archive** (`scedc-pds` is
-us-west-2, compute is us-east-2) **and** has no S3 gateway endpoint — see item
-4a. Doc 16's 24.1 MB/s cross-region figure was also SCEDC-from-us-east-2, so
-8.8 MB/s is low even against the cross-region baseline, but the comparison to
-46.6 MB/s same-region was never like-for-like.
+Same code, same day, 7.8x apart. There is no pipeline I/O bug and nothing here
+to optimise. The number was low because `scedc-pds` is the one archive that is
+cross-region, and doc 16's 46.6 MB/s same-region figure was never a like-for-like
+comparison against it.
 
-Remaining candidates: no gateway endpoint, `--procs 1` leaving no concurrency to
-hide latency, 2010 objects being small and numerous, or per-request overhead at
-14.7 MB per call.
-
-**Re-measure on a same-region archive before spending effort here** — NCEDC or
-EarthScope, both us-east-2. The number may simply be a SCEDC artefact.
+Adding the gateway endpoint (item 4a) is still free and still worth doing, but it
+covers same-region traffic only — which is now known to be the fast path
+already. It will not help SCEDC.
 
 ## 4a. No S3 gateway endpoint — free, and covers nearly all reads
 
@@ -455,20 +742,55 @@ not published through the pricing API.
 Weekly, during a campaign: record vCPU-hours and shards complete, compare against
 ~4.43 s per planned station-day, and investigate anything over 20%.
 
-## 9. Is the planner's station-day count the right cost basis?
+## 9. CONFIRMED — the cost basis is low by ~1.7x. Now the largest open number
 
-The measured shard was **sized at 460 station-days and processed 100** — the rest
-had no data and were skipped. Skipping is cheap (`s3.list` 13 s for 20 calls,
-`s3.head` 0.28 s for 300), so this is not waste; but it means the campaign's
-112.9M planned station-days are not 112.9M units of work.
+The estimate's basis is **4.43 s per planned station-day**, taken from a single
+2010 CI shard that was **78% empty**. Two shards measured on 2026-09-01, on
+different archives, both come in at about 1.7x that — and they agree with each
+other while disagreeing with the shard the estimate rests on:
 
-The ~$16,400 estimate already uses seconds per *planned* station-day, so it is
-self-consistent. The risk is that the 22% hit rate is specific to CI in 2010 —
-station density and data availability both rise sharply over the 2010–2026 span.
-If later years hit 60%, the cost is nearly 3× the estimate.
+| run | archive, year | planned | processed | hit rate | **s / planned sd** | vs basis |
+|---|---|--:|--:|--:|--:|--:|
+| README baseline | CI 2010 | 460 | 100 | 21.7% | 4.43 | 1.00x |
+| `sc1` | CI **2015** | 93 | 36 | 38.7% | **7.74** | **1.75x** |
+| `es1` | AK **2020** | 108 | 73 | 67.6% | **7.24** | **1.64x** |
 
-Cheapest way to close it: record processed-vs-planned from the `--procs` sweep
-shards, which span whatever the queue hands them, and compare.
+**The mechanism is the hit rate, and only the hit rate.** Seconds per
+*processed* station-day-channel are essentially unchanged between the 2010
+baseline and the 2015 control — **20.38 vs 19.99 s, 2% apart**. Nothing got
+slower. The 2010 shard simply spent most of its planned station-days discovering
+there was no data, at `s3.list`/`s3.head` prices, and the estimate then divided
+real work by a denominator inflated with cheap misses.
+
+Data availability rises sharply across 2010–2026, so the one year that was
+measured is the cheapest year in the campaign.
+
+**What it does to the number.** On its own this correction roughly *doubles* the
+campaign — but it is not on its own. The published figure also applied SCEDC and
+`jma_wc` economics to campaigns that use neither, and correcting that pulls the
+other way by almost the same factor:
+
+| | |
+|---|--:|
+| published | $10,963 |
+| + hit rate 21.7% → 40% | $16,487 |
+| + per-campaign archive and weight | **$10,465** |
+
+Full rebuild, per campaign, with the sensitivity table:
+[24_cost_model.md](24_cost_model.md). **The near-agreement with the old figure
+is two errors cancelling, not confirmation.**
+
+**How to close it properly, and it is cheap.** The hit rate is a property of the
+*queue*, not of the picker: it is `objects that exist` ÷ `station-days planned`.
+That is answerable with `s3.list` alone — no inference, no GPU, no picking — by
+sampling shards stratified across years and campaigns and counting listings.
+An hour of listing against 112.9M planned station-days replaces the single
+number the whole cost model divides by. **Do this before committing to a spend,
+not after.**
+
+Note also that the ~$11,000 figure applies the 1.50x `--procs 4` speedup, which
+item 0d shows does not currently hold on EarthScope at 16 GB. The two corrections
+push in the same direction.
 
 ---
 
@@ -478,10 +800,14 @@ shards, which span whatever the queue hands them, and compare.
 |---|---|---|---|
 | ~~0~~ | ~~`--procs` x threads~~ | **done — 1.50x, ~$16,400 to ~$11,000** | — |
 | ~~0c~~ | ~~`--procs > 1` breaks graceful preemption~~ | **fixed and verified 2026-09-01** | — |
-| **0a** | **preempted workers are not replaced** | **now the normal path — every preemption exits 0** | 1 h |
-| 0b | EarthScope credentials unwired | campaigns 3 and 5, ~$9,000 | IAM change |
-| 2 | EarthScope I/O profile | campaigns 3–5, ~$14,800 of the estimate | 2 h |
-| 9 | processed-vs-planned ratio | the cost basis | free, from item 1 |
+| **0d** | **`--procs 4` OOMs on EarthScope at 16 GB** | **campaigns 3 and 5 — 60% of the campaign** | 2 h |
+| **0a** | **preempted workers are not replaced** | **decided by a live reclaim: must exit non-zero. Not yet implemented** | 1 h |
+| ~~0b~~ | ~~EarthScope credentials unwired~~ | **withdrawn — a stale `aws` CLI, not a blocker** | — |
+| 0b′ | one live restricted-network read on the current image | campaigns 3 and 5 | 15 min |
+| ~~2~~ | ~~EarthScope I/O profile~~ | **done — 90.3 MB/s, 7.8x the same-day SCEDC control; not a risk** | — |
+| **9** | **hit rate by campaign and era** | **the dominant cost term — swings the campaign $5.1k–$24.6k** | 1 h of `s3.list` |
+| 6a | `wa_min_conf` 0.5 → 0.3 if more amplitudes are wanted | 3x WA coverage for ~+40% cost — [23](23_amplitude_review.md) | decision |
+| 6b | one pick in 41 disagrees 48% between short-window and whole-day WA | 0.17 ML, cause unknown — [23](23_amplitude_review.md) §3 | 2 h |
 | 6 | `obs` components, seisbench pin | correctness of campaign 4 | 1 h |
 | 5 | verify compaction before trusting it | analysis after the campaign | 2 h |
 | 3 | `amp.wood_anderson` | ~$4,000 | days |

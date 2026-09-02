@@ -1,0 +1,60 @@
+{
+  "jobdef": "quakescope_v3_worker:6",
+  "image": "ghcr.io/seisscoped/quakescope:fe61788",
+  "root": "s3://quakescope-picks-2026/_iotest2",
+  "weight": "jma_wc",
+  "arms": {
+    "es1": {
+      "job_id": "b8d501c3-2c26-4821-a65b-cec3b3181322",
+      "procs": 1,
+      "threads": 8,
+      "label": "earthscope-AK-opendata",
+      "campaign": "s3://quakescope-picks-2026/_iotest2/es1"
+    },
+    "sc1": {
+      "job_id": "bbaf5ea4-0ed6-4c8c-98ff-e6ed9b3d7277",
+      "procs": 1,
+      "threads": 8,
+      "label": "scedc-CI-control",
+      "campaign": "s3://quakescope-picks-2026/_iotest2/sc1",
+      "previous_job_ids": [
+        {
+          "job_id": "11b2d9c0-c1d3-40dd-894e-28c032ab8b81",
+          "outcome": "preempted, exit 0, 0 shards"
+        },
+        {
+          "job_id": "045953c2-d60a-4b3c-aac8-1e36101b397a",
+          "outcome": "preempted, exit 0, 0 shards"
+        }
+      ]
+    },
+    "es4": {
+      "job_id": "66320cfa-2080-401c-8ce9-549d09a96b3f",
+      "procs": 4,
+      "threads": 2,
+      "label": "earthscope-AK-opendata",
+      "campaign": "s3://quakescope-picks-2026/_iotest2/es4"
+    },
+    "sc4": {
+      "job_id": "947d4a3f-a239-4e9a-8085-af1ccf940a93",
+      "procs": 4,
+      "threads": 2,
+      "label": "scedc-CI-control",
+      "campaign": "s3://quakescope-picks-2026/_iotest2/sc4",
+      "previous_job_ids": [
+        {
+          "job_id": "540708df-fe83-41ea-84db-321600b50dd1",
+          "outcome": "preempted, exit 0, 0 shards"
+        },
+        {
+          "job_id": "f6860675-8668-492a-95e6-cb48b2431cd8",
+          "outcome": "preempted, exit 0, 0 shards"
+        },
+        {
+          "job_id": "22553e12-0353-4440-8072-f973cad98cfa",
+          "outcome": "preempted, exit 0, 0 shards"
+        }
+      ]
+    }
+  }
+}
