@@ -26,6 +26,8 @@ Usage (normally invoked by the Batch job definition, not by hand):
 from __future__ import annotations
 
 import argparse
+import ctypes
+import gc
 import logging
 import multiprocessing as mp
 import os
@@ -56,6 +58,46 @@ PREEMPTED_EXIT_CODE = int(os.environ.get("PREEMPTED_EXIT_CODE", "75"))
 # Ceiling on decoded station-day streams held across the whole node, used to
 # size `--data_queue_size` when it is left unset. See _resolve_queue_size.
 NODE_STREAM_BUDGET = int(os.environ.get("NODE_STREAM_BUDGET", "8"))
+
+
+def rss_mb() -> float:
+    """Resident set size, the number the container OOM killer actually uses.
+
+    Read from /proc rather than psutil, which is not in the image and is not
+    worth adding for two lines. Returns 0.0 off Linux.
+    """
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1024**2
+    except (OSError, IndexError, ValueError):
+        return 0.0
+
+
+def reclaim_memory() -> None:
+    """Give freed memory back to the OS between shards.
+
+    A shard decodes tens of station-days, each a numpy array of tens of MB, and
+    frees them as it goes. Python returning those to its allocator is not the
+    same as the process returning them to the kernel: glibc keeps freed blocks
+    in per-arena free lists, and RSS - the only number the container OOM killer
+    looks at - never falls. With `--procs 4` there are four such processes, and
+    glibc sizes its arena pool from the core count, so the fragmentation is
+    worst exactly where memory is tightest.
+
+    That matches how the 2026-09-02 dry run died: not on a big shard, but late.
+    `esr4` OOM'd after 55 minutes and 477 station-days, `west4` after 212 - a
+    per-shard peak would have killed the first one.
+
+    `malloc_trim` walks those free lists and releases what it can. Called
+    between shards, where nothing large is live, so it has the most to give
+    back and costs the least. See also MALLOC_ARENA_MAX in the job definitions,
+    which limits how far the fragmentation can spread in the first place.
+    """
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass          # not glibc - macOS or musl. gc.collect() still ran.
 
 
 def _resolve_queue_size(requested: int, procs: int) -> int:
@@ -361,6 +403,8 @@ def loop(args, proc_index: int = 0) -> None:
                 logger.exception(f"Shard {sid} failed: {exc}")
                 state.release(sid)         # requeue at once rather than after the lease
                 holding["shard"] = None
+                # A shard that died mid-read is holding the most, not the least.
+                reclaim_memory()
                 if args.max_failures and n_failed >= args.max_failures:
                     logger.error(f"Stopping after {n_failed} failures")
                     break
@@ -369,8 +413,13 @@ def loop(args, proc_index: int = 0) -> None:
             state.complete(sid, manifest)
             holding["shard"] = None
             n_done += 1
+            # Between shards is the one moment nothing large is live.
+            before = rss_mb()
+            reclaim_memory()
+            after = rss_mb()
             logger.info(f"Completed {sid} in {manifest['seconds']}s "
-                        f"({manifest['picks_record']} station-day-channels)")
+                        f"({manifest['picks_record']} station-day-channels) "
+                        f"| RSS {after:.0f} MB (freed {before - after:.0f})")
             if args.profile:
                 # Printed per shard, not per campaign: the stage mix depends on
                 # pick count, which varies fourfold between an ordinary day and

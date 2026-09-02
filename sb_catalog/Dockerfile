@@ -14,6 +14,20 @@ FROM python:3.12-slim
 
 WORKDIR /code
 
+# glibc allocates a separate malloc arena per thread, up to 8 x the core count,
+# and never returns an arena's free list to the kernel. A picking worker churns
+# tens-of-MB numpy arrays on every station-day, so those free lists fill with
+# large blocks that stay charged to RSS - the only number the container OOM
+# killer looks at. On an 8-core Fargate task that is up to 64 arenas per
+# process, times `--procs 4` processes.
+#
+# Capping it at 2 trades a little allocator contention for a bound on how far
+# that fragmentation can spread. Set here rather than per job definition so
+# every campaign inherits it, and as ENV because glibc reads it once at process
+# start - exporting it later has no effect. Works with `reclaim_memory()` in
+# worker.py, which trims what does accumulate between shards.
+ENV MALLOC_ARENA_MAX=2
+
 # --no-cache-dir throughout: pip's download cache is written into the layer and
 # then never read again, because each RUN is a separate layer.
 #
