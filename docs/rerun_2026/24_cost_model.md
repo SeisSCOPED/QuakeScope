@@ -53,40 +53,91 @@ All on image `fe61788`, `quakescope_v3_worker:6`, 8 vCPU Fargate Spot,
 layer, so 4× the parameters and ~2.85× the wall clock. **Campaigns 1–3 use it;
 campaigns 4 and 5 do not**, and they are 31% of the planned station-days.
 
+## Hit rate — measured, for 31% of the campaign
+
+Surveyed 2026-09-01 with [`scripts/hitrate_survey.py`](../../scripts/hitrate_survey.py):
+32 sample days across 2010–2025, S3 listings only. **Calibrated against every
+shard the runs completed** — the check that it measures what the picker sees:
+
+| archive | shards | listed / planned | picked / planned | correction |
+|---|--:|--:|--:|--:|
+| SCEDC | 5 | 38.7% | 38.7% | **1.000** |
+| EarthScope | 2 | 82.4% | 68.5% | **0.831** |
+
+SCEDC and NCEDC encode the channel in the object name, so a listing answers
+exactly what the picker will find. EarthScope stores one object per station-day
+covering all channels, so a listing proves the *station* had data but not that
+the object holds the band `select_channel` chose — hence the 0.831, which the
+two shards agree on to 0.3% (83.0%, 83.3%).
+
+**Measured rates** (EarthScope already corrected):
+
+| archive | hit rate | cross-check |
+|---|--:|---|
+| SCEDC | **36.2%** | 36.2% in the `western` station set independently |
+| NCEDC | **45.3%** | 45.2% independently |
+| EarthScope Open Data | **68.1%** | 61.2% in the `western` set |
+
+### The year trend — the item 9 premise was wrong
+
+| year | scedc | ncedc | EarthScope OD |
+|--:|--:|--:|--:|
+| 2010 | 30.3% | 41.4% | 82.9% |
+| 2015 | 31.7% | 47.6% | 79.3% |
+| 2020 | 38.9% | 45.5% | 83.2% |
+| 2025 | 47.5% | 43.8% | 83.0% |
+
+Item 9 assumed the hit rate "rises sharply over the 2010–2026 span". **It rises
+only on SCEDC, and only 1.57×**; NCEDC and EarthScope Open Data are flat across
+sixteen years. The campaign is far less year-sensitive than feared. What was
+right is that the 21.7% basis was unrepresentative — even SCEDC in 2010 surveys
+at 30.3%.
+
+### What the survey could not reach
+
+| tier | planned sd | share | hit rate |
+|---|--:|--:|---|
+| SCEDC | 8,194,864 | 7.3% | measured 36.2% |
+| NCEDC | 11,913,192 | 10.6% | measured 45.3% |
+| EarthScope Open Data | 14,717,156 | 13.0% | measured 68.1% |
+| **EarthScope restricted** | **78,041,471** | **69.1%** | **unmeasured** |
+
+The restricted tier needs the OAuth refresh token. Using it locally risks
+invalidating the copy in Secrets Manager — the SDK's refresh grant saves a
+rotated token to *local* state, not back to the secret — so it was not done.
+**Its rate cannot be extrapolated from Open Data**: those eight networks are the
+permanent ones (AK, TA, IU, II, N4, UU, UW, PB), which is exactly why they sit
+at ~82%. The restricted majority are temporary deployments.
+
 ## Per campaign
 
-Central case: **hit rate 40%**, EarthScope gaining **1.4×** from `--procs 4`
-(less than SCEDC's 1.88×, because EarthScope spends only 4.4% of wall in
-`s3.get` against SCEDC's 16.9% and so has less stall to fill).
+`--procs 4` throughout, EarthScope assumed to gain **1.4×** from it (less than
+SCEDC's measured 1.88×, because EarthScope spends only 4.4% of wall in `s3.get`
+against SCEDC's 16.9% and so has less stall to fill).
 
-| campaign | weight | planned sd | s/processed | vCPU-hr | $ | % of cost |
-|---|---|--:|--:|--:|--:|--:|
-| scedc | `jma_wc` | 4,106,669 | 11.10 | 40,532 | 600 | 5.7% |
-| ncedc | `jma_wc` | 5,979,675 | 10.88 | 57,838 | 856 | 8.2% |
-| **earthscope** | `jma_wc` | 67,983,975 | 7.96 | 480,781 | **7,116** | **68.0%** |
-| obs | `obs` | 996,536 | 4.36 | 3,866 | 57 | 0.5% |
-| western | `original` | 33,799,828 | 4.13 | 124,057 | 1,836 | 17.5% |
-| **total** | | **112,866,683** | | **707,074** | **~$10,500** | |
+| campaign | weight | vCPU-hr | $ | % of cost |
+|---|---|--:|--:|--:|
+| scedc | `jma_wc` | 36,681 | 543 | 5.0% |
+| ncedc | `jma_wc` | 65,501 | 969 | 9.0% |
+| **earthscope** | `jma_wc` | 486,465 | **7,200** | **66.5%** |
+| obs | `obs` | 3,383 | 50 | 0.5% |
+| western | `original` | 139,608 | 2,066 | 19.1% |
+| **total** | | **731,638** | **~$10,800** | |
 
-Only the `scedc` row is fully measured. `ncedc` assumes SCEDC economics less the
-cross-region penalty; `earthscope` and `western` assume the 1.4× and, for
-`western`, that its stations are predominantly EarthScope-routed (they are —
-~21k of 24.1k).
+That table takes the restricted tier at **35%**. It is the one number left, and
+it moves the total more than everything else combined:
 
-## Sensitivity — the two things that actually move it
+| EarthScope restricted hit rate | total |
+|--:|--:|
+| 35% | **$10,828** |
+| 50% | $13,490 |
+| 68% (= the Open Data rate) | $16,685 |
+| 85% | $19,702 |
 
-|  | EarthScope at `--procs 1` | 1.4× | 1.88× |
-|---|--:|--:|--:|
-| hit rate 25% | $8,793 | $6,540 | $5,103 |
-| 30% | $10,551 | $7,849 | $6,123 |
-| **40%** | $14,068 | **$10,465** | $8,165 |
-| 50% | $17,585 | $13,081 | $10,206 |
-| 60% | $21,102 | $15,697 | $12,247 |
-| 70% | $24,619 | $18,313 | $14,288 |
-
-**Range $5,100–$24,600.** The left column is today's reality for campaigns 3
-and 5, because EarthScope OOMs at `--procs 4` ([OPTIMISE.md](OPTIMISE.md)
-item 0d) — fixing that is worth roughly $3,600 at a 40% hit rate.
+**So: ~$11,000–$20,000, and which end depends on one unmeasured number.** If the
+restricted temporary deployments behave like the permanent networks, it is
+~$16,700. Add ~$3,600 if EarthScope has to run at `--procs 1` because item 0d is
+unfixed.
 
 ## Why this lands near the old ~$11,000 anyway
 
@@ -107,10 +158,14 @@ cancel if either input moves.
 
 ## What would tighten this
 
-1. **The hit rate, by campaign and era.** It is the dominant term and it is
-   `objects that exist ÷ station-days planned` — answerable with `s3.list`
-   alone, no picking, in about an hour. This is the single highest-value
-   measurement left.
+1. **The EarthScope restricted hit rate.** 69% of planned station-days, and on
+   its own it spans $10.8k–$19.7k. Everything else is now measured. It is the
+   same `s3.list` survey, run where the refresh token already is — inside the
+   container, under `quakescope_2026_earthscope:4`, which carries the secret.
+   That needs a subcommand on `src.picker` (the image's ENTRYPOINT is fixed), so
+   it is a small code change plus one Batch job, and it doubles as the live
+   restricted-read check that [OPTIMISE.md](OPTIMISE.md) item 0b′ still wants.
+   **Do not run it locally from the secret** — see the note above on rotation.
 2. **EarthScope at `--procs 4`**, once item 0d is fixed. Worth ~$3,600 and
    currently a guess.
 3. **A `western`/`original` shard end to end.** The 0.35× weight factor is

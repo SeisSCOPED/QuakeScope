@@ -742,7 +742,38 @@ not published through the pricing API.
 Weekly, during a campaign: record vCPU-hours and shards complete, compare against
 ~4.43 s per planned station-day, and investigate anything over 20%.
 
-## 9. CONFIRMED — the cost basis is low by ~1.7x. Now the largest open number
+## 9. MEASURED for 31% of the campaign — and the premise was half wrong
+
+**Surveyed 2026-09-01** with [`scripts/hitrate_survey.py`](../../scripts/hitrate_survey.py),
+32 sample days 2010–2025, S3 listings only, calibrated against every completed
+shard (SCEDC exact on 5/5; EarthScope ×0.831, the two shards agreeing to 0.3%).
+Full results and the cost consequences: [24_cost_model.md](24_cost_model.md).
+
+| archive | measured hit rate | share of campaign |
+|---|--:|--:|
+| SCEDC | 36.2% | 7.3% |
+| NCEDC | 45.3% | 10.6% |
+| EarthScope Open Data | 68.1% | 13.0% |
+| **EarthScope restricted** | **unmeasured** | **69.1%** |
+
+**The "rises sharply across the span" premise is wrong.** It rises on SCEDC only
+(30.3% → 47.5%, 1.57×); NCEDC and EarthScope Open Data are flat across sixteen
+years. What was right is that 21.7% was unrepresentative — even SCEDC in 2010
+surveys at 30.3%.
+
+**The remaining 69% needs the EarthScope refresh token**, and using it locally
+risks invalidating the Secrets Manager copy: the SDK's refresh grant saves a
+rotated token to local state, not back to the secret. Run the survey in-container
+instead, where the token already is. The Open Data rate is not a substitute —
+those eight networks are the permanent ones, which is why they sit at ~82%.
+
+Campaign total: **~$10,800 at a 35% restricted rate, ~$16,700 if restricted
+behaves like Open Data, ~$19,700 at 85%.**
+
+The original statement of the item, kept because the reasoning below is what the
+survey was built to test:
+
+## 9a. Superseded — the cost basis is low by ~1.7x
 
 The estimate's basis is **4.43 s per planned station-day**, taken from a single
 2010 CI shard that was **78% empty**. Two shards measured on 2026-09-01, on
@@ -805,7 +836,8 @@ push in the same direction.
 | ~~0b~~ | ~~EarthScope credentials unwired~~ | **withdrawn — a stale `aws` CLI, not a blocker** | — |
 | 0b′ | one live restricted-network read on the current image | campaigns 3 and 5 | 15 min |
 | ~~2~~ | ~~EarthScope I/O profile~~ | **done — 90.3 MB/s, 7.8x the same-day SCEDC control; not a risk** | — |
-| **9** | **hit rate by campaign and era** | **the dominant cost term — swings the campaign $5.1k–$24.6k** | 1 h of `s3.list` |
+| **9** | **EarthScope *restricted* hit rate — 69% of the campaign** | **the one number left: $10.8k vs $19.7k** | subcommand + 1 job |
+| ~~9~~ | ~~hit rate, SCEDC/NCEDC/EarthScope Open Data~~ | **measured — 36.2% / 45.3% / 68.1%** | — |
 | 6a | `wa_min_conf` 0.5 → 0.3 if more amplitudes are wanted | 3x WA coverage for ~+40% cost — [23](23_amplitude_review.md) | decision |
 | 6b | one pick in 41 disagrees 48% between short-window and whole-day WA | 0.17 ML, cause unknown — [23](23_amplitude_review.md) §3 | 2 h |
 | 6 | `obs` components, seisbench pin | correctness of campaign 4 | 1 h |
