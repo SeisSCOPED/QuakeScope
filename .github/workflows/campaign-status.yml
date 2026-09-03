@@ -32,6 +32,7 @@ permissions:
   contents: write        # commits the rebuilt dashboard
   issues: write
   id-token: write
+  actions: write         # dispatches pages.yml - see the publish step
 
 concurrency:
   group: campaign-status
@@ -154,7 +155,24 @@ jobs:
               echo "::error::dashboard rebuilt but could not be pushed after 5 attempts"
               exit 1
             fi
+
+            # Publish it. The commit above carries [skip ci], which GitHub
+            # applies to EVERY workflow on that push - including pages.yml, so
+            # the rebuilt page reached the repository and never reached the
+            # site. https://seisscoped.org/QuakeScope/campaign_dashboard.html
+            # sat unchanged from 2026-09-03T02:36 while the hourly job kept
+            # succeeding, because the last thing to publish it was a human
+            # pushing to reports/.
+            #
+            # [skip ci] has to stay: docker.yml triggers on any push to main
+            # with no path filter, so dropping it would rebuild the container
+            # image every hour. Dispatch pages.yml explicitly instead - it is
+            # the one workflow this push actually needs.
+            gh workflow run pages.yml --ref "${GITHUB_REF_NAME}" || \
+              echo "::warning::could not dispatch pages.yml - committed, not published"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update the dashboard issue
         if: steps.creds.outputs.mode != 'none'
