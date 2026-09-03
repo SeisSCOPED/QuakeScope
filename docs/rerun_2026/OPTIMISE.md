@@ -703,6 +703,63 @@ including Fargate task ENIs with `assignPublicIp: ENABLED` — which these are.
 Not worth re-architecting away, since NAT would cost more, but it belongs in the
 estimate. Unverified against a bill — Cost Explorer is blocked by the org SCP.
 
+## 0i. MEASURED — 4.7% of the plan cannot be read, and 1.5% is an entitlement gap
+
+`netyear-sweep` asks EarthScope's credential exchange whether each planned
+`(network, year)` exists. It answers 404 for one it does not hold and 403 for
+one we are not entitled to, so the whole plan can be checked without reading a
+byte. Run 2026-09-03 against the written queues:
+
+| campaign | restricted network-years | present | 404 not in archive | 403 not entitled |
+|---|--:|--:|--:|--:|
+| earthscope | 4,235 | 81.6% | 438 (10.3%) | **341 (8.1%)** |
+| western | 628 | 87.4% | 75 (11.9%) | 4 (0.6%) |
+
+In station-days, counting a shard dead only when *every* network-year in it is
+unreadable:
+
+| campaign | planned | unreadable | 404 | 403 |
+|---|--:|--:|--:|--:|
+| earthscope | 67,983,975 | 4,394,559 (6.5%) | 2,742,500 | 1,636,988 |
+| western | 33,799,828 | 931,101 (2.8%) | 931,101 | 0 |
+| **total** | **112,866,683** | **5,325,660 (4.7%)** | 3,673,601 | 1,636,988 |
+
+**The two halves need opposite responses, which is why the sweep separates
+them.**
+
+**404 — 3.67M station-days, a correction to us.** Temporary FDSN codes are
+reused, and our station metadata claims deployments the archive never held. Not
+an error and nothing to ask for; the plan is simply 3.3% smaller than it says.
+Handled gracefully in the reader since `d33bf79`, so these shards complete empty
+rather than failing.
+
+**403 — 1.64M station-days across 49 networks, a request to EarthScope.** The
+data exists and this account may not read it: `AF`, `DR`, `KS`, `PI`, `TR`, `VE`
+at 17 years each, then `EC`, `GI`, `TD`, `YF`, `I0`, `YE`, `ZC`, `MP`, `RI`,
+`OC`, `DE`, `EO` and 31 more. Either ask for access or drop them from the
+plan — but they will fail every time until one or the other happens.
+
+### The campaign is global on purpose
+
+Checking these, 40.9% of the earthscope plan's stations fall outside western
+North America — Italy, Spain, Chile, Antarctica, New Zealand. That is
+**intended, not a planning bug**: `configs/networks/earthscope_onshore.txt` is
+"everything in NETWORK_MAPPING routed to EarthScope, minus the offshore list",
+420 networks, with no geographic filter. Only campaign 5 (`western`) is selected
+by bounding box. Worth stating because the denied networks look foreign at a
+glance and invite the wrong conclusion.
+
+### A bug this found
+
+`LH` returned 403 and the worker retried it five times with five-second sleeps —
+25 s per network-year — because `earthscope_sdk` raises `UnauthorizedError`
+(403) and `UnauthenticatedError` (401) *instead of* an `HTTPStatusError`, so
+neither carries `.response` and the 4xx fast-fail never saw them. Fixed in
+`530fc5b`; the re-run logged **zero** retry sleeps and finished western in
+1.2 min against ~3 min before. At campaign scale, 49 denied networks retrying
+five times each would have been a large amount of worker time spent re-asking an
+answered question.
+
 ## 0f. OPEN — the Spot pool is volatile enough to exhaust the retry cap
 
 **Measured 2026-09-02.** A validation job was reclaimed **ten times in a row**,
