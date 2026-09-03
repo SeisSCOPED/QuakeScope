@@ -44,7 +44,10 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger("s3_state")
 
-DEFAULT_LEASE_HOURS = 6.0
+# See worker.py --lease-hours: this bounds how long a shard held by a DEAD
+# worker stays out of circulation, and the Spot pool reclaims often enough
+# that six hours could strand a whole queue.
+DEFAULT_LEASE_HOURS = 1.0
 
 
 def _split_uri(uri: str) -> tuple[str, str]:

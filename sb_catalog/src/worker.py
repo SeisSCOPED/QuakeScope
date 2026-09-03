@@ -491,7 +491,14 @@ def main(argv=None):
     ap.add_argument("--procs", default=1, type=int,
                     help="Worker loops per node. Match to vCPUs, allowing for the "
                          "picker's own threads.")
-    ap.add_argument("--lease-hours", default=6.0, type=float,
+    # 1 hour, not 6. The lease only matters for a DEAD worker - a live one
+    # refreshes its claim every lease/4 - so it is really "how long a stranded
+    # shard stays out of circulation". On a pool reclaiming 37-53% of attempts
+    # (measured 2026-09-01/02), six hours is long enough to strand the whole
+    # queue: a dry-run arm deadlocked with all 8 shards held by dead attempts
+    # and its retries finding nothing to claim. Shards run ~2 minutes, so an
+    # hour is still ~30x headroom.
+    ap.add_argument("--lease-hours", default=1.0, type=float,
                     help="A claim older than this with no manifest is reclaimable. "
                          "Set above the longest expected shard runtime.")
     ap.add_argument("--max-shards", default=0, type=int, help="Stop after N (0 = drain)")
