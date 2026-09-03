@@ -114,14 +114,45 @@ Queues are **written and immutable**. Counts read back from S3
 `archive/12_output_storage.md`, which were 1.3–1.7× low because they did not
 separate location codes.
 
+> **Restructured 2026-09-03 to three campaigns.** `scedc`, `ncedc` and
+> `earthscope` all ran `jma_wc` and share no stations, so they were three queues
+> doing one job. They are now **`global`**. `western` (a geographic re-pick with
+> `original`) and `obs` (`obs` weight) stay separate because their weight is
+> what distinguishes them.
+
 | campaign | weight | stations | shards | station-days |
 |---|---|--:|--:|--:|
-| scedc | `jma_wc` | 1,128 | 8,479 | 4,106,669 |
-| ncedc | `jma_wc` | 2,116 | 14,941 | 5,979,675 |
-| earthscope | `jma_wc` | 51,846 | 153,208 | 67,983,975 |
+| global | `jma_wc` | 53,082 | 202,468 | 79,480,454 |
 | obs | `obs` | 3,389 | 6,566 | 996,536 |
 | western | `original` | 24,113 | 72,505 | 33,799,828 |
-| **total** | | | **255,699** | **112,866,683** |
+| **total** | | | **281,539** | **114,276,818** |
+
+What changed inside `global`, against the three queues it replaces:
+
+| | station-days |
+|---|--:|
+| scedc + ncedc + earthscope | 78,070,319 |
+| − 49 networks returning 403 | −1,636,988 |
+| − NZ as mirrored by EarthScope | −51,495 |
+| **+ NZ from GeoNet** (the whole network) | **+4,513,815** |
+| = `global` | **79,480,454** |
+
+**The 49 dropped networks** answered 403 for every year — the data exists and
+this account may not read it, so those shards could only ever fail. They are
+listed in `_sweep/{earthscope,western}.json` and can be restored if EarthScope
+grants access: `AF DR KS PI TR VE EC GI TD YF I0 YE ZC MP RI OC DE EO` and 31
+more.
+
+**NZ moved to GeoNet** — AWS Open Data, anonymous, `ap-southeast-2`. EarthScope
+serves NZ correctly but mirrors 29 stations against GeoNet's 1,159
+station-locations. Cross-region reads run 9.5 MB/s against 94-101 in-region,
+which costs about 0.9% of the campaign; see OPTIMISE item 0j for why that beats
+running a second compute environment.
+
+**Still in the plan and expected to find nothing:** ~3.67M station-days on
+network-years EarthScope does not hold (404). Harmless — those shards complete
+empty — but the headline above is that much larger than the work that exists.
+See OPTIMISE item 0i.
 
 Range 2010.001–2026.001. Weight rationale, thresholds and channel policy:
 [17_launch_conventions.md](17_launch_conventions.md). Campaign definitions:

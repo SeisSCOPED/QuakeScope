@@ -779,8 +779,14 @@ of wall, so the stages overlap: `model.classify` is 425 s and `s3.get` is 131 s,
 and most of the reading happens while the model is busy. Making the bucket local
 would save at most 118 s of 548 - a **22% penalty**, not 10x.
 
-**NZ is a small slice.** ~1.4M station-days against 112.9M, so a 22% penalty on
-it is **0.26% of the campaign**, about **$29**.
+**NZ is a small slice.** **4.51M station-days against 114.3M — 3.9%** — so a
+22% penalty on it is **0.87% of the campaign**, about **$95**.
+
+> Corrected 2026-09-03. This first read "~1.4M station-days, 0.26%, about $29",
+> estimated from the 423 stations visible in one day's listing. The real GeoNet
+> FDSN inventory has **1,159 station-locations**, so the slice is three times
+> larger. The conclusion is unchanged and the margin is still wide, but the
+> figure was wrong and a one-day listing is not an inventory.
 
 **Decision: leave it cross-region and fold NZ into the bundled global
 campaign.** A dedicated ap-southeast-2 compute environment would need its own
