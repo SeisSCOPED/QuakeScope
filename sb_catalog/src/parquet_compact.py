@@ -29,6 +29,13 @@ import pyarrow.parquet as pq
 import s3fs
 
 from .parquet_writer import PICK_SCHEMA
+
+# Match the writer exactly. pq.write_table defaults to SNAPPY and no
+# dictionary; the writer uses zstd with dictionary encoding. Compacting
+# with the defaults re-encoded every file and made the catalogue 32%
+# LARGER - measured on estmp4, 8.2 MB -> 10.9 MB - which is a poor trade
+# for fewer objects and would have been invisible without checking.
+COMPACT_COMPRESSION = "zstd"
 from .s3_state import S3CampaignState
 
 logger = logging.getLogger("compact")
@@ -54,7 +61,7 @@ def _list_partition_objects(
 
     Returns list of {path, size} dicts.
     """
-    part_prefix = f"{prefix}/picks/{partition}/"
+    part_prefix = f"{bucket}/{prefix}/picks/{partition}/"
     try:
         objects = fs.ls(part_prefix, detail=True)
         return [
@@ -109,7 +116,11 @@ def _compact_partition(
     tables = []
     for obj in objects:
         try:
-            table = pq.read_table(f"s3://{bucket}/{obj['path']}", filesystem=fs)
+            # obj["path"] is already bucket-qualified, from fs.ls. Prefixing
+            # the bucket again produced bucket/bucket/key, which fails to read
+            # every object - and the only reason that was not a mass deletion
+            # is the verify-before-delete gate above.
+            table = pq.read_table(obj["path"], filesystem=fs)
             tables.append(table)
         except Exception as exc:
             logger.warning(f"Failed to read {obj['path']}: {exc}")
@@ -124,10 +135,14 @@ def _compact_partition(
     combined = pa.concat_tables(tables)
     rows_per_file = len(combined) // max(1, target_files)
 
+    # Read what we are about to replace, so the delete below can be justified
+    # rather than assumed.
+    rows_before = len(combined)
+
     # Write consolidated files.
-    part_prefix = f"{prefix}/picks/{partition}/"
+    part_prefix = f"{bucket}/{prefix}/picks/{partition}/"
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    written = 0
+    new_keys = []
 
     for i in range(target_files):
         start = i * rows_per_file
@@ -136,29 +151,64 @@ def _compact_partition(
 
         output_key = f"{part_prefix}compact-{timestamp}-{i:03d}.parquet"
         try:
-            pq.write_table(chunk, f"s3://{bucket}/{output_key}", filesystem=fs)
-            written += 1
-            logger.debug(
-                f"  {output_key}: {len(chunk)} rows, "
-                f"{chunk.nbytes / 1e6:.1f} MB"
-            )
+            pq.write_table(chunk, output_key, filesystem=fs,
+                           compression=COMPACT_COMPRESSION,
+                           use_dictionary=True)
+            new_keys.append(output_key)
+            logger.debug(f"  {output_key}: {len(chunk)} rows")
         except Exception as exc:
             logger.error(f"Failed to write {output_key}: {exc}")
 
-    # Delete the old files.
+    # VERIFY BEFORE DELETING. The previous version wrote the new files, logged
+    # any write failure as an error, and then deleted the originals anyway - so
+    # a partial write lost picks permanently, with the loss recorded only as a
+    # WARNING in a log nobody reads. Compaction is an optimisation; it must
+    # never be able to destroy data it failed to copy.
+    #
+    # Re-read from S3 rather than trusting the write call: that is what catches
+    # a truncated or unreadable object, which is the failure that matters.
+    if len(new_keys) != target_files:
+        logger.error(
+            f"{partition}: wrote {len(new_keys)} of {target_files} files - "
+            f"KEEPING the originals. Delete the compact-{timestamp}-* objects "
+            f"by hand once you know why."
+        )
+        return {"partition": partition, "status": "failed (incomplete write)",
+                "files_before": len(objects), "orphans": new_keys}
+
+    try:
+        rows_after = sum(pq.read_metadata(k, filesystem=fs).num_rows
+                         for k in new_keys)
+        bytes_after = sum(fs.info(k)["size"] for k in new_keys)
+    except Exception as exc:
+        logger.error(f"{partition}: cannot verify what was written ({exc}) - "
+                     f"KEEPING the originals.")
+        return {"partition": partition, "status": "failed (unverifiable)",
+                "files_before": len(objects), "orphans": new_keys}
+
+    if rows_after != rows_before:
+        logger.error(
+            f"{partition}: {rows_before} rows in, {rows_after} out - "
+            f"KEEPING the originals. The compact-* objects are orphans."
+        )
+        return {"partition": partition, "status": "failed (row count mismatch)",
+                "rows_before": rows_before, "rows_after": rows_after,
+                "files_before": len(objects), "orphans": new_keys}
+
+    # Only now is the delete safe: every row is provably readable somewhere else.
     for obj in objects:
         try:
-            fs.rm(f"s3://{bucket}/{obj['path']}")
+            fs.rm(obj["path"])
         except Exception as exc:
             logger.warning(f"Failed to delete {obj['path']}: {exc}")
 
     return {
         "partition": partition,
         "files_before": len(objects),
-        "files_after": written,
-        "rows": len(combined),
+        "files_after": len(new_keys),
+        "rows": rows_before,
         "bytes_before": total_bytes,
-        "bytes_after": combined.nbytes,
+        "bytes_after": bytes_after,
         "status": "completed",
     }
 
@@ -201,18 +251,26 @@ def compact_campaign(
     # List all partitions by scanning picks/ prefix.
     fs = s3fs.S3FileSystem()
     bucket, prefix = state.bucket, state.prefix
-    picks_prefix = f"{prefix}/picks/"
+    # s3fs paths are bucket-qualified. Without the bucket this resolved to a
+    # bucket literally named "scedc" and raised before listing anything.
+    picks_prefix = f"{bucket}/{prefix}/picks/"
 
-    partitions = set()
+    # `fs.ls` lists ONE level. Against picks/ that returns `network=CI` and
+    # nothing else, so the old three-way `"year=" in item` test matched
+    # nothing, every run reported "Found 0 partitions" and exited 0. A
+    # compactor that silently does nothing is worse than one that fails: it
+    # looks like it ran. glob walks all three levels.
     try:
-        for item in fs.ls(picks_prefix, detail=False):
-            # item is like s3://bucket/prefix/picks/network=CI/year=2019/month=07
-            if "network=" in item and "year=" in item and "month=" in item:
-                # Extract network=XX/year=YYYY/month=MM
-                parts = item.split(f"{picks_prefix}")[1]
-                partitions.add(parts.rstrip("/"))
+        leaves = fs.glob(f"{picks_prefix}network=*/year=*/month=*")
     except FileNotFoundError:
         logger.warning(f"No picks found at {picks_prefix}")
+        return
+    partitions = {
+        item.split(picks_prefix, 1)[1].rstrip("/")
+        for item in leaves if picks_prefix in item
+    }
+    if not partitions:
+        logger.warning(f"No partitions under {picks_prefix} - nothing to do")
         return
 
     logger.info(f"Found {len(partitions)} partitions to compact")
