@@ -19,6 +19,8 @@ name: Fleet
 #
 # TO CHANGE THE FLEET, from a phone or anywhere:
 #   Actions -> Fleet -> Run workflow -> pick campaign + target -> Run
+# Manual runs are limited to the operators in ALLOWED below. The schedule is
+# not: it keeps holding whatever target is committed, with nobody present.
 # The change is committed to fleet.json, so that file is the audit trail of who
 # scaled what and when. target 0 stops a campaign without losing its place.
 
@@ -51,6 +53,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # WHO may change the fleet, as distinct from the guard below, which
+      # bounds HOW MUCH. workflow_dispatch needs write access and this
+      # repository has 11 collaborators with it, so write access alone is a
+      # wider door than spending money should have.
+      #
+      # Hardcoded here on purpose, not in fleet.json and not in a repository
+      # variable. fleet.json is edited BY this workflow, so an allowlist living
+      # there could rewrite itself; a variable can be changed silently in
+      # settings. In the workflow file, adding an operator is a commit somebody
+      # can review.
+      #
+      # This gates manual runs only. The schedule keeps topping up to whatever
+      # target is already committed, so nobody has to be around for the fleet
+      # to hold.
+      - name: Only an approved operator may change the fleet
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          ALLOWED="mdenolle"
+          for who in $ALLOWED; do
+            if [ "$who" = "$ACTOR" ]; then
+              echo "operator: $ACTOR"
+              exit 0
+            fi
+          done
+          echo "::error::$ACTOR is not an approved fleet operator."
+          echo "::error::Approved: $ALLOWED. To add someone, edit ALLOWED in"
+          echo "::error::.github/workflows/fleet.yml - it is a reviewable commit."
+          exit 1
 
       - uses: actions/setup-python@v5
         with:
