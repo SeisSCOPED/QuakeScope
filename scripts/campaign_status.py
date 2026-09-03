@@ -29,7 +29,8 @@ import boto3
 REGION = "us-east-2"
 BUCKET = "quakescope-picks-2026"
 QUEUES = ["niyiyu_earthscope_missing_station", "pickblue_jobqueue"]
-CAMPAIGNS = ["scedc", "ncedc", "earthscope", "obs", "western"]
+# Restructured 2026-09-03: scedc+ncedc+earthscope -> `global`.
+CAMPAIGNS = ["global", "obs", "western"]
 
 # A claim older than this with no completion is not progress, it is a stall:
 # the shard timeout is 24 h and a worker that dies without releasing leaves the

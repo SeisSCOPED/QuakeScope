@@ -71,7 +71,7 @@ TASK_VCPU = 8                       # per job definition
 # `network=FDSN:<NET>` (and `year=` for temporary networks) fixed it, and
 # restricted reads now run at 96-98 MB/s - the same rate as Open Data. See
 # docs/rerun_2026/19 and OPTIMISE item 0g.
-BLOCKED: dict[str, str] = {}
+BLOCKED: dict[str, str] = {}      # name -> why, if a queue is ever parked again
 
 BASEMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "data", "basemap.json")
@@ -965,8 +965,17 @@ upstream, on the data the model saw.</p>
 over 10,440 station-days on the live SCEDC campaign, times 0.354 for the
 short-window amplitude rework). Time assumes the full
 {QUOTA_VCPU:,}-vCPU Fargate Spot quota with nothing else running. These are
-projections, not observations - the tiles above are what actually happened.
-Blocked queues are excluded from the total.</p>
+projections, not observations - the tiles above are what actually happened.</p>
+<p class="cap">Nothing is blocked. The EarthScope restricted access point was
+never stalling: the credential request was unscoped, so it could LIST but not
+GET, and every read returned AccessDenied instantly. Scoping it to
+<code>network=FDSN:&lt;NET&gt;</code> fixed it, and restricted reads now run at
+96-98 MB/s - the same rate as Open Data.</p>
+<p class="cap">Two things the plan still carries that will not produce picks:
+<b>~3.67M station-days</b> on network-years EarthScope does not hold, which
+complete empty and are harmless; and <b>49 networks</b> that answer 403, which
+were dropped from <code>global</code> on 2026-09-03 and can be restored if
+EarthScope grants access.</p>
 <div class="scroll">
 <table><thead><tr><th>campaign</th><th class="num">station-days</th>
 <th class="num">shards</th><th class="num">vCPU-h</th><th class="num">est. cost</th>
@@ -1010,7 +1019,7 @@ ANON = {{"anon": True}}
 
 # one month, with partition pruning - only matching files are fetched
 df = pd.read_parquet(
-    "s3://{BUCKET}/scedc/picks/",
+    "s3://{BUCKET}/global/picks/",
     filters=[("network", "=", "CI"), ("year", "=", 2014), ("month", "=", 9)],
     storage_options=ANON,
 )
@@ -1018,14 +1027,19 @@ df = pd.read_parquet(
 # which model made them, and at what thresholds
 import json, urllib.request
 run = json.load(urllib.request.urlopen(
-    "https://{BUCKET}.s3.{REGION}.amazonaws.com/scedc/runs/"
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/global/runs/"
     + df["rid"].iloc[0] + ".json"))
 
 # or exactly the objects one shard wrote, from its manifest
 m = json.load(urllib.request.urlopen(
-    "https://{BUCKET}.s3.{REGION}.amazonaws.com/scedc/manifests/&lt;shard&gt;.json"))
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/global/manifests/&lt;shard&gt;.json"))
 df = pd.concat(pd.read_parquet(f["path"], storage_options=ANON)
                for f in m["files"])</pre>
+<p class="cap">The three campaigns are <code>global</code>, <code>obs</code>
+and <code>western</code>. The <strong>previous run</strong> is still readable
+under <code>scedc</code>, <code>ncedc</code>, <code>earthscope</code> and
+<code>western-a</code> - those prefixes were merged into <code>global</code> for
+the 2026 run, not deleted.</p>
 <p class="cap"><strong>Columns.</strong> <code>tid</code> trace id
 <code>NET.STA.LOC</code> &middot; <code>cha</code> band &middot;
 <code>pha</code> P or S &middot; <code>peak</code> the arrival time &middot;
@@ -1063,8 +1077,16 @@ def main():
                     help="random waveform+pick examples to include")
     ap.add_argument("--min-conf", type=float, default=EXAMPLE_MIN_CONF,
                     help="minimum pick confidence for the examples")
-    ap.add_argument("--campaigns",
-                    default="western-a,western-b,scedc,ncedc,earthscope,obs,firedrill")
+    # The three campaigns of the 2026 run, as restructured 2026-09-03: scedc,
+    # ncedc and earthscope were merged into `global` (same weight, no shared
+    # stations), leaving `western` and `obs`, which differ by weight.
+    #
+    # Named explicitly rather than discovered from S3 prefixes: the bucket also
+    # holds ~20 test and profiling prefixes (_dryrun2, _iotest, _sweep, ...) and
+    # prior runs (western-a, western-b), and a dashboard that lists whatever it
+    # finds would bury the live campaign among them. Pass --campaigns to look at
+    # a historical one - western-a still holds 106M picks.
+    ap.add_argument("--campaigns", default="global,obs,western")
     a = ap.parse_args()
     # The hourly job shares S3 with the fleet. At 1,500 workers the dashboard
     # is the small, interruptible client in that contention, so it backs off
