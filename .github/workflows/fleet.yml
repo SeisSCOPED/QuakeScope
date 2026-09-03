@@ -80,6 +80,22 @@ jobs:
           python - <<'PY'
           import json, os
           camp, target = os.environ["CAMPAIGN"], int(os.environ["TARGET"])
+
+          # Anyone with write access to this repository can press the button -
+          # 11 people as of 2026-09-03 - and the input is free text. The
+          # compute environment's maxVcpus caps what can actually run at 1,500
+          # tasks (~$177/hour), so a typo cannot run away without bound, but it
+          # would spend at the maximum rate until somebody noticed. Refuse the
+          # obviously-wrong number instead, and say what the ceiling is.
+          MAX = int(os.environ.get("MAX_TARGET", "600"))
+          if target < 0:
+              raise SystemExit(f"target must be >= 0, got {target}")
+          if target > MAX:
+              raise SystemExit(
+                  f"target {target} exceeds the {MAX}-worker guard. That is "
+                  f"~${target * 0.118:,.0f}/hour. If you really want it, raise "
+                  f"MAX_TARGET in fleet.yml in a commit somebody can review.")
+
           d = json.load(open("fleet.json"))
           if camp not in d["campaigns"]:
               raise SystemExit(f"unknown campaign {camp}")
