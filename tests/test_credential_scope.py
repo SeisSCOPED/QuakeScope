@@ -338,3 +338,37 @@ def test_a_missing_network_year_does_not_fail_the_shard():
         "get_filesystem must be called INSIDE the try that handles "
         "FileNotFoundError - a 404 network-year otherwise fails the shard"
     )
+
+
+def test_401_and_403_are_verdicts_not_congestion():
+    """The SDK raises its own types for 401/403, bypassing the 4xx fast-fail.
+
+    `UnauthenticatedError` (401) and `UnauthorizedError` (403) are raised
+    INSTEAD of an HTTPStatusError, so neither carries `.response` and the
+    status-code branch never sees them. Before this was handled, network `LH`
+    burned 25 s per year - five attempts with five-second sleeps - re-asking a
+    question EarthScope had already answered 403.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).parent.parent
+           / "sb_catalog/src/s3_helper.py").read_text()
+    assert "UnauthorizedError" in src and "UnauthenticatedError" in src
+    # Both must be handled BEFORE the generic retry/sleep.
+    i403 = src.index("isinstance(exc, UnauthorizedError)")
+    i401 = src.index("isinstance(exc, UnauthenticatedError)")
+    isleep = src.index("time.sleep(5)")
+    assert i403 < isleep and i401 < isleep, (
+        "401/403 must fail fast, before the retry sleep"
+    )
+
+
+def test_not_entitled_is_distinct_from_missing():
+    # 404 (no such network-year) is a plan correction; 403 (not entitled) is a
+    # request to EarthScope. Conflating them sends the wrong ticket.
+    from sb_catalog.src.s3_helper import (EarthScopeNetworkYearNotFound,
+                                          EarthScopeNotEntitled)
+    assert not issubclass(EarthScopeNotEntitled, EarthScopeNetworkYearNotFound)
+    assert not issubclass(EarthScopeNotEntitled, FileNotFoundError), (
+        "403 must not be swallowed by the listing loop's FileNotFoundError "
+        "handler - an entitlement gap has to be visible"
+    )

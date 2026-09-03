@@ -63,6 +63,19 @@ ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
 ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
 
 
+class EarthScopeNotEntitled(RuntimeError):
+    """HTTP 403: the account may not read this network at all.
+
+    Different from `EarthScopeNetworkYearNotFound` (404, the archive has no such
+    network-year) and from a wrong scope (400). This one is a real entitlement
+    gap and should be loud - it means shards on that network cannot run, and
+    somebody has to ask EarthScope.
+
+    Found by the 2026-09-03 sweep, which no dry run had reached: network `LH`
+    answers 403 for every year.
+    """
+
+
 class EarthScopeNetworkYearNotFound(FileNotFoundError):
     """EarthScope has no such network-year: HTTP 404 from the token exchange.
 
@@ -397,6 +410,28 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                     )
             except Exception as exc:
                 last = exc
+                # The SDK raises its OWN types for 401 and 403 instead of an
+                # HTTPStatusError, so neither carries `.response` and the 4xx
+                # fast-fail below never saw them. Both are verdicts, and the
+                # sweep measured the cost of not knowing that: network `LH`
+                # burned 25 s per year - five attempts, five-second sleeps -
+                # re-asking a question already answered 403.
+                from earthscope_sdk.auth.error import (UnauthenticatedError,
+                                                       UnauthorizedError)
+                if isinstance(exc, UnauthorizedError):
+                    raise EarthScopeNotEntitled(
+                        f"EarthScope returned 403 for {scope} on role "
+                        f"{EARTHSCOPE_ROLE}: the account is not entitled to "
+                        f"network {net}. Not retryable - ask EarthScope for "
+                        f"access, or drop {net} from the campaign."
+                    ) from exc
+                if isinstance(exc, UnauthenticatedError):
+                    raise RuntimeError(
+                        f"EarthScope returned 401 for {scope}: the credential "
+                        f"itself was rejected. Retrying cannot fix a bad "
+                        f"token - check ES_OAUTH2__REFRESH_TOKEN in Secrets "
+                        f"Manager (quakescope/earthscope-refresh-token)."
+                    ) from exc
                 # Report the HTTP status and body, not just the class.
                 # "HTTPStatusError" alone is indistinguishable between "not
                 # entitled", "no such network-year" and "malformed parameter",

@@ -61,7 +61,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     from .s3_helper import (EARTHSCOPE_OPEN_DATA_NETWORKS, CompositeS3ObjectHelper,
-                            EarthScopeNetworkYearNotFound)
+                            EarthScopeNetworkYearNotFound, EarthScopeNotEntitled)
 
     if args.networks:
         y0, _, y1 = args.years.partition("-")
@@ -81,7 +81,7 @@ def main(argv=None) -> int:
     logger.info(f"{len(pairs)} planned network-years, "
                 f"{len(restricted)} on the restricted tier")
 
-    missing, ok, errors = [], [], []
+    missing, ok, errors, denied = [], [], [], []
     for i, (net, year) in enumerate(restricted, 1):
         try:
             helper.get_es_credential(net, year)
@@ -89,6 +89,12 @@ def main(argv=None) -> int:
         except EarthScopeNetworkYearNotFound:
             missing.append((net, year))
             logger.info(f"  MISSING {net} {year}")
+        except EarthScopeNotEntitled:
+            # 403 is a different problem from 404 and needs a different
+            # response: the data exists, we are not allowed it. Worth a request
+            # to EarthScope rather than a correction to the plan.
+            denied.append((net, year))
+            logger.warning(f"  DENIED  {net} {year} - 403, not entitled")
         except Exception as exc:
             errors.append((net, year, f"{type(exc).__name__}: {exc}"[:120]))
             logger.warning(f"  ERROR   {net} {year}: {type(exc).__name__}")
@@ -98,7 +104,13 @@ def main(argv=None) -> int:
     by_net = collections.Counter(n for n, _ in missing)
     print(f"\n=== planned network-years that EarthScope does not have ===")
     print(f"  checked {len(restricted)}  present {len(ok)}  "
-          f"MISSING {len(missing)}  errors {len(errors)}")
+          f"MISSING {len(missing)}  DENIED {len(denied)}  errors {len(errors)}")
+    if denied:
+        dn = collections.Counter(n for n, _ in denied)
+        print(f"  403 NOT ENTITLED - these exist but we cannot read them, "
+              f"which is a request to EarthScope, not a plan correction:")
+        for n, c in dn.most_common():
+            print(f"    {n:4s} {c:3d} years  {sorted(y for nn, y in denied if nn == n)}")
     if restricted:
         print(f"  missing fraction: {len(missing)/len(restricted):.1%}")
     for n, c in by_net.most_common(25):
@@ -109,6 +121,7 @@ def main(argv=None) -> int:
         import s3fs
         payload = {"checked": len(restricted), "present": len(ok),
                    "missing": [[n, y] for n, y in missing],
+                   "denied": [[n, y] for n, y in denied],
                    "errors": errors}
         with s3fs.S3FileSystem().open(args.out, "w") as f:
             json.dump(payload, f, indent=1)
