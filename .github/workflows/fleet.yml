@@ -116,6 +116,9 @@ jobs:
           python - <<'PY'
           import json, os
           camp, target = os.environ["CAMPAIGN"], int(os.environ["TARGET"])
+          d = json.load(open("fleet.json"))
+          if camp not in d["campaigns"]:
+              raise SystemExit(f"unknown campaign {camp}")
 
           # The ceiling is the QUOTA, read live, not a number somebody typed
           # here. Batch will not run more than maxVcpus anyway - asking for more
@@ -176,9 +179,6 @@ jobs:
                   f"held by other campaigns and {foreign} foreign jobs). "
                   f"Lower another campaign first, or raise the quota.")
 
-          d = json.load(open("fleet.json"))
-          if camp not in d["campaigns"]:
-              raise SystemExit(f"unknown campaign {camp}")
           old = d["campaigns"][camp]["target"]
           d["campaigns"][camp]["target"] = target
           json.dump(d, open("fleet.json", "w"), indent=2)
