@@ -1043,6 +1043,47 @@ shards on `quakescope_v3_worker:4` and compare `s3.get` seconds and MB against
 the SCEDC baseline. Two hours; it either confirms the estimate or changes the
 campaign plan.
 
+## 3a. MEASURED cleanly — amplitude is the bigger cost, at least on `original`
+
+**The only profile worth quoting is `--procs 1`.** The profiler says so itself:
+
+> `--profile with --procs 4: worker loops contend for the same cores, so
+> per-stage attribution will be distorted. Use --procs 1.`
+
+Every dry-run arm except two ran `--procs 4`, so their stage percentages are
+not usable. `west1b` (AZ 2018, `original`, procs 1, OMP 8, 16 station-days,
+152 s wall, 1,128 MB read) is the clean one:
+
+| stage | clean (procs 1) | distorted (procs 4) |
+|---|--:|--:|
+| `model.classify` | 32.5% | 58.1% |
+| **`amp.wood_anderson`** | **31.5%** | 24.6% |
+| `amp.velocity` | 17.6% | 14.5% |
+| `resample` | **7.4%** | 15.8% |
+| `s3.get` | 7.1% | 4.1% |
+
+Two things this settles.
+
+**Resample is not a problem.** It was reported here at 29.4% from a single
+`--procs 4` shard and treated as a cost-model error against the 12.7% in the
+model. Measured cleanly it is **7.4%** — the model if anything over-charges it.
+Fragmentation is not the cause either: `esr1` (AV) had the `fragments shorter`
+warning on **65%** of station-days and resampled *nothing*, because AV is EH/BH
+at ≤100 Hz; `west4` (AZ) had it on 4% and did all the resampling. The cost
+tracks **sample rate, not fragment count**, so merging traces before resampling
+would buy nothing. A 44 MB 200 Hz SCEDC object read back as **1 trace, 0 gaps**,
+and merging it gained 1.02x.
+
+**Amplitude extraction is 49.1% of wall, against inference's 32.5%** — which
+inverts the framing in item 3 below.
+
+⚠️ **Do not generalise this to the whole campaign.** Western runs `original`,
+which is ~0.35x the inference cost of `jma_wc`. Amplitude looks large here
+partly because inference is cheap. The three `jma_wc` campaigns are 78M of the
+113M station-days, and inference should dominate there again. This is 16
+station-days of one weight on one network; the equivalent `--procs 1` profile on
+a `jma_wc` campaign has not been taken.
+
 ## 3. `amp.wood_anderson` is 20–58% of runtime, and inference is the bigger lever
 
 **Revised 2026-09-01.** The "58%" was one shard. Across the three shards now
