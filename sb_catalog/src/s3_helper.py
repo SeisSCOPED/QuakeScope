@@ -715,6 +715,18 @@ class S3DataSource:
                     with stage("s3.list"):
                         listing = self.s3helper.list_day(net, fs, prefix)
                     avail_uri[net] += listing
+                except EarthScopeNotEntitled as exc:
+                    # 403 is a fact about entitlement, not a transient fault.
+                    # Failing the shard means ten retries, permanent failure,
+                    # and a requeue to fail again - so a network we are simply
+                    # not allowed would look exactly like a broken fleet. Treat
+                    # it as no data for this network and let the shard finish.
+                    #
+                    # Loud, not silent: unlike a 404 this is worth acting on,
+                    # and the sweep exists to find them before launch rather
+                    # than during it.
+                    logger.error(f"{net} {day:%Y.%j}: {exc}")
+                    continue
                 except FileNotFoundError:
                     logger.debug(f"Path does not exist {prefix}")
                     pass

@@ -372,3 +372,28 @@ def test_not_entitled_is_distinct_from_missing():
         "403 must not be swallowed by the listing loop's FileNotFoundError "
         "handler - an entitlement gap has to be visible"
     )
+
+
+def test_a_denied_network_does_not_kill_the_shard():
+    """403 must not propagate out of the listing loop.
+
+    EarthScopeNotEntitled is a RuntimeError - deliberately NOT a
+    FileNotFoundError, so it stays visible - which means the loop's
+    FileNotFoundError handler does not catch it. Unhandled, a shard on a denied
+    network burns ten Batch retries, fails permanently, requeues and fails
+    again: a network we are simply not allowed to read would look like a broken
+    fleet. 127 western shards were in that position before launch.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).parent.parent / "sb_catalog/src/s3_helper.py"
+    tree = ast.parse(src.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "load_waveforms")
+    handlers = [h for node in ast.walk(fn) if isinstance(node, ast.Try)
+                for h in node.handlers]
+    names = {ast.dump(h.type) for h in handlers if h.type is not None}
+    assert any("EarthScopeNotEntitled" in n for n in names), (
+        "the listing loop must handle a denied network"
+    )
