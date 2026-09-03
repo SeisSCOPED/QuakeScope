@@ -125,8 +125,12 @@ def test_the_accelerometer_caveat_is_written_down():
     import pathlib
     src = (pathlib.Path(__file__).parent.parent
            / "sb_catalog/src/constants.py").read_text()
-    lo = src.index('"BN"')
-    window = src[max(0, lo - 1400):lo]
+    # `BN` is BOTH a network code and a channel band, in different namespaces -
+    # NETWORK_MAPPING has "BN": "earthscope" long before CHANNEL_PRIORITY. Anchor
+    # on the priority list or this reads the wrong part of the file.
+    block = src[src.index("CHANNEL_PRIORITY = ["):]
+    lo = block.index('"BN"')
+    window = block[:lo]
     assert "trained" in window and "accelerometer" in window, (
         "the out-of-distribution caveat must sit with the BN entry"
     )

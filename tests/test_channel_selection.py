@@ -22,7 +22,12 @@ def test_channel_selection():
     # as a last resort. EP, EL and SL were dropped 2026-09-02: no training set
     # contains them, so picking on one is out of distribution rather than
     # merely second-best.
-    assert set(CHANNEL_PRIORITY) == {"HH", "EH", "SH", "BH", "DP", "HN", "CN"}
+    #
+    # BN joined 2026-09-03 with GeoNet, ranked at the BH tier: a BROADBAND
+    # accelerometer rather than a strong-motion one. It shares HN's
+    # out-of-distribution caveat - see tests/test_geonet.py.
+    assert set(CHANNEL_PRIORITY) == {
+        "HH", "EH", "SH", "BH", "BN", "DP", "HN", "CN"}
     for gone in ("EP", "EL", "SL"):
         assert gone not in CHANNEL_PRIORITY
         assert select_channel([gone]) is None, f"{gone} must not be pickable"
