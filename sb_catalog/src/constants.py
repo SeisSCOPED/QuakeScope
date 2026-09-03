@@ -512,6 +512,20 @@ CHANNEL_PRIORITY = [
     "EH",   # 100 Hz, high-gain short-period
     "SH",   #  50 Hz, high-gain short-period
     "BH",   #  40 Hz, high-gain broadband
+    # BN sits with BH rather than with the accelerometers below, on
+    # M. Denolle's call 2026-09-03: it is a BROADBAND accelerometer, not a
+    # strong-motion one, and is closer in character to the Paroscientific
+    # instruments this group works with than to HN. Not a channel US networks
+    # give us, but it is GeoNet's most common band - 878 of 2,036 objects on a
+    # sample day - so excluding it would drop most of the New Zealand network.
+    #
+    # CAVEAT, and it is the same one HN carries: no phase picker here is
+    # trained on accelerometer data. jma_wc, original and obs are all trained
+    # on velocity seismometers. Picks on BN are out of distribution in the same
+    # way HN picks are, and should be treated as lower confidence until
+    # somebody scores them against analyst picks. Placing BN high in the order
+    # is a statement about instrument quality, not about training coverage.
+    "BN",   #  broadband accelerometer (GeoNet). See the caveat above.
     # nodal geophone. Kept, but note that only the 2014 deployment is in
     # miniSEED - the rest of EarthScope's nodal archive is still PH5 - so most
     # DP station-days are expected to miss rather than pick. 61% of planned DP

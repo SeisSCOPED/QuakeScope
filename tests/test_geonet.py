@@ -90,3 +90,43 @@ def test_geonet_reads_like_scedc_not_earthscope():
     src = (pathlib.Path(__file__).parent.parent
            / "sb_catalog/src/s3_helper.py").read_text()
     assert 'if dc in ["scedc", "ncedc", "geonet"]:' in src
+
+
+def test_bn_ranks_with_broadband_not_with_accelerometers():
+    """BN is a BROADBAND accelerometer and sits at the BH tier.
+
+    M. Denolle, 2026-09-03: closer in character to the Paroscientific
+    instruments this group works with than to strong-motion HN. It is also
+    GeoNet's most common band - 878 of 2,036 objects on a sample day - so
+    excluding it would drop most of the New Zealand network.
+    """
+    from sb_catalog.src.constants import CHANNEL_PRIORITY, select_channel
+
+    i = CHANNEL_PRIORITY.index
+    assert i("BH") < i("BN") < i("HN"), "BN belongs between BH and HN"
+
+    # A BN-only station is picked, not skipped.
+    assert select_channel(["BN"]) == "BN"
+    # Broadband velocity still wins where a station offers both.
+    assert select_channel(["HH", "BN"]) == "HH"
+    assert select_channel(["EH", "BN"]) == "EH"
+    # But BN beats the strong-motion accelerometers.
+    assert select_channel(["BN", "HN"]) == "BN"
+
+
+def test_the_accelerometer_caveat_is_written_down():
+    """No picker here is trained on accelerometer data.
+
+    jma_wc, original and obs are all trained on velocity seismometers, so BN
+    and HN picks are out of distribution. Ranking BN highly is a claim about
+    instrument quality, not about training coverage, and the distinction has to
+    survive in the source rather than living only in a conversation.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).parent.parent
+           / "sb_catalog/src/constants.py").read_text()
+    lo = src.index('"BN"')
+    window = src[max(0, lo - 1400):lo]
+    assert "trained" in window and "accelerometer" in window, (
+        "the out-of-distribution caveat must sit with the BN entry"
+    )
