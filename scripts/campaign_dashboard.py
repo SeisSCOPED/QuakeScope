@@ -52,6 +52,17 @@ FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rat
 # density (0.354x). Everything downstream of it is arithmetic, and the page
 # says so - a projection is not an observation.
 VCPU_H_PER_STATION_DAY = 0.068 * 0.354
+# The rate above is per station-day that IS PROCESSED. The plan is counted in
+# station-days that are PLANNED, and most of those have no data: measured hit
+# rates are 21.7% (CI 2010), 38.7% (CI 2015), 67.6% (AK 2020). Multiplying the
+# processed rate by the planned count assumes every planned day has data - a
+# 100% hit rate - and overstates the bill by 1.5-4.6x.
+#
+# That is what the page did until 2026-09-03, which is why it quoted $40,708
+# against the $10,828-$19,702 of 24_cost_model.md, the model that supersedes
+# every other figure. Both numbers are now shown, because the honest answer is
+# a range whose width is one unmeasured quantity.
+HIT_RATE = float(os.environ.get("HIT_RATE", "0.40"))
 QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
 # Parquet objects to scan for the per-station and per-day breakdowns. The
 # headline count is metadata-only and always exact; only the breakdowns are
@@ -784,6 +795,7 @@ def render(g, examples):
             continue
         vh = sd * VCPU_H_PER_STATION_DAY
         cost = vh * FARGATE_SPOT_RATE
+        cost_exp = cost * HIT_RATE          # what we actually expect to pay
         hours = vh / QUOTA_VCPU
         blocked = BLOCKED.get(c["name"])
         if not blocked:            # the total is what can actually be run
@@ -799,11 +811,13 @@ def render(g, examples):
             f'<td class="num">{sd:,}</td><td class="num">{c["shards"]:,}</td>'
             f'<td class="num">{vh:,.0f}</td>'
             f'<td class="num">${cost:,.0f}</td>'
+            f'<td class="num">${cost_exp:,.0f}</td>'
             f'<td class="num">{hours:,.1f} h</td></tr>')
     plan_total = (
         f'<tr class="tot"><td>runnable total</td><td class="num">{tot_sd:,}</td>'
         f'<td class="num"></td><td class="num">{tot_vh:,.0f}</td>'
         f'<td class="num">${tot_vh * FARGATE_SPOT_RATE:,.0f}</td>'
+        f'<td class="num">${tot_vh * FARGATE_SPOT_RATE * HIT_RATE:,.0f}</td>'
         f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
 
     bad_note = ""
@@ -966,6 +980,15 @@ over 10,440 station-days on the live SCEDC campaign, times 0.354 for the
 short-window amplitude rework). Time assumes the full
 {QUOTA_VCPU:,}-vCPU Fargate Spot quota with nothing else running. These are
 projections, not observations - the tiles above are what actually happened.</p>
+<p class="cap"><strong>Two figures, and the difference is the hit rate.</strong>
+The rate above is per station-day <em>processed</em>; the plan counts
+station-days <em>planned</em>, and most planned days hold no data - measured
+hit rates run 21.7% to 67.6%. The <b>upper bound</b> column assumes every
+planned day has data; the <b>expected</b> column applies a {HIT_RATE:.0%} hit
+rate. The authoritative model,
+<a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/24_cost_model.md">24_cost_model.md</a>,
+puts the campaign at <b>$10,828-$19,702</b> and says which end depends on that
+one unmeasured number.</p>
 <p class="cap">Nothing is blocked. The EarthScope restricted access point was
 never stalling: the credential request was unscoped, so it could LIST but not
 GET, and every read returned AccessDenied instantly. Scoping it to
@@ -978,7 +1001,7 @@ were dropped from <code>global</code> on 2026-09-03 and can be restored if
 EarthScope grants access.</p>
 <div class="scroll">
 <table><thead><tr><th>campaign</th><th class="num">station-days</th>
-<th class="num">shards</th><th class="num">vCPU-h</th><th class="num">est. cost</th>
+<th class="num">shards</th><th class="num">vCPU-h</th><th class="num">upper bound</th><th class="num">expected</th>
 <th class="num">at full quota</th></tr></thead>
 <tbody>{''.join(plan_rows)}{plan_total}</tbody></table></div>
 
