@@ -9,7 +9,7 @@
       "threads": 2
     },
     "global": {
-      "target": 0,
+      "target": 100,
       "job_definition": "quakescope_2026_global:1",
       "weight": "jma_wc",
       "procs": 4,
