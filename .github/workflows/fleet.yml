@@ -21,6 +21,9 @@ name: Fleet
 #   Actions -> Fleet -> Run workflow -> pick campaign + target -> Run
 # Manual runs are limited to the operators in ALLOWED below. The schedule is
 # not: it keeps holding whatever target is committed, with nobody present.
+# The target you may ask for is bounded by the LIVE quota - maxVcpus divided by
+# the task size, less what the other campaigns hold and anything else in the
+# queue - so the three campaigns cannot between them oversubscribe it.
 # The change is committed to fleet.json, so that file is the audit trail of who
 # scaled what and when. target 0 stops a campaign without losing its place.
 
@@ -114,20 +117,64 @@ jobs:
           import json, os
           camp, target = os.environ["CAMPAIGN"], int(os.environ["TARGET"])
 
-          # Anyone with write access to this repository can press the button -
-          # 11 people as of 2026-09-03 - and the input is free text. The
-          # compute environment's maxVcpus caps what can actually run at 1,500
-          # tasks (~$177/hour), so a typo cannot run away without bound, but it
-          # would spend at the maximum rate until somebody noticed. Refuse the
-          # obviously-wrong number instead, and say what the ceiling is.
-          MAX = int(os.environ.get("MAX_TARGET", "600"))
+          # The ceiling is the QUOTA, read live, not a number somebody typed
+          # here. Batch will not run more than maxVcpus anyway - asking for more
+          # just queues workers that sit RUNNABLE - so the real limit is
+          #
+          #     maxVcpus / vCPU-per-task  -  everything else already in the queue
+          #
+          # and the budget is FLEET-WIDE: three campaigns share one queue, so
+          # what this campaign may have is the ceiling minus what the others are
+          # already holding. A per-campaign cap would let their sum exceed the
+          # quota and silently starve whichever asked last.
+          import boto3, collections
+          b = boto3.client("batch", region_name="us-east-2")
+          Q = "niyiyu_earthscope_missing_station"
+          q = b.describe_job_queues(jobQueues=[Q])["jobQueues"][0]
+          ce = b.describe_compute_environments(computeEnvironments=[
+              q["computeEnvironmentOrder"][0]["computeEnvironment"]
+          ])["computeEnvironments"][0]
+          maxv = ce["computeResources"]["maxvCpus"]
+
+          jd = d["campaigns"][camp]["job_definition"].split(":")[0]
+          jdef = max(b.describe_job_definitions(jobDefinitionName=jd,
+                     status="ACTIVE")["jobDefinitions"],
+                     key=lambda x: x["revision"])
+          vcpu = int([x["value"] for x in
+                      jdef["containerProperties"]["resourceRequirements"]
+                      if x["type"] == "VCPU"][0])
+          ceiling = maxv // vcpu
+
+          # Anything in the queue that is not one of our campaigns - a
+          # diagnostic, a sweep, somebody else's job - is capacity we do not
+          # have. Counted live rather than assumed.
+          names = tuple(d["campaigns"])
+          foreign = 0
+          for st in ("SUBMITTED","PENDING","RUNNABLE","STARTING","RUNNING"):
+              tok = None
+              while True:
+                  kw = dict(jobQueue=Q, jobStatus=st, maxResults=100)
+                  if tok: kw["nextToken"] = tok
+                  r = b.list_jobs(**kw)
+                  foreign += sum(1 for j in r["jobSummaryList"]
+                                 if not j["jobName"].startswith(names))
+                  tok = r.get("nextToken")
+                  if not tok: break
+
+          others = sum(v["target"] for k, v in d["campaigns"].items() if k != camp)
+          allowed = ceiling - foreign - others
+          print(f"::notice::quota {maxv:,} vCPU / {vcpu} per task = {ceiling:,} "
+                f"workers; {others} held by other campaigns, {foreign} foreign "
+                f"jobs -> {camp} may have up to {allowed:,}")
+
           if target < 0:
               raise SystemExit(f"target must be >= 0, got {target}")
-          if target > MAX:
+          if target > allowed:
               raise SystemExit(
-                  f"target {target} exceeds the {MAX}-worker guard. That is "
-                  f"~${target * 0.118:,.0f}/hour. If you really want it, raise "
-                  f"MAX_TARGET in fleet.yml in a commit somebody can review.")
+                  f"target {target} exceeds what is available: {allowed:,} "
+                  f"({ceiling:,} from the {maxv:,}-vCPU quota, less {others} "
+                  f"held by other campaigns and {foreign} foreign jobs). "
+                  f"Lower another campaign first, or raise the quota.")
 
           d = json.load(open("fleet.json"))
           if camp not in d["campaigns"]:
