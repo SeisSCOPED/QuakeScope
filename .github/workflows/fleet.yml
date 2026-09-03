@@ -61,7 +61,12 @@ jobs:
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_WATCH_ROLE_ARN }}
+          # vars, NOT secrets: the role ARN is a repository VARIABLE here, as
+          # campaign-status.yml uses it. Written as secrets.* it resolves to an
+          # empty string, configure-aws-credentials silently skips assuming
+          # anything, and the failure surfaces two steps later as
+          # NoCredentialsError.
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
           aws-region: us-east-2
 
       # A manual run edits the target first, so the top-up below uses the new
