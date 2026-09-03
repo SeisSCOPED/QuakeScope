@@ -1,0 +1,157 @@
+name: Fleet
+
+# Holds the campaign fleets at their target size, and lets you change that
+# target from anywhere - including the GitHub mobile app, which is the point.
+#
+# WHY THIS AND NOT A SERVER. Batch caps retryStrategy.attempts at 10 and will
+# not raise it, so on a pool reclaiming 37-53% of attempts a worker's whole life
+# is about ten reclaims, after which it fails permanently and nothing replaces
+# it. Something outside Batch has to resubmit. That something was going to be a
+# small EC2 box running the governor loop; it is this instead, because a box is
+# one more thing to keep alive, it fails silently when it dies, and you cannot
+# scale it from a phone.
+#
+# The trade is cadence. GitHub's scheduler delays cron under load - we have seen
+# an hourly job land 40 minutes late - so the fleet sags between runs rather
+# than sitting exactly on target. That is throughput variance, not failure: the
+# queue is durable and every top-up brings it back. A fleet that oscillates
+# between 60 and 100 workers finishes; a fleet nobody notices has died does not.
+#
+# TO CHANGE THE FLEET, from a phone or anywhere:
+#   Actions -> Fleet -> Run workflow -> pick campaign + target -> Run
+# The change is committed to fleet.json, so that file is the audit trail of who
+# scaled what and when. target 0 stops a campaign without losing its place.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"     # top up; offset from the other jobs by minute
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "Which campaign to change"
+        required: true
+        type: choice
+        options: [western, global, obs]
+      target:
+        description: "Workers to hold (0 stops it; the queue keeps its place)"
+        required: true
+        type: string
+        default: "100"
+
+permissions:
+  contents: write        # commits the new target to fleet.json
+  id-token: write        # OIDC to assume the AWS role
+
+concurrency:
+  group: fleet
+  cancel-in-progress: false
+
+jobs:
+  fleet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet boto3 pandas
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-east-2
+
+      # A manual run edits the target first, so the top-up below uses the new
+      # value in the same run - press the button, see it take effect.
+      - name: Set the new target
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          python - <<'PY'
+          import json, os
+          camp, target = os.environ["CAMPAIGN"], int(os.environ["TARGET"])
+          d = json.load(open("fleet.json"))
+          if camp not in d["campaigns"]:
+              raise SystemExit(f"unknown campaign {camp}")
+          old = d["campaigns"][camp]["target"]
+          d["campaigns"][camp]["target"] = target
+          json.dump(d, open("fleet.json", "w"), indent=2)
+          print(f"::notice::{camp}: target {old} -> {target}")
+          PY
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          if ! git diff --quiet -- fleet.json; then
+            git add fleet.json
+            git commit -m "Fleet: ${{ inputs.campaign }} target -> ${{ inputs.target }} [skip ci]"
+            for i in 1 2 3; do
+              git push origin "HEAD:${GITHUB_REF_NAME}" && break
+              git pull --rebase -X theirs --autostash origin "${GITHUB_REF_NAME}"
+            done
+          fi
+
+      - name: Top up every campaign to its target
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          cfg = json.load(open("fleet.json"))["campaigns"]
+          rc = 0
+          for name, c in cfg.items():
+              if c["target"] <= 0:
+                  print(f"--- {name}: target 0, not running")
+                  continue
+              print(f"--- {name}: target {c['target']}")
+              # --once: submit what is missing and exit. The schedule is the
+              # loop, so the workflow never holds a runner open.
+              r = subprocess.run([
+                  sys.executable, "scripts/spot_governor.py",
+                  "--campaign", f"s3://quakescope-picks-2026/{name}",
+                  "--job-definition", c["job_definition"],
+                  "--weight", c["weight"],
+                  "--procs", str(c["procs"]), "--threads", str(c["threads"]),
+                  "--target", str(c["target"]),
+                  "--name-prefix", name,
+                  "--max-submissions", str(c["target"]),   # per run, not per life
+                  "--once",
+              ])
+              rc |= r.returncode
+          sys.exit(rc)
+          PY
+
+      - name: Report the fleet
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, boto3
+          from sb_catalog.src.s3_state import S3CampaignState
+          b = boto3.client("batch", region_name="us-east-2")
+          cfg = json.load(open("fleet.json"))["campaigns"]
+          print("| campaign | target | alive | shards done | remaining |")
+          print("|---|--:|--:|--:|--:|")
+          for name, c in cfg.items():
+              alive = 0
+              for st in ("SUBMITTED","PENDING","RUNNABLE","STARTING","RUNNING"):
+                  tok = None
+                  while True:
+                      kw = dict(jobQueue="niyiyu_earthscope_missing_station",
+                                jobStatus=st, maxResults=100)
+                      if tok: kw["nextToken"] = tok
+                      r = b.list_jobs(**kw)
+                      alive += sum(1 for j in r["jobSummaryList"]
+                                   if j["jobName"].startswith(name))
+                      tok = r.get("nextToken")
+                      if not tok: break
+              try:
+                  p = S3CampaignState(f"s3://quakescope-picks-2026/{name}").progress()
+                  done, rem = p["complete"], p["remaining"]
+              except Exception:
+                  done = rem = "?"
+              print(f"| {name} | {c['target']} | {alive} | {done:,} | {rem:,} |"
+                    if isinstance(done, int) else
+                    f"| {name} | {c['target']} | {alive} | {done} | {rem} |")
+          PY
