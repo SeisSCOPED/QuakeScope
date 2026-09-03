@@ -54,8 +54,17 @@ SPOT_REASON = "Your Spot Task was interrupted."
 BATCH_MAX_ATTEMPTS = 10
 
 
-def alive_count(batch, queue: str) -> dict:
-    """Workers occupying the pool right now, by status.
+def alive_count(batch, queue: str, prefix: str) -> dict:
+    """Workers THIS campaign has in the pool right now, by status.
+
+    `prefix` is the job-name prefix, and it is not optional. All campaigns share
+    one queue, so counting every job in it means each campaign sees the others'
+    workers and concludes it is already at target. That is exactly what
+    happened on 2026-09-03: obs was set to 59 while western held 101, the
+    governor read `alive 101 >= 59`, submitted nothing, and obs never started -
+    while reporting deficit 0, so it looked like it had.
+
+    The soak test could not catch it: only one campaign was running.
 
     RUNNABLE counts: a job waiting on capacity is still a worker we asked for,
     and submitting more because it has not started yet is how you end up with a
@@ -69,7 +78,8 @@ def alive_count(batch, queue: str) -> dict:
             if tok:
                 kw["nextToken"] = tok
             r = batch.list_jobs(**kw)
-            n += len(r["jobSummaryList"])
+            n += sum(1 for j in r["jobSummaryList"]
+                     if j["jobName"].startswith(prefix))
             tok = r.get("nextToken")
             if not tok:
                 break
@@ -168,13 +178,13 @@ def main(argv=None) -> int:
                         f"running workers will drain and stop on their own.")
             return 0
 
-        alive = alive_count(batch, args.queue)
+        alive = alive_count(batch, args.queue, args.name_prefix)
         n_alive = sum(alive.values())
         deficit = max(0, args.target - n_alive)
         spot, att = reclaim_rate(batch, args.queue)
 
         logger.info(
-            f"queue={args.queue} shards {done}/{total} | alive {n_alive} "
+            f"{args.name_prefix}: shards {done}/{total} | alive {n_alive} "
             f"(run {alive.get('RUNNING',0)} runnable {alive.get('RUNNABLE',0)}) "
             f"| target {args.target} deficit {deficit} | "
             f"spot reclaims {spot}/{att} attempts in 6h "
