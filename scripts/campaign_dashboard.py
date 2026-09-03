@@ -65,13 +65,13 @@ TASK_VCPU = 8                       # per job definition
 
 # Campaigns whose data cannot currently be read, and why. Shown on the plan so
 # a queue that is deliberately parked is not mistaken for one that is failing.
-BLOCKED = {
-    "western-b": "EarthScope restricted access point: reads stall and time out "
-                 "at 900 s even from inside us-east-2, where GetObject is "
-                 "permitted. Not a permissions problem - under diagnosis. "
-                 "Parked.",
-    "earthscope": "Mostly the EarthScope restricted access point - same stall.",
-}
+# Nothing is blocked as of 2026-09-02. The restricted EarthScope access point
+# was never stalling: the credential request was unscoped, so it could LIST but
+# not GET, and every read returned AccessDenied instantly. Adding
+# `network=FDSN:<NET>` (and `year=` for temporary networks) fixed it, and
+# restricted reads now run at 96-98 MB/s - the same rate as Open Data. See
+# docs/rerun_2026/19 and OPTIMISE item 0g.
+BLOCKED: dict[str, str] = {}
 
 BASEMAP = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "data", "basemap.json")
@@ -88,6 +88,65 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+
+def _count_rows_cached(campaign, files):
+    """Total rows across `files`, reading only footers never seen before.
+
+    A picks object is immutable: a shard writes it once and nothing rewrites it.
+    So the hourly job re-reading every footer is pure waste, and it is the
+    dominant cost - `western-a` is 29,936 objects and took 518 s of a 594 s
+    run, 87% of the total, to recount picks that had not changed since the
+    previous hour.
+
+    The cache lives beside the campaign rather than in the runner, because the
+    runner is ephemeral and this has to survive between hourly runs. It is
+    keyed by object path, so:
+
+      * new objects are counted and added,
+      * objects that vanished are dropped - which is what compaction does when
+        it replaces many small files with one large one, so the count stays
+        correct across a compaction rather than double-counting it.
+
+    Deliberately NOT under picks/, or the dataset scan would try to read it as
+    Parquet, and it would fall under the public-read grant. It stays private.
+    """
+    import pyarrow.parquet as pq
+    from concurrent.futures import ThreadPoolExecutor
+
+    key = f"{campaign}/.dashboard/rowcount.json"
+    s3 = boto3.client("s3", region_name=REGION)
+    try:
+        cache = json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
+    except Exception:
+        cache = {}                       # first run, or unreadable: rebuild
+
+    want = set(files)
+    new = sorted(want - set(cache))
+    gone = set(cache) - want
+
+    if new:
+        afs = _arrow_fs()
+
+        def _rows(f):
+            return pq.read_metadata(f, filesystem=afs).num_rows
+
+        with ThreadPoolExecutor(max_workers=PICK_COUNT_THREADS) as ex:
+            for f, n in zip(new, ex.map(_rows, new)):
+                cache[f] = n
+    for f in gone:
+        cache.pop(f, None)
+
+    if new or gone:
+        try:
+            s3.put_object(Bucket=BUCKET, Key=key,
+                          Body=json.dumps(cache).encode())
+        except Exception:
+            # A cache that cannot be written is a slow next run, not a wrong
+            # answer. The count below is already correct.
+            pass
+    return sum(cache.get(f, 0) for f in want)
+
+
 def parquet_stats(campaign, max_files=None):
     """Pick counts straight from the Parquet, not from the manifests.
 
@@ -97,10 +156,10 @@ def parquet_stats(campaign, max_files=None):
     is filling normally. The picks themselves are durable either way: they were
     flushed before the interruption.
 
-    Row counts come from the Parquet footers via count_rows(), so the headline
-    number costs metadata reads rather than a full scan. The per-station and
-    per-day breakdowns do need column data, so they read two columns and say so
-    on the page when they had to sample.
+    Row counts come from the Parquet footers, read in parallel, so the headline
+    number costs metadata reads rather than a full scan and stays exact as the
+    catalogue grows. The per-station and per-day breakdowns do need column data,
+    so they read two columns and say so on the page when they had to sample.
     """
     import pyarrow.dataset as ds
 
@@ -120,8 +179,14 @@ def parquet_stats(campaign, max_files=None):
         return out
     if not files:
         return out
+    # count_rows() reads every footer SERIALLY, so its cost is one S3 round
+    # trip per object - 75.5s for 514 objects, measured. That is linear in the
+    # catalogue and this job runs hourly: the 2026-09-02 runs took 38-60
+    # minutes, and a campaign-sized bucket would not finish inside the hour at
+    # all. The footers are independent, so read them in parallel. Same number,
+    # 8x faster on the same data (75.5s -> 9.2s), exact rather than sampled.
     try:
-        out["picks"] = dataset.count_rows()
+        out["picks"] = _count_rows_cached(campaign, files)
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"[:120]
         return out
@@ -153,6 +218,12 @@ def parquet_stats(campaign, max_files=None):
         # implying the campaign has four stations in it.
         out["error"] = f"map/series unavailable - {type(exc).__name__}"
     return out
+
+
+# Concurrency for reading Parquet footers. Bounded rather than unlimited:
+# this runs while a live fleet is writing to the same bucket, and the point
+# is to stop being the slow thing, not to start being the throttling one.
+PICK_COUNT_THREADS = int(os.environ.get("PICK_COUNT_THREADS", "16"))
 
 
 def _arrow_fs():

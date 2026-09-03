@@ -121,7 +121,39 @@ jobs:
           else
             git add reports/campaign_dashboard.html
             git commit -m "Campaign dashboard: hourly rebuild [skip ci]"
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+
+            # Retry the push, rebasing each time.
+            #
+            # The pull above happens BEFORE generation, and generation takes
+            # 30-60 minutes against a campaign-sized bucket. Anyone pushing in
+            # that window makes this push non-fast-forward, and the run fails
+            # having done all the work - which is exactly what happened to the
+            # three scheduled runs on 2026-09-02, so the dashboard silently
+            # stopped updating for most of a day while showing no error anyone
+            # was watching.
+            #
+            # `-X theirs` during a rebase favours the commit being replayed,
+            # which is OURS. That is the right resolution for a generated file:
+            # our copy was produced from a strictly later view of S3, so if two
+            # rebuilds race, the newer one should win rather than conflict.
+            pushed=0
+            for attempt in 1 2 3 4 5; do
+              if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                pushed=1
+                break
+              fi
+              echo "push rejected (attempt ${attempt}) - rebasing onto the new tip"
+              if ! git pull --rebase -X theirs --autostash origin "${GITHUB_REF_NAME}"; then
+                git rebase --abort || true
+                echo "::error::could not rebase the dashboard onto ${GITHUB_REF_NAME}"
+                exit 1
+              fi
+              sleep $((attempt * 5))
+            done
+            if [ "$pushed" -ne 1 ]; then
+              echo "::error::dashboard rebuilt but could not be pushed after 5 attempts"
+              exit 1
+            fi
           fi
 
       - name: Update the dashboard issue
