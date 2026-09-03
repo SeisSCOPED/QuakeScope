@@ -65,6 +65,14 @@ def main() -> None:
 
         return hitrate_main(sys.argv[2:])
 
+    # Same reason as hitrate: it asks EarthScope's credential exchange whether
+    # each planned (network, year) exists, which needs the refresh token, which
+    # must not be used from a laptop.
+    if len(sys.argv) > 1 and sys.argv[1] == "netyear-sweep":
+        from .netyear_sweep import main as netyear_main
+
+        return netyear_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
