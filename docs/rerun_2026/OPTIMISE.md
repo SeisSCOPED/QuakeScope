@@ -760,6 +760,41 @@ neither carries `.response` and the 4xx fast-fail never saw them. Fixed in
 five times each would have been a large amount of worker time spent re-asking an
 answered question.
 
+## 0j. RESOLVED — GeoNet reads cross-region at 9.5 MB/s, and that is fine
+
+GeoNet is on the AWS Open Data Program in **ap-southeast-2** while the fleet
+runs in us-east-2, so every NZ read crosses the Pacific. Measured from a
+us-east-2 Fargate task at `--procs 1`, 60 real station-days on `5bb514e`:
+
+| | cross-region (Sydney) | in-region reference |
+|---|--:|--:|
+| `s3.get` throughput | **9.5 MB/s** | 94-101 MB/s |
+| `s3.get` share of wall | **23.9%** | 5-7% |
+
+Ten times slower per byte. **It costs far less than that suggests**, for two
+reasons.
+
+**Reads prefetch behind inference.** Accounted stage time is 669 s against 548 s
+of wall, so the stages overlap: `model.classify` is 425 s and `s3.get` is 131 s,
+and most of the reading happens while the model is busy. Making the bucket local
+would save at most 118 s of 548 - a **22% penalty**, not 10x.
+
+**NZ is a small slice.** ~1.4M station-days against 112.9M, so a 22% penalty on
+it is **0.26% of the campaign**, about **$29**.
+
+**Decision: leave it cross-region and fold NZ into the bundled global
+campaign.** A dedicated ap-southeast-2 compute environment would need its own
+Batch CE, queue, job definitions and cross-region result writes, and would then
+have to be operated and monitored alongside the existing one - all to recover
+$29. Revisit only if GeoNet grows to a materially larger share.
+
+Two incidental findings from the same run:
+
+* `resample` was **0.0 s**. NZ data is already at or below 100 Hz, so the
+  downsampling stage never fires - unlike AZ, where it is 7.4%.
+* `s3.list` is 2.5% of wall, higher than elsewhere, because GeoNet's day prefix
+  needs a recursive listing to see past the station directories.
+
 ## 0f. OPEN — the Spot pool is volatile enough to exhaust the retry cap
 
 **Measured 2026-09-02.** A validation job was reclaimed **ten times in a row**,
