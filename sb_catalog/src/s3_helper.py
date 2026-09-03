@@ -38,6 +38,11 @@ EARTHSCOPE_S3_ACCESS_POINT = os.environ.get("EARTHSCOPE_S3_ACCESS_POINT", "")
 # are not cross-region either.
 EARTHSCOPE_OPEN_DATA_BUCKET = "earthscope-geophysical-data"
 
+# GeoNet (New Zealand) on the AWS Open Data Program: public, anonymous, and
+# in ap-southeast-2 rather than us-east-2 like everything else we read.
+GEONET_BUCKET = os.environ.get("GEONET_BUCKET", "geonet-open-data")
+GEONET_REGION = os.environ.get("GEONET_REGION", "ap-southeast-2")
+
 # Networks served by the Open Data Program. Anonymous, global, no role.
 # docs.earthscope.org/sdk/s3-direct-access-tutorial
 EARTHSCOPE_OPEN_DATA_NETWORKS = frozenset(
@@ -189,6 +194,17 @@ class S3ObjectHelper:
     def get_filesystem(self):
         pass
 
+    def list_day(self, fs, prefix) -> list:
+        """Objects under one day prefix.
+
+        A hook, because the archives are not shaped alike. SCEDC, NCEDC and
+        EarthScope put every object for a day directly under the day prefix, so
+        `ls` - one level - sees them all. GeoNet adds a station directory
+        underneath, where `ls` would return directories and no objects at all,
+        and the day would silently look empty.
+        """
+        return fs.ls(prefix)
+
 
 class SCEDCS3ObjectHelper(S3ObjectHelper):
     def get_prefix(self, net, year, day) -> str:
@@ -234,24 +250,68 @@ class EarthScopeS3ObjectHelper(S3ObjectHelper):
         return rf"{re.escape(f'{sta}.{net}.{year}.{day}')}(#.*)?$"
 
 
+class GeoNetS3ObjectHelper(S3ObjectHelper):
+    """GeoNet (New Zealand), AWS Open Data, anonymous.
+
+        waveforms/miniseed/2019/2019.001/ABAZ.NZ/2019.001.ABAZ.10-EHE.NZ.D
+                           YEAR YEAR.DOY STA.NET  YEAR.DOY.STA.LOC-CHACOMP.NET.D
+
+    One object per channel-component per station-day, like SCEDC - so a station
+    fetches only the band it needs, unlike EarthScope's single multi-channel
+    object. The extra STA.NET directory is the one structural difference, and
+    it is why `list_day` exists.
+
+    Location codes are always two digits here (10, 20, 21, 11), never blank,
+    and accelerometer components are 1/2/Z rather than E/N/Z - both already
+    covered by the default `--components ZNE12`.
+
+    **The bucket is in ap-southeast-2 and the fleet is in us-east-2.** Reads are
+    cross-region, which is a throughput question rather than a cost one - the
+    Open Data Program sponsors egress - but it has to be measured from a task
+    before this campaign is sized. See docs/rerun_2026.
+    """
+
+    def get_prefix(self, net, year, day) -> str:
+        return f"{GEONET_BUCKET}/waveforms/miniseed/{year}/{year}.{day}/"
+
+    def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
+        return f"{year}.{day}.{sta}.{loc}-{cha}{comp}.{net}.D"
+
+    def get_s3_path(self, net, sta, loc, cha, year, day, comp) -> str:
+        # NOT prefix + basename: the station directory sits between them.
+        prefix = self.get_prefix(net, year, day)
+        base = self.get_basename(net, sta, loc, cha, year, day, comp)
+        return f"{prefix}{sta}.{net}/{base}"
+
+    def list_day(self, fs, prefix) -> list:
+        # Recursive: the objects are one level below the day prefix.
+        return fs.find(prefix)
+
+
 class CompositeS3ObjectHelper(S3ObjectHelper):
     def __init__(self):
         self.helpers = {
             "scedc": SCEDCS3ObjectHelper(),
             "ncedc": NCEDCS3ObjectHelper(),
             "earthscope": EarthScopeS3ObjectHelper(),
+            "geonet": GeoNetS3ObjectHelper(),
         }
 
         self.s3 = {
             "scedc": "scedc-pds",
             "ncedc": "ncedc-pds",
             "earthscope": EARTHSCOPE_S3_ACCESS_POINT,
+            "geonet": GEONET_BUCKET,
         }
 
         self.ttl_threshold = datetime.timedelta(minutes=5)
         self.fs = {
             "scedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
             "ncedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+            # Pinned to its own region: without client_kwargs s3fs signs for
+            # us-east-2 and the request 301s to a redirect it does not follow.
+            "geonet": S3FileSystem(anon=True, config_kwargs=S3_CONFIG,
+                                   client_kwargs={"region_name": GEONET_REGION}),
         }
         # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
         # credential exchange entirely when the campaign has not been configured
@@ -285,6 +345,17 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         return self.helpers[self.get_data_center(net)].get_basename(
             net, sta, loc, cha, year, day, c
         )
+
+    def get_s3_path(self, net, sta, loc, cha, year, day, c) -> str:
+        # Delegated, not inherited: GeoNet composes prefix + STA.NET/ + basename
+        # rather than prefix + basename, so the base implementation is wrong
+        # for it.
+        return self.helpers[self.get_data_center(net)].get_s3_path(
+            net, sta, loc, cha, year, day, c
+        )
+
+    def list_day(self, net, fs, prefix) -> list:
+        return self.helpers[self.get_data_center(net)].list_day(fs, prefix)
 
     def get_filesystem(self, net, year=None):
         dc = self.get_data_center(net)
@@ -642,7 +713,7 @@ class S3DataSource:
                     # ~4,000 objects, so this is not free and is paid again for
                     # every day in the shard.
                     with stage("s3.list"):
-                        listing = fs.ls(prefix)
+                        listing = self.s3helper.list_day(net, fs, prefix)
                     avail_uri[net] += listing
                 except FileNotFoundError:
                     logger.debug(f"Path does not exist {prefix}")
@@ -690,7 +761,7 @@ class S3DataSource:
                 logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
                 stream = obspy.Stream()
 
-                if dc in ["scedc", "ncedc"]:
+                if dc in ["scedc", "ncedc", "geonet"]:
                     for channel in all_channels:
                         if check[channel]:
                             logger.debug(

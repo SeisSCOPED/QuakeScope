@@ -265,7 +265,11 @@ NETWORK_MAPPING = {
     "NW": "earthscope",
     "NX": "earthscope",
     "NY": "earthscope",
-    "NZ": "earthscope",
+    # GeoNet, not EarthScope. Both serve NZ and EarthScope's copy is in
+    # us-east-2 - same region as the fleet, so faster per byte - but it mirrors
+    # only 29 stations where GeoNet carries the whole network, 423 on a single
+    # 2019 day. Cross-region reads are the price of 14x the stations.
+    "NZ": "geonet",
     "O2": "earthscope",
     "OC": "earthscope",
     "OE": "earthscope",
