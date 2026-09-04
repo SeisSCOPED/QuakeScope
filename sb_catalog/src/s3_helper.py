@@ -175,6 +175,12 @@ _ES_STATE = {
     "exchanges": {},      # scope key -> [monotonic stamps], for the rate limit
     "denials": {},        # scope key -> consecutive AccessDenied count
     "client": None,       # the one earthscope_sdk client this process uses
+    # Which scoping each network turned out to want. Lives here rather than on
+    # the helper because `refused` does: the scope key is BUILT from the mode,
+    # so a per-helper mode files a verdict under one key and looks it up under
+    # another on the next shard. See CompositeS3ObjectHelper.__init__.
+    "scope_mode": {},     # net -> "network" | "network+year"
+    "scope_tried": {},    # net -> {modes already refused}
 }
 
 
@@ -183,6 +189,12 @@ def reset_earthscope_state() -> None:
 
     For tests and for a long-lived process whose access has genuinely changed;
     a campaign worker should never need it.
+
+    Clears each mapping IN PLACE rather than rebinding it. Helpers hold the
+    dicts directly (`self.es_refused`, `self.es_scope_mode`), so replacing them
+    here would leave any helper built before the reset writing into an orphaned
+    copy - the same lifetime trap that made a per-helper scope mode disagree
+    with a process-wide verdict store.
     """
     client = _ES_STATE["client"]
     if client is not None:
@@ -190,8 +202,11 @@ def reset_earthscope_state() -> None:
             client.close()
         except Exception:
             pass
-    _ES_STATE.update(refused={}, auth_failed=None, exchanges={},
-                     denials={}, client=None)
+    for key in ("refused", "exchanges", "denials", "scope_mode",
+                "scope_tried"):
+        _ES_STATE[key].clear()
+    _ES_STATE["auth_failed"] = None
+    _ES_STATE["client"] = None
 
 
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
@@ -456,8 +471,21 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # Which scoping each network wants. Seeded from a guess, corrected by
         # the first denial - the token exchange returns 200 for either scoping,
         # so nothing short of a GET can tell them apart.
-        self.es_scope_mode = {}               # net -> mode, below
-        self.es_scope_tried = {}              # net -> {modes already denied}
+        #
+        # PROCESS-WIDE, and it has to be, because `es_refused` below is.
+        # These two are read together: `es_scope_key` builds its key from the
+        # mode, so a mode that resets per shard files a verdict under one key
+        # and looks it up under another on the next shard. EarthScope's
+        # developers found what that costs and reported it on 2026-09-04.
+        # Shard 1 asks NP year-less, gets a 400, files it under the year-less
+        # key, escalates, and succeeds with the year. Shard 2 builds a fresh
+        # helper, defaults back to year-less, rebuilds that same key, finds
+        # shard 1's 400 and raises it - without ever asking for the year. The
+        # refusal outlived the helper; the escalation that made it survivable
+        # did not, and the network went unreadable for the rest of the
+        # process. Whatever lifetime the verdicts have, the mode must match.
+        self.es_scope_mode = _ES_STATE["scope_mode"]   # net -> mode, below
+        self.es_scope_tried = _ES_STATE["scope_tried"]  # net -> modes denied
         # Answers EarthScope has already given. 400/403/404/401 are verdicts on
         # the request, so the same request is never sent twice: the entry is
         # the exception itself, re-raised without touching the network.
@@ -632,7 +660,11 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         `default_scope_mode` is a guess and it can be wrong: a code we read as
         permanent may in fact be authorised per year. Discovering that costs
         one extra request, and the corrected mode is remembered per network, so
-        it is paid once per worker rather than per object.
+        it is paid once per PROCESS rather than per object - and, since
+        2026-09-04, per process rather than per shard. The mode lives in
+        `_ES_STATE` alongside the verdicts it shares a key space with; a
+        per-helper mode made the next shard re-ask the year-less question,
+        find the 400 this call had just filed, and give up on the network.
 
         The reverse direction is gone. Dropping the year from a temporary
         network's request produces exactly what EarthScope reported on

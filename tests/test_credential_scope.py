@@ -268,6 +268,78 @@ def test_a_400_on_a_yearless_scope_adds_the_year_once():
                     {"network": "FDSN:NP", "year": 2019}]
 
 
+def test_the_learned_year_scoping_survives_the_next_shard():
+    """Reported by EarthScope's developers, 2026-09-04.
+
+    A worker builds a fresh `CompositeS3ObjectHelper` per shard but runs many
+    shards in ONE process, so `_ES_STATE["refused"]` outlives the helper. The
+    learned scope mode did not, and the two disagreed:
+
+        shard 1  NP defaults to year-less -> 400 -> recorded under the
+                 year-less key -> escalate -> asks with the year -> succeeds
+        shard 2  fresh helper, mode defaults back to year-less, builds the
+                 SAME year-less key, finds shard 1's cached 400 and raises it
+                 without ever asking for the year
+
+    The refusal was remembered; the escalation that made it survivable was not.
+    So the DoS fix turned "one wasted request per network" into "this network
+    is unreadable for the rest of the process", which is the worse failure: it
+    loses data rather than bandwidth.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeScopeRefused
+
+    def shard():
+        """What the worker does at the top of each shard."""
+        h = CompositeS3ObjectHelper()
+        seen = []
+
+        def fake(net, year=None):
+            scope = h.es_scope(net, year)
+            seen.append(scope)
+            if "year" not in scope:
+                raise EarthScopeScopeRefused(
+                    "400: temporary networks require a year")
+            return _Cred()
+
+        h.get_es_credential = fake
+        return h, seen
+
+    h1, seen1 = shard()
+    assert h1.get_es_filesystem("NP", 2019) is not None
+    assert seen1 == [{"network": "FDSN:NP"},
+                     {"network": "FDSN:NP", "year": 2019}]
+
+    h2, seen2 = shard()
+    assert h2.get_es_filesystem("NP", 2019) is not None, (
+        "shard 2 raised shard 1's cached year-less 400 instead of asking "
+        "with the year it had already learned to send")
+    # And it costs nothing to know: the year-less question is not re-asked.
+    assert seen2 == [{"network": "FDSN:NP", "year": 2019}], seen2
+
+
+def test_the_scope_mode_shares_the_lifetime_of_the_verdicts():
+    """The invariant behind the test above, pinned so it cannot drift back.
+
+    `es_scope_key` is built from `es_scope_mode`, and the four scope-keyed
+    stores - refusals, the throttle's stamps, the denial counters and the
+    credentials - are all looked up with it. If the mode's lifetime is shorter
+    than theirs, keys written under one mode are read under another. So this
+    asserts identity, not equality: the helper must share the process-wide
+    dict rather than hold a copy of it.
+    """
+    from sb_catalog.src.s3_helper import _ES_STATE
+
+    h = CompositeS3ObjectHelper()
+    assert h.es_scope_mode is _ES_STATE["scope_mode"]
+    assert h.es_scope_tried is _ES_STATE["scope_tried"]
+    assert h.es_refused is _ES_STATE["refused"]
+
+    # And a second helper in the same process sees what the first learned.
+    h.escalate_scope_mode("NP")
+    assert CompositeS3ObjectHelper().es_scope("NP", 2019) == {
+        "network": "FDSN:NP", "year": 2019}
+
+
 def test_a_403_never_changes_the_scope():
     """403 means "no access", so a differently shaped request cannot help.
 
