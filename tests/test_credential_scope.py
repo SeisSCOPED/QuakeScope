@@ -650,7 +650,7 @@ def test_denials_are_counted_per_scope_not_per_object():
     """`_read_waveform_from_s3` resets its own counter on every call.
 
     On its own that re-ran the refresh for each of the thousands of objects in
-    a station-day we are no access to.
+    a station-day we cannot read.
     """
     h = CompositeS3ObjectHelper()
     for i in range(1, 6):

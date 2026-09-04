@@ -465,8 +465,8 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # This is the fix for the 2026-09-04 report. `load_waveforms` asks for a
         # filesystem once per day per network and `_read_waveform_from_s3` once
         # per object, and every one of those calls used to re-run the exchange
-        # after a refusal - a year-long shard on a network we are no access
-        # to sent ~366 credential requests, multiplied by every worker in the
+        # after a refusal - a year-long shard on a network we cannot read
+        # sent ~366 credential requests, multiplied by every worker in the
         # fleet, forever.
         self.es_refused = _ES_STATE["refused"]   # scope key -> terminal exc
         # The SDK caches issued credentials in memory on the service object
@@ -949,8 +949,8 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
 
         Per scope, not per object. The old counter lived in
         `_read_waveform_from_s3` and reset on every call, so a station-day we
-        are genuinely no access to re-ran the whole refresh dance for each
-        of its objects - thousands of token exchanges to re-learn one fact.
+        genuinely cannot read re-ran the whole refresh dance for each of its
+        objects - thousands of token exchanges to re-learn one fact.
         Reset by `clear_access_denied` as soon as a read on that scope
         succeeds, so a real expiry still gets its refresh.
 
@@ -1365,7 +1365,7 @@ class S3DataSource:
                 denied += 1
                 # Per scope, not per object: `denied` resets on every call, so
                 # on its own it re-ran the whole refresh dance for each of the
-                # thousands of objects in a station-day we are no access to.
+                # thousands of objects in a station-day we cannot read.
                 # `scope_denied` remembers across them, so the fleet asks
                 # EarthScope once per scope instead of once per object.
                 scope_denied = self.s3helper.note_access_denied(net, year)
