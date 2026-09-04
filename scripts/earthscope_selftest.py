@@ -314,7 +314,6 @@ def run_live(args):
 
     async def counting_send(self, request, *a, **kw):
         sent.append(str(request.url))
-        host = request.url.host
         print(f"    {DIM}-> {request.method} {request.url}{OFF}")
         if len(sent) > args.max_requests:
             raise SystemExit(
@@ -323,12 +322,25 @@ def run_live(args):
                 f"get here.{OFF}")
         return await original(self, request, *a, **kw)
 
+    # try/finally, because the cap above aborts with SystemExit: on that path
+    # the restore at the end of the function is never reached and every later
+    # httpx request in the process would keep going through `counting_send`.
+    # The abort is the one exit this script most expects to take.
     httpx.AsyncClient.send = counting_send
+    try:
+        return _run_live_cases(args, _live_module(), sent)
+    finally:
+        httpx.AsyncClient.send = original
 
+
+def _live_module():
     os.environ.setdefault("EARTHSCOPE_S3_ACCESS_POINT",
                           "earthscope-mseed-v2-4fdodyzpsz8u8uyi3pa9qsw9oid1suse2a-s3alias")
     from sb_catalog.src import s3_helper as mod
+    return mod
 
+
+def _run_live_cases(args, mod, sent):
     print(f"{BOLD}LIVE - against api.earthscope.org with your own account{OFF}")
     print(f"  hard cap: {args.max_requests} requests. Every one is printed.\n")
 
@@ -368,7 +380,6 @@ def run_live(args):
         print(f"    {GREEN if c.ok else RED}{n} request(s) for 200 calls{OFF}"
               f"  ({outcome})\n")
 
-    httpx.AsyncClient.send = original
     return results, sent
 
 

@@ -1075,8 +1075,10 @@ Monthly because daily over 5,845 days does not fit in a page, and monthly is
 enough to see an outage or a disagreement.</p>
 <div class="pick">
   <input id="q" type="search" placeholder="filter stations, e.g. CI.PASA or NC."
+         aria-label="Filter stations by network or code"
          autocomplete="off" spellcheck="false">
-  <select id="stations" size="12"></select>
+  <select id="stations" size="12"
+          aria-label="Stations, most picks first"></select>
 </div>
 <div id="chart"></div>
 <p class="cap" id="legend"></p>
