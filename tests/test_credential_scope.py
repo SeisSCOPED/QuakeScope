@@ -571,8 +571,11 @@ def test_a_verdict_survives_the_next_shard():
 
 
 def test_a_yearless_request_for_a_temporary_network_is_never_sent():
-    """"i see requests for a temporary network without a year - this will
-    never succeed". We answer it ourselves instead of asking."""
+    """The request EarthScope singled out, answered without asking.
+
+    Their words: i see requests for a temporary network without a year - this
+    will never succeed.
+    """
     from sb_catalog.src.s3_helper import EarthScopeScopeIncomplete
 
     h = CompositeS3ObjectHelper()
@@ -745,3 +748,95 @@ def test_an_auth_flow_error_is_terminal_and_global():
             sys.modules["earthscope_sdk.auth.error"] = saved
         else:
             del sys.modules["earthscope_sdk.auth.error"]
+
+
+def test_every_4xx_is_remembered_not_just_the_three_we_named():
+    """A status nobody had seen yet must not slip past the verdict store.
+
+    400/403/404 each had a type; everything else raised a bare RuntimeError,
+    which `ES_TERMINAL` does not cover - so a 409 or a 422 would have been
+    re-asked on every one of the 11,315 calls a shard makes, which is the
+    whole bug. Found by review on PR #32.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeRequestRefused
+
+    class _Resp:
+        def __init__(self, code):
+            self.status_code, self.text, self.headers = code, "nope", {}
+
+    class _HTTPError(Exception):
+        def __init__(self, code):
+            super().__init__(f"HTTP {code}")
+            self.response = _Resp(code)
+
+    for code in (402, 405, 409, 410, 422, 451):
+        h = CompositeS3ObjectHelper()
+        from sb_catalog.src.s3_helper import reset_earthscope_state
+        reset_earthscope_state()
+        calls = []
+
+        class _Client:
+            class user:
+                @staticmethod
+                def get_aws_credentials(**kw):
+                    calls.append(kw)
+                    raise _HTTPError(code)
+
+        h.es_client = lambda: _Client
+        for _ in range(500):
+            try:
+                h.get_filesystem("AV", 2019)
+            except EarthScopeRequestRefused:
+                pass
+            except Exception as exc:
+                raise AssertionError(
+                    f"HTTP {code} surfaced as {type(exc).__name__}, which is "
+                    f"not in ES_TERMINAL and so is never remembered") from exc
+        assert len(calls) == 1, f"HTTP {code} asked {len(calls)}x, expected 1"
+
+
+def test_a_cached_verdict_carries_no_traceback_and_no_context_chain():
+    """We store the class and its message, never the caught instance.
+
+    An instance holds __traceback__, and through it every frame it passed -
+    the helper, the shard, whatever those reference - pinned for the life of a
+    process-wide store. And `raise verdict` happens inside an `except` block,
+    so Python would assign __context__ on every raise: one shared object would
+    grow a chain thousands deep and eventually a cycle. Found by review on
+    PR #32.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeNoAccess
+
+    h = CompositeS3ObjectHelper()
+
+    def fake(net, year=None):
+        raise EarthScopeNoAccess("403 no access")
+
+    h.get_es_credential = fake
+
+    seen = []
+    for _ in range(200):
+        try:
+            h.get_filesystem("ZI", 2019)
+        except EarthScopeNoAccess as exc:
+            seen.append(exc)
+
+    # A fresh object each time, not one shared instance handed back repeatedly.
+    assert len(set(id(e) for e in seen)) == len(seen), (
+        "the same exception instance is being re-raised; __context__ will "
+        "accumulate on it")
+    for exc in seen[:5]:
+        assert exc.__traceback__ is not None   # set by the raise, not retained
+    # Nothing chained: depth stays 1 however many times it is raised.
+    def depth(e):
+        n, seen_ids = 0, set()
+        while e.__context__ is not None and id(e) not in seen_ids:
+            seen_ids.add(id(e)); e = e.__context__; n += 1
+            if n > 50: break
+        return n
+    assert depth(seen[-1]) == 0, (
+        f"__context__ chain is {depth(seen[-1])} deep after 200 raises")
+
+    # And what is stored is a description, not a caught exception.
+    record = list(h.es_refused.values())[0]
+    assert isinstance(record, tuple) and record[0] is EarthScopeNoAccess

@@ -122,6 +122,18 @@ class EarthScopeScopeIncomplete(EarthScopeScopeRefused):
     """
 
 
+class EarthScopeRequestRefused(RuntimeError):
+    """Any other 4xx from the credentials endpoint.
+
+    Terminal for the same reason 400/403/404 are: a 4xx is a verdict on the
+    request. Without its own type it was raised as a bare RuntimeError, which
+    `ES_TERMINAL` does not cover - so an uncommon status (405, 409, 410, 422)
+    would have gone un-remembered and been re-asked on every one of the 11,315
+    calls a shard makes. Exactly the bug this module exists to fix, surviving
+    in the codes nobody had seen yet.
+    """
+
+
 class EarthScopeAuthFailed(RuntimeError):
     """HTTP 401: the token itself was rejected.
 
@@ -148,6 +160,7 @@ ES_TERMINAL = (
     EarthScopeNetworkYearNotFound,   # 404 - no such FDSN code
     EarthScopeScopeRefused,          # 400 - malformed, incl. missing year
     EarthScopeAuthFailed,            # 401 - bad token
+    EarthScopeRequestRefused,        # any other 4xx
 )
 
 
@@ -562,6 +575,32 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def es_scope_key(self, net, year=None) -> str:
         return json.dumps(self.es_scope(net, year), sort_keys=True)
 
+    @staticmethod
+    def _verdict_record(exc):
+        """What we keep: the class and its message, never the instance.
+
+        A caught exception holds `__traceback__`, `__context__` and
+        `__cause__`, and through the traceback every frame it passed - which
+        here includes the helper, the shard and whatever those reference. This
+        store is process-wide and lives as long as the worker, so keeping
+        instances would pin that graph for the life of the process.
+
+        Re-raising one instance is worse than the memory. `raise verdict`
+        happens inside an `except` block, and Python assigns `__context__` on
+        every raise, so the single cached object would accumulate a chain
+        thousands deep - and eventually a cycle, when a later verdict is raised
+        while an earlier one is being handled.
+        """
+        return (type(exc), exc.args)
+
+    @staticmethod
+    def _verdict_raise(record):
+        """A clean instance, built fresh for each raise."""
+        cls, args = record
+        exc = cls(*args)
+        exc.__suppress_context__ = True
+        return exc
+
     def es_verdict(self, net, year=None):
         """The terminal answer already held for this scope, or None.
 
@@ -569,13 +608,14 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         token is bad for everything - so it short-circuits all of them.
         """
         if self.es_auth_failed is not None:
-            return self.es_auth_failed
-        return self.es_refused.get(self.es_scope_key(net, year))
+            return self._verdict_raise(self.es_auth_failed)
+        record = self.es_refused.get(self.es_scope_key(net, year))
+        return self._verdict_raise(record) if record is not None else None
 
     def es_record_verdict(self, net, year, exc) -> None:
         """Remember a refusal so the same request is never sent again."""
         if isinstance(exc, EarthScopeAuthFailed):
-            self.es_auth_failed = exc
+            self.es_auth_failed = self._verdict_record(exc)
             return
         key = self.es_scope_key(net, year)
         if key not in self.es_refused:
@@ -584,7 +624,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                 f"retrying: this is a verdict on the request. Every later "
                 f"read of that scope is answered from memory."
             )
-        self.es_refused[key] = exc
+        self.es_refused[key] = self._verdict_record(exc)
 
     def escalate_scope_mode(self, net) -> bool:
         """Add the year to a network's scope after a 400. One direction only.
@@ -695,7 +735,9 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def get_es_credential(self, net, year=None):
         """Exchange one scope for temporary AWS credentials.
 
-        Every 4xx except 429 is terminal; only 429 and 5xx are retried, with
+        Every 4xx except 429 is terminal AND remembered - each one has a type
+        in `ES_TERMINAL`, so none can slip past `es_record_verdict` and be
+        re-asked. Only 429 and 5xx are retried, with
         exponential backoff and jitter so a fleet-wide blip does not resolve
         into every worker knocking in lockstep.
 
@@ -816,7 +858,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                             f"congestion, and is not retried."
                         ) from exc
                     if 400 <= code < 500 and code != 429:
-                        raise RuntimeError(
+                        raise EarthScopeRequestRefused(
                             f"EarthScope refused credentials for scope "
                             f"{scope} on role {EARTHSCOPE_ROLE}: {detail}. "
                             f"This is a verdict on the request, not "
@@ -1075,7 +1117,8 @@ class S3DataSource:
                     # than re-asked - 5A/2018 alone would otherwise have sent
                     # one credential request per day it does not exist for.
                     logger.debug(f"{net} {day:%Y.%j}: {exc}")
-                except EarthScopeScopeRefused as exc:
+                except (EarthScopeScopeRefused,
+                        EarthScopeRequestRefused) as exc:
                     # 400. Either the scope is wrong in a way escalation could
                     # not fix, or we declined to send a request that cannot
                     # succeed. Loud, because it means the plan and the archive
@@ -1274,6 +1317,7 @@ class S3DataSource:
             except EarthScopeAuthFailed:
                 raise                         # bad token: fail the shard, loudly
             except (EarthScopeNoAccess, EarthScopeScopeRefused,
+                    EarthScopeRequestRefused,
                     EarthScopeExchangeThrottled) as exc:
                 logger.error(f"No credential for {uri}: {exc}")
                 return obspy.Stream()
