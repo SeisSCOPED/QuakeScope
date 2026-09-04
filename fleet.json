@@ -3,21 +3,21 @@
   "campaigns": {
     "western": {
       "target": 900,
-      "job_definition": "quakescope_2026_western:18",
+      "job_definition": "quakescope_2026_western:19",
       "weight": "original",
       "procs": 4,
       "threads": 2
     },
     "global": {
       "target": 100,
-      "job_definition": "quakescope_2026_global:1",
+      "job_definition": "quakescope_2026_global:2",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
     },
     "obs": {
       "target": 59,
-      "job_definition": "quakescope_2026_obs:15",
+      "job_definition": "quakescope_2026_obs:16",
       "weight": "obs",
       "procs": 4,
       "threads": 2
