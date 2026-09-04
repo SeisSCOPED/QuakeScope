@@ -105,6 +105,85 @@ jobs:
           role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
           aws-region: us-east-2
 
+      # WHAT MAY RUN, as distinct from the operator gate above (WHO) and the
+      # quota guard below (HOW MUCH).
+      #
+      # On 2026-09-04 the EarthScope credential client in image c5846f3 was
+      # reported to us as a denial of service, the fleet was taken to 0, and an
+      # incident report was written saying so. Nothing in this repository stopped
+      # that image from being launched again: the three targets in fleet.json
+      # were zeros, and one dispatch of this workflow - from a phone, which is
+      # the point of it - would have put 208 workers back on the same build.
+      # A promise in a report is not a control. This is the control.
+      #
+      # Hardcoded here for the same reason ALLOWED is: fleet.json is written BY
+      # this workflow, so a quarantine kept there could lift itself, and a
+      # repository variable can be changed in settings with no commit. Removing
+      # a tag from this list is a reviewable diff.
+      #
+      # It reads the image out of the job definition revision that fleet.json
+      # actually names, live, rather than trusting fleet.json to describe what
+      # Batch would run.
+      - name: Refuse to launch a quarantined image
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          import boto3
+
+          QUARANTINE = {
+              "c5846f3":
+                  "the EarthScope credential client in this build retries "
+                  "400/403/404 once per station-day, drops the year from "
+                  "temporary-network requests that then cannot succeed, and "
+                  "re-presents a rejected refresh token five times per scope. "
+                  "On 2026-09-04 it sent 260,322 token requests in 66 minutes "
+                  "and EarthScope reported the fleet as a denial of service. "
+                  "Fixed in PR #32; this tag predates the fix. See "
+                  "reports/earthscope_credential_audit.html.",
+          }
+
+          d = json.load(open("fleet.json"))["campaigns"]
+          camp, target = os.environ.get("CAMPAIGN"), os.environ.get("TARGET")
+
+          # What this run would actually leave running: the committed targets,
+          # with the requested one substituted in. Catches both paths - the
+          # dispatch that raises a target, and the schedule topping up a target
+          # that is already non-zero.
+          effective = {k: v["target"] for k, v in d.items()}
+          if camp and target and camp in effective:
+              effective[camp] = int(target)
+
+          b = boto3.client("batch", region_name="us-east-2")
+          blocked = []
+          for name, n in effective.items():
+              if n <= 0:
+                  continue
+              jd = d[name]["job_definition"]
+              jdef = b.describe_job_definitions(
+                  jobDefinitions=[jd])["jobDefinitions"][0]
+              image = jdef["containerProperties"]["image"]
+              tag = image.rsplit(":", 1)[-1]
+              print(f"{name}: target {n} -> {jd} -> {image}")
+              if tag in QUARANTINE:
+                  blocked.append((name, n, jd, image, tag))
+
+          for name, n, jd, image, tag in blocked:
+              print(f"::error::{name} (target {n}) would run {jd}, which is "
+                    f"image {image}. Tag {tag} is quarantined: "
+                    f"{QUARANTINE[tag]}")
+
+          if blocked:
+              print("::error::Register a job definition revision on a build "
+                    "that carries the fix and point fleet.json at it. Do not "
+                    "remove the tag from QUARANTINE to get past this.")
+              sys.exit(1)
+
+          print("::notice::no quarantined image would run")
+          PY
+
       # A manual run edits the target first, so the top-up below uses the new
       # value in the same run - press the button, see it take effect.
       - name: Set the new target

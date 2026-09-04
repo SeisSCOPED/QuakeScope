@@ -288,11 +288,11 @@ doing nothing. Filter by job-name prefix.
 `s3-miniseed-v2` carries `s3:ListBucket` but not `s3:GetObject`: every listing
 succeeds and every read returns `AccessDenied`. Pass `network=FDSN:<NET>`, plus
 `year=` for temporary networks (codes starting with a digit or X/Y/Z). This read
-as a missing entitlement for two weeks because listing never failed.
+as a missing grant of access for two weeks because listing never failed.
 
 **404 and 403 from that endpoint mean opposite things.** 404 is a network-year
 the archive does not hold — a correction to your plan, and it must not trigger a
-retry or a scope change. 403 is a real entitlement gap — a request to EarthScope.
+retry or a scope change. 403 is a real access gap — a request to EarthScope.
 The SDK raises its own `UnauthenticatedError`/`UnauthorizedError` for 401/403
 *instead of* an `HTTPStatusError`, so a status-code check never sees them and
 they get retried as if they were congestion.

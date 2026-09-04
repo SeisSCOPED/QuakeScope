@@ -5,7 +5,7 @@ us-east-2 than from a laptop, and neither behaviour was what we assumed:
 
   - from a laptop, GetObject returns 403. That is correct and documented:
     EarthScope permit ListObjectsV2 from anywhere but GetObject only from
-    us-east-2. A laptop test therefore proves nothing about entitlement.
+    us-east-2. A laptop test therefore proves nothing about access.
   - from Fargate in us-east-2, where GetObject is permitted, the same read
     neither succeeds nor errors. It stalls until the caller gives up.
 
@@ -33,7 +33,7 @@ def _parse(arg):
 
     Temporary network codes are reused, so a network alone does not identify a
     deployment - and asking for a network-year that never existed is refused at
-    the credential exchange, which looks exactly like a missing entitlement.
+    the credential exchange, which looks exactly like a missing grant of access.
     Testing one therefore means naming a year the network actually operated.
     """
     parts = arg.split(":")

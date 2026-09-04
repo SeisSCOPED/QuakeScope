@@ -27,6 +27,7 @@ import collections
 import json
 import logging
 import sys
+import time
 
 logger = logging.getLogger("netyear")
 
@@ -58,10 +59,18 @@ def main(argv=None) -> int:
     ap.add_argument("--networks", help="comma separated, instead of --campaign")
     ap.add_argument("--years", help="e.g. 2010-2020, with --networks")
     ap.add_argument("--out", help="write the full result as JSON to this S3 URI")
+    # The sweep is the one place that deliberately asks EarthScope hundreds of
+    # questions in a row. A campaign plan is ~1,600 network-years, and firing
+    # those as fast as the socket allows is precisely the traffic EarthScope
+    # objected to on 2026-09-04 - even though each answer here is wanted. At
+    # the default this paces the whole sweep to a few requests a second and
+    # costs a few minutes.
+    ap.add_argument("--pace", type=float, default=0.25,
+                    help="seconds to wait between probes (default 0.25)")
     args = ap.parse_args(argv)
 
     from .s3_helper import (EARTHSCOPE_OPEN_DATA_NETWORKS, CompositeS3ObjectHelper,
-                            EarthScopeNetworkYearNotFound, EarthScopeNotEntitled)
+                            EarthScopeNetworkYearNotFound, EarthScopeNoAccess)
 
     if args.networks:
         y0, _, y1 = args.years.partition("-")
@@ -89,17 +98,19 @@ def main(argv=None) -> int:
         except EarthScopeNetworkYearNotFound:
             missing.append((net, year))
             logger.info(f"  MISSING {net} {year}")
-        except EarthScopeNotEntitled:
+        except EarthScopeNoAccess:
             # 403 is a different problem from 404 and needs a different
             # response: the data exists, we are not allowed it. Worth a request
             # to EarthScope rather than a correction to the plan.
             denied.append((net, year))
-            logger.warning(f"  DENIED  {net} {year} - 403, not entitled")
+            logger.warning(f"  DENIED  {net} {year} - 403, no access")
         except Exception as exc:
             errors.append((net, year, f"{type(exc).__name__}: {exc}"[:120]))
             logger.warning(f"  ERROR   {net} {year}: {type(exc).__name__}")
         if i % 50 == 0:
             logger.info(f"  ... {i}/{len(restricted)}")
+        if args.pace and i < len(restricted):
+            time.sleep(args.pace)
 
     by_net = collections.Counter(n for n, _ in missing)
     print(f"\n=== planned network-years that EarthScope does not have ===")
@@ -107,7 +118,7 @@ def main(argv=None) -> int:
           f"MISSING {len(missing)}  DENIED {len(denied)}  errors {len(errors)}")
     if denied:
         dn = collections.Counter(n for n, _ in denied)
-        print(f"  403 NOT ENTITLED - these exist but we cannot read them, "
+        print(f"  403 NO ACCESS - these exist but we cannot read them, "
               f"which is a request to EarthScope, not a plan correction:")
         for n, c in dn.most_common():
             print(f"    {n:4s} {c:3d} years  {sorted(y for nn, y in denied if nn == n)}")
