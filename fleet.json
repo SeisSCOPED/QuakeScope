@@ -16,7 +16,7 @@
       "threads": 2
     },
     "obs": {
-      "target": 59,
+      "target": 0,
       "job_definition": "quakescope_2026_obs:16",
       "weight": "obs",
       "procs": 4,
