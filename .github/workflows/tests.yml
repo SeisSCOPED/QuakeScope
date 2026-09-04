@@ -30,6 +30,20 @@ permissions:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    env:
+      # Load PhaseNet weights from the copies committed under sb_catalog/models
+      # instead of downloading them. seisbench looks for
+      # $SEISBENCH_CACHE_ROOT/models/v3/<model>/<weight>, which is the layout
+      # already in the repo - it is what the Dockerfile copies into the image.
+      #
+      # Without this, five tests fetch `jma_wc` and `obs` from
+      # hifis-storage.desy.de on every run. That host was unreachable from the
+      # runner on 2026-09-04 and took the suite down with it, having spent
+      # seven minutes retrying: a red build caused by somebody else's outage,
+      # on a PR whose whole subject is not hammering an endpoint that has
+      # already said no. With the weights local the suite is hermetic and runs
+      # in seconds.
+      SEISBENCH_CACHE_ROOT: ${{ github.workspace }}/sb_catalog
     steps:
       # Full history: the A/B step below reads s3_helper.py out of c5846f3, and
       # a shallow clone does not have it.
