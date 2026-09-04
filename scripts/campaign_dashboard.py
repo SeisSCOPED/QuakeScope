@@ -201,8 +201,8 @@ def parquet_stats(campaign, max_files=None):
     """
     import pyarrow.dataset as ds
 
-    out = {"picks": 0, "per_station": {}, "per_day": {}, "sampled": None,
-           "error": None, "partial": 0}
+    out = {"picks": 0, "per_station": {}, "per_day": {}, "per_station_month": {},
+           "sampled": None, "error": None, "partial": 0}
     try:
         dataset = ds.dataset(f"{BUCKET}/{campaign}/picks/", format="parquet",
                              filesystem=_arrow_fs(), partitioning="hive")
@@ -253,6 +253,13 @@ def parquet_stats(campaign, max_files=None):
         d = pd.to_datetime(df["peak"])
         out["per_day"] = (df.assign(yr=d.dt.year, doy=d.dt.dayofyear)
                           .groupby(["yr", "doy"]).size().to_dict())
+        # Per station per MONTH, for the station picker. Monthly rather than
+        # daily on purpose: daily over 5,845 days x 53,082 stations does not
+        # embed in a page, and monthly still shows the two things the view is
+        # for - an outage, and the two weights disagreeing about a station.
+        out["per_station_month"] = (
+            df.assign(ym=d.dt.year * 100 + d.dt.month)
+              .groupby(["tid", "ym"]).size().to_dict())
     except Exception as exc:
         # The headline count already succeeded; only the breakdowns failed, so
         # keep the count and let the page say the map is thin rather than
@@ -281,6 +288,8 @@ def _arrow_fs():
 def gather(s3, b, campaigns):
     per_station = defaultdict(int)
     per_day = defaultdict(int)
+    # {station: {campaign: {yyyymm: picks}}} - the station picker's data
+    per_station_month = defaultdict(lambda: defaultdict(dict))
     camp_rows, total_picks, total_bytes, total_files = [], 0, 0, 0
     sampled = []
     unreadable = []
@@ -323,6 +332,8 @@ def gather(s3, b, campaigns):
             per_station[str(tid)] += int(n)
         for (yr, doy), n in ps["per_day"].items():
             per_day[(int(yr), int(doy))] += int(n)
+        for (tid, ym), n in ps.get("per_station_month", {}).items():
+            per_station_month[str(tid)][name][int(ym)] = int(n)
         if ps["sampled"]:
             sampled.append((name,) + ps["sampled"])
         if ps.get("partial"):
@@ -448,7 +459,8 @@ def gather(s3, b, campaigns):
                 if s0:
                     end = s1 or now().timestamp() * 1000
                     vcpu_hours += v * (end - s0) / 3_600_000
-    return dict(per_station=per_station, per_day=per_day, camps=camp_rows,
+    return dict(per_station=per_station, per_day=per_day,
+                per_station_month=per_station_month, camps=camp_rows,
                 sampled=sampled, unreadable=unreadable,
                 picks=total_picks, bytes=total_bytes, files=total_files,
                 coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
@@ -491,6 +503,38 @@ def _basemap(x0, x1, y0, y1, sx, sy):
             for r in seg:
                 out.append(f'<polyline class="{cls}" points="{" ".join(r)}"/>')
     return "".join(out)
+
+
+
+# Stations to embed for the picker. 500 covers everything anyone inspects by
+# hand and keeps the payload well under a megabyte; the alternative - a sidecar
+# JSON per station fetched on click - needs CORS on the bucket and can wait
+# until somebody actually wants station 501.
+PICKER_STATIONS = int(os.environ.get("PICKER_STATIONS", "500"))
+
+
+def picker_payload(per_station_month, per_station, coords, camps):
+    """Compact JSON for the station picker.
+
+    Sparse by construction: only months a station actually produced picks in
+    appear, which is what makes 500 stations fit. Months are yyyymm integers and
+    counts are integers, so the whole thing minifies to a few hundred KB.
+    """
+    top = sorted(per_station, key=lambda t: -per_station[t])[:PICKER_STATIONS]
+    names = [c["name"] for c in camps]
+    out = {}
+    for tid in top:
+        by_camp = per_station_month.get(tid) or {}
+        series = {c: sorted(by_camp[c].items()) for c in names if by_camp.get(c)}
+        if not series:
+            continue
+        # coords holds (lat, lon, station_code), not a pair.
+        c = coords.get(tid)
+        lat, lon = (c[0], c[1]) if c else (None, None)
+        out[tid] = {"n": per_station[tid], "lat": lat, "lon": lon,
+                    "s": {c: [[int(m), int(v)] for m, v in ser]
+                          for c, ser in series.items()}}
+    return out
 
 
 def svg_map(per_station, coords, w=760, h=440):
@@ -795,6 +839,13 @@ def png_waveform(ex, w=760, h=150, dpi=2):
 
 
 def render(g, examples):
+    import json as _json
+    _picker = picker_payload(g.get("per_station_month", {}), g["per_station"],
+                             g["coords"], g["camps"])
+    _picker_json = _json.dumps(_picker, separators=(",", ":"))
+    _picker_camps = _json.dumps([c["name"] for c in g["camps"]])
+    _picker_ink = _json.dumps({c["name"]: campaign_ink(c["name"])[1]
+                               for c in g["camps"]})
     done = sum(c["done"] for c in g["camps"])
     planned = sum(c["shards"] for c in g["camps"])
     pct = (100 * done / planned) if planned else 0
@@ -962,6 +1013,10 @@ display:flex;align-items:center;gap:6px}}
 background:var(--camp);display:inline-block;margin-right:6px}}
 tr.off td{{opacity:.55}}
 .unread{{color:var(--warn,#b45309);font-weight:600}}
+.pick{{display:flex;gap:12px;align-items:flex-start;margin:8px 0 4px}}
+.pick input{{flex:0 0 260px;padding:6px 8px;font:inherit;font-size:13px}}
+.pick select{{flex:1;font:inherit;font-size:13px;min-height:180px}}
+#chart svg{{max-width:100%;height:auto}}
 .blocked{{font-size:10.5px;font-weight:640;letter-spacing:.03em;
 text-transform:uppercase;color:var(--warning);border:1px solid var(--warning);
 border-radius:3px;padding:0 4px;margin-left:6px;cursor:help}}
@@ -1007,6 +1062,90 @@ overflow-x:auto;font-size:12px;line-height:1.5}}
 sized and shaded by pick count. Coastline and state borders are drawn from
 Natural Earth for orientation. Hover a triangle for its code and count.</p>
 <figure>{svg_map(g['per_station'], g['coords'])}</figure>
+
+<h2>Station detail</h2>
+<p class="cap">Picks per month for one station, one line per campaign. The
+comparison is the point: <b>western</b> and <b>global</b> cover overlapping
+stations with <em>different weights</em> - <code>original</code> and
+<code>jma_wc</code> - so a station where one line moves and the other does not
+is the two models disagreeing, which no aggregate view shows. Both dropping
+together is an outage; both rising is a sequence.</p>
+<p class="cap">The {PICKER_STATIONS} stations with the most picks, monthly.
+Monthly because daily over 5,845 days does not fit in a page, and monthly is
+enough to see an outage or a disagreement.</p>
+<div class="pick">
+  <input id="q" type="search" placeholder="filter stations, e.g. CI.PASA or NC."
+         autocomplete="off" spellcheck="false">
+  <select id="stations" size="12"></select>
+</div>
+<div id="chart"></div>
+<p class="cap" id="legend"></p>
+<script>
+const DATA = {_picker_json}, CAMPS = {_picker_camps}, INK = {_picker_ink};
+const sel = document.getElementById('stations'), q = document.getElementById('q');
+const ids = Object.keys(DATA).sort();
+function fill(f) {{
+  const t = (f || '').toUpperCase();
+  sel.innerHTML = '';
+  for (const id of ids) {{
+    if (t && !id.toUpperCase().includes(t)) continue;
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = id + '  (' + DATA[id].n.toLocaleString() + ')';
+    sel.appendChild(o);
+  }}
+}}
+function draw(id) {{
+  const d = DATA[id];
+  if (!d) {{ document.getElementById('chart').innerHTML = ''; return; }}
+  const W = 760, H = 220, L = 56, R = 12, T = 12, B = 28;
+  let months = new Set(), max = 0;
+  for (const c of CAMPS) for (const [m, v] of (d.s[c] || [])) {{
+    months.add(m); if (v > max) max = v;
+  }}
+  const ms = [...months].sort((a, b) => a - b);
+  if (!ms.length) {{ document.getElementById('chart').innerHTML =
+      '<p class="cap">no monthly picks recorded for this station</p>'; return; }}
+  const x = m => L + (ms.length < 2 ? 0 : (ms.indexOf(m) / (ms.length - 1)) * (W - L - R));
+  const y = v => H - B - (max ? (v / max) : 0) * (H - T - B);
+  let sv = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" ' +
+           'aria-label="picks per month for ' + id + '">';
+  sv += '<line x1="' + L + '" y1="' + y(0) + '" x2="' + (W - R) + '" y2="' + y(0) +
+        '" stroke="currentColor" opacity=".25"/>';
+  sv += '<text x="4" y="' + (y(max) + 4) + '" font-size="11" fill="currentColor" ' +
+        'opacity=".7">' + max.toLocaleString() + '</text>';
+  sv += '<text x="4" y="' + (y(0) + 4) + '" font-size="11" fill="currentColor" opacity=".7">0</text>';
+  const lab = m => String(m).slice(0, 4) + '-' + String(m).slice(4);
+  sv += '<text x="' + L + '" y="' + (H - 8) + '" font-size="11" fill="currentColor" ' +
+        'opacity=".7">' + lab(ms[0]) + '</text>';
+  sv += '<text x="' + (W - R) + '" y="' + (H - 8) + '" font-size="11" text-anchor="end" ' +
+        'fill="currentColor" opacity=".7">' + lab(ms[ms.length - 1]) + '</text>';
+  let leg = [];
+  for (const c of CAMPS) {{
+    const ser = d.s[c]; if (!ser || !ser.length) continue;
+    const pts = ser.map(([m, v]) => x(m) + ',' + y(v)).join(' ');
+    sv += '<polyline fill="none" stroke="' + (INK[c] || 'currentColor') +
+          '" stroke-width="2" points="' + pts + '"/>';
+    for (const [m, v] of ser)
+      sv += '<circle cx="' + x(m) + '" cy="' + y(v) + '" r="2.5" fill="' +
+            (INK[c] || 'currentColor') + '"><title>' + c + ' ' + lab(m) + ': ' +
+            v.toLocaleString() + ' picks</title></circle>';
+    const tot = ser.reduce((a, b) => a + b[1], 0);
+    leg.push('<b style="color:' + (INK[c] || 'inherit') + '">' + c + '</b> ' +
+             tot.toLocaleString());
+  }}
+  sv += '</svg>';
+  document.getElementById('chart').innerHTML = sv;
+  document.getElementById('legend').innerHTML =
+    id + (d.lat != null ? ' &middot; ' + (+d.lat).toFixed(3) + ', ' + (+d.lon).toFixed(3) : '') +
+    ' &middot; ' + leg.join(' &middot; ');
+}}
+q.addEventListener('input', () => {{ fill(q.value); if (sel.options.length) {{
+  sel.selectedIndex = 0; draw(sel.value); }} }});
+sel.addEventListener('change', () => draw(sel.value));
+fill('');
+if (sel.options.length) {{ sel.selectedIndex = 0; draw(sel.value); }}
+</script>
 
 <h2>Picks per day of data</h2>
 <p class="cap">Picks by the day the waveform covers — not by when the job ran.</p>
