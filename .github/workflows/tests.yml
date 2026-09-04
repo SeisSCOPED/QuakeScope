@@ -1,0 +1,75 @@
+name: Tests
+
+# Runs the test suite on every pull request and on main.
+#
+# WHY THIS EXISTS. PR #32 - the EarthScope credential fix - was opened with no
+# status checks at all, and it was going to be handed to EarthScope as evidence
+# that the client no longer retries their refusals. A branch with no green check
+# is not evidence. The tests that back that claim already existed
+# (tests/test_credential_scope.py asserts the exception handlers are ordered so
+# the narrow types stay reachable; tests/test_earthscope_routing.py asserts each
+# 4xx is remembered and never re-asked); nothing ran them.
+#
+# The environment is pixi's `dev`, resolved from the committed pixi.lock, so CI
+# runs the same versions a developer gets from `pixi shell -e dev` rather than
+# whatever pip resolves that morning.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the A/B step below reads s3_helper.py out of c5846f3, and
+      # a shallow clone does not have it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: dev
+          cache: true
+
+      - name: pytest
+        run: pixi run -e dev pytest tests/ -q
+
+      # The offline self-test is what the incident report asks EarthScope to
+      # run, so it has to keep passing on every commit, not just on the day it
+      # was written. It sends no traffic and needs no account.
+      - name: EarthScope self-test (offline, sends nothing)
+        run: pixi run -e dev python scripts/earthscope_selftest.py --offline
+
+      # And the same harness against the build that caused the incident, which
+      # must still fail. The script's exit code only reflects the CURRENT tree -
+      # the baseline block is printed for comparison, not scored - so the
+      # assertion here reads the baseline block itself. If it ever comes back
+      # clean, the harness has stopped measuring what it claims to measure and
+      # the report's A/B table is worthless.
+      - name: Self-test still detects the incident build
+        run: |
+          git show c5846f3:sb_catalog/src/s3_helper.py > /tmp/old_s3_helper.py
+          pixi run -e dev python scripts/earthscope_selftest.py \
+            --offline --baseline /tmp/old_s3_helper.py | tee /tmp/ab.txt
+          # Everything before the CURRENT header is the baseline's own block.
+          sed '/^CURRENT/,$d' /tmp/ab.txt > /tmp/baseline.txt
+          failed=$(grep -c 'FAIL' /tmp/baseline.txt || true)
+          echo "baseline failing checks: $failed"
+          if [ "$failed" -lt 6 ]; then
+            echo "::error::The c5846f3 baseline failed only $failed checks;"
+            echo "::error::all 6 must fail. That build sent 260,322 token"
+            echo "::error::requests in 66 minutes - if the harness no longer"
+            echo "::error::sees it, the harness is broken, not the baseline."
+            exit 1
+          fi
