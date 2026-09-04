@@ -130,10 +130,26 @@ def _count_rows_cached(campaign, files):
         cache = json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
     except Exception:
         cache = {}                       # first run, or unreadable: rebuild
-
     want = set(files)
     new = sorted(want - set(cache))
     gone = set(cache) - want
+
+    # BOUND THE COLD PATH. Reading a footer is one S3 round trip, so a cold
+    # cache over a large campaign is linear and unbounded: western reached
+    # 274,950 objects, which is ~78 minutes at PICK_COUNT_THREADS. This job is
+    # hourly and holds a concurrency group, so a run that overruns its own
+    # interval stacks the next one behind it - observed at 130 minutes and
+    # climbing on 2026-09-04.
+    #
+    # Count at most COLD_BATCH new objects per run and carry the rest to the
+    # next one. The cache converges over a few runs instead of blocking on the
+    # first, and the number is reported rather than quietly approximated: a
+    # partial count is labelled, never presented as complete.
+    partial = 0
+    if len(new) > COLD_BATCH:
+        partial = len(new) - COLD_BATCH
+        new = new[-COLD_BATCH:]          # newest first: the interesting end
+
 
     if new:
         afs = _arrow_fs()
@@ -155,7 +171,7 @@ def _count_rows_cached(campaign, files):
             # A cache that cannot be written is a slow next run, not a wrong
             # answer. The count below is already correct.
             pass
-    return sum(cache.get(f, 0) for f in want)
+    return sum(cache.get(f, 0) for f in want), partial
 
 
 def parquet_stats(campaign, max_files=None):
@@ -175,7 +191,7 @@ def parquet_stats(campaign, max_files=None):
     import pyarrow.dataset as ds
 
     out = {"picks": 0, "per_station": {}, "per_day": {}, "sampled": None,
-           "error": None}
+           "error": None, "partial": 0}
     try:
         dataset = ds.dataset(f"{BUCKET}/{campaign}/picks/", format="parquet",
                              filesystem=_arrow_fs(), partitioning="hive")
@@ -197,7 +213,7 @@ def parquet_stats(campaign, max_files=None):
     # all. The footers are independent, so read them in parallel. Same number,
     # 8x faster on the same data (75.5s -> 9.2s), exact rather than sampled.
     try:
-        out["picks"] = _count_rows_cached(campaign, files)
+        out["picks"], out["partial"] = _count_rows_cached(campaign, files)
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}: {exc}"[:120]
         return out
@@ -235,6 +251,9 @@ def parquet_stats(campaign, max_files=None):
 # this runs while a live fleet is writing to the same bucket, and the point
 # is to stop being the slow thing, not to start being the throttling one.
 PICK_COUNT_THREADS = int(os.environ.get("PICK_COUNT_THREADS", "16"))
+# New objects to count per run. Bounds the cold path so an hourly job stays
+# hourly; the remainder is carried to the next run and reported meanwhile.
+COLD_BATCH = int(os.environ.get("COLD_BATCH", "60000"))
 
 
 def _arrow_fs():
@@ -292,6 +311,11 @@ def gather(s3, b, campaigns):
             per_day[(int(yr), int(doy))] += int(n)
         if ps["sampled"]:
             sampled.append((name,) + ps["sampled"])
+        if ps.get("partial"):
+            # Counted, but not all of it. Say so - a number short by a known
+            # amount is useful; the same number presented as complete is not.
+            sampled.append((name, len(ps.get("per_station", {})) or 0,
+                            ps["partial"]))
         if ps.get("error"):
             unreadable.append((name, ps["error"]))
             # A count that FAILED is not a count of zero. Rendering it as "0"

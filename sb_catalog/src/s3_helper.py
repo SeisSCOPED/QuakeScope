@@ -165,11 +165,39 @@ def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
     """
     from seisbench.models import WaveformModel
 
+    # Zero-length traces reach here from truncated or empty records and blow up
+    # later inside the model as "cannot reshape array of size 0 into shape (0)",
+    # which names nothing useful. Drop them at the boundary instead.
+    empty = [tr for tr in stream if tr.stats.npts == 0]
+    for tr in empty:
+        stream.remove(tr)
+
     fast = obspy.Stream([tr for tr in stream
                          if tr.stats.sampling_rate > target])
     if not len(fast):
         return stream
     WaveformModel.resample(fast, target, zerophase=True)
+
+    # Resampling returns float64. Traces ALREADY at or below the target are not
+    # touched and stay int32, so a station whose sampling rate changes during
+    # the day ends up with both in one stream - and obspy refuses to merge
+    # across dtypes:
+    #
+    #   TypeError: Data type differs: int32 vs float64
+    #
+    # raised deep inside SeisBench's annotate, where it reads as a model
+    # problem. It failed 693 western shards on 2026-09-04, all of them in the
+    # tail of the campaign because those are the stations that had a rate
+    # change to hit.
+    #
+    # Promote the whole stream rather than demoting the resampled traces:
+    # float64 is what the model will use anyway, and rounding samples back to
+    # int to satisfy a merge would be losing data to tidy a type.
+    dtypes = {tr.data.dtype for tr in stream}
+    if len(dtypes) > 1:
+        for tr in stream:
+            if tr.data.dtype != np.float64:
+                tr.data = tr.data.astype(np.float64)
     return stream
 
 
