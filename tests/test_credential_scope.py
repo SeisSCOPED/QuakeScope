@@ -1,16 +1,25 @@
-"""Restricted EarthScope credentials must be scoped, and must be cached.
+"""Restricted EarthScope credentials must be scoped, cached, and asked for once.
 
-Two independent failures are pinned here, because each one on its own is
+Three independent failures are pinned here, because each one on its own is
 invisible until a campaign is running:
 
 1. An UNSCOPED credential for `s3-miniseed-v2` carries `s3:ListBucket` but not
    `s3:GetObject`. Every listing succeeds and every read returns AccessDenied.
-   Nothing in the logs distinguishes that from a missing entitlement, and for
+   Nothing in the logs distinguishes that from a missing grant of access, and for
    two weeks we read it as one - see docs/rerun_2026/26.
 
 2. Fetching a credential per object would turn every GET into an OAuth round
    trip. The campaign is ~113M station-days behind a few dozen network-years,
    so the exchange has to happen once per scope and be reused.
+
+3. A REFUSAL has to be cached as hard as a success. EarthScope reported on
+   2026-09-04 that this fleet was effectively DOSing their credentials
+   endpoint: 400/403/404 were being retried, and some requests asked for a
+   temporary network with no year - which can never succeed, because temporary
+   FDSN codes are reused between experiments and are authorised per year.
+   `get_filesystem` is called once per day per network by the listing loop and
+   once per object by the read path, so an uncached verdict became hundreds of
+   requests per shard per worker.
 """
 
 import datetime
@@ -167,11 +176,20 @@ def test_update_forces_a_new_credential():
 # stall on it - a denial has to teach the worker the right scoping instead.
 
 
-def test_escalation_flips_a_temporary_network_to_network_only():
+def test_escalation_never_drops_the_year_from_a_temporary_network():
+    """The request EarthScope told us never to send.
+
+    Temporary FDSN codes are reassigned between experiments, so EarthScope
+    authorises them at the year level and a year-less request for one is a 400
+    by construction. The old fallback generated exactly that - it flipped a
+    temporary network to `network` scoping after a denial and asked again - and
+    it was reachable from a 403, the one status where retrying is guaranteed
+    pointless. Escalation may only ADD scope.
+    """
     h = _helper([])
     assert "year" in h.es_scope("XD", 2018)
-    assert h.escalate_scope_mode("XD") is True
-    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+    assert h.escalate_scope_mode("XD") is False
+    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD", "year": 2018}
 
 
 def test_escalation_flips_a_permanent_network_to_year_scoped():
@@ -182,69 +200,98 @@ def test_escalation_flips_a_permanent_network_to_year_scoped():
     assert h.es_scope("NP", 2018) == {"network": "FDSN:NP", "year": 2018}
 
 
-def test_escalation_gives_up_once_both_are_tried():
+def test_escalation_gives_up_once_the_year_has_been_added():
     h = _helper([])
-    assert h.escalate_scope_mode("XD") is True
-    assert h.escalate_scope_mode("XD") is False     # nothing left to try
+    assert h.escalate_scope_mode("NP") is True      # network -> network+year
+    assert h.escalate_scope_mode("NP") is False     # nothing left to try
     # And it stays on the second mode rather than oscillating.
-    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+    assert h.es_scope("NP", 2018) == {"network": "FDSN:NP", "year": 2018}
 
 
 def test_escalation_is_learned_once_per_network():
     calls = []
     h = _helper(calls)
-    h.get_filesystem("XD", 2018)
-    h.update_es_filesystem("XD", 2018, escalate=True)
+    h.get_filesystem("NP", 2018)
+    h.update_es_filesystem("NP", 2018, escalate=True)
     calls.clear()
     # Every later read on that network uses the corrected scoping, with no
     # further exchange - the flip is remembered, not rediscovered per object.
     for _ in range(500):
-        h.get_filesystem("XD", 2018)
+        h.get_filesystem("NP", 2018)
     assert calls == []
-    assert h.es_scope("XD", 2018) == {"network": "FDSN:XD"}
+    assert h.es_scope("NP", 2018) == {"network": "FDSN:NP", "year": 2018}
 
 
-def test_escalation_discards_every_year_of_that_network():
-    # Credentials for 2018 and 2019 were both built under the old mode, so
-    # both are stale once the mode changes.
+def test_escalation_discards_what_was_cached_under_the_old_mode():
+    # The credential was issued for a year-less scope, so it is stale the
+    # moment the network moves to year scoping.
     calls = []
     h = _helper(calls)
-    h.get_filesystem("XD", 2018)
-    h.get_filesystem("XD", 2019)
-    assert len(calls) == 2
-    h.escalate_scope_mode("XD")
+    h.get_filesystem("NP", 2018)
+    assert len(calls) == 1
+    h.escalate_scope_mode("NP")
     assert h.credentials == {} and h.es_fs == {}
 
 
 def test_escalation_leaves_other_networks_alone():
     calls = []
     h = _helper(calls)
-    h.get_filesystem("XD", 2018)
+    h.get_filesystem("NP", 2018)
     h.get_filesystem("ZI", 2018)
-    h.escalate_scope_mode("XD")
+    h.escalate_scope_mode("NP")
     # ZI keeps its credential and its default scoping.
     assert len(h.credentials) == 1
     assert h.es_scope("ZI", 2018) == {"network": "FDSN:ZI", "year": 2018}
 
 
-def test_a_refused_exchange_escalates_too():
-    # A wrong scope can fail at either end. ZI (temporary) was refused at the
-    # exchange with an HTTP error, never reaching S3 - so escalation cannot be
-    # driven by the GET alone.
+def test_a_400_on_a_yearless_scope_adds_the_year_once():
+    # A wrong scope can fail at either end: refused at the exchange, or
+    # accepted there and denied at the GET. `NP` is guessed permanent, so the
+    # first request carries no year; a 400 says that guess was wrong, and the
+    # ONE legal correction is to add the year.
+    from sb_catalog.src.s3_helper import EarthScopeScopeRefused
+
+    h = CompositeS3ObjectHelper()
+    seen = []
+
+    def fake(net, year=None):
+        scope = h.es_scope(net, year)
+        seen.append(scope)
+        if "year" not in scope:
+            raise EarthScopeScopeRefused("400: year required for this network")
+        return _Cred()
+
+    h.get_es_credential = fake
+    fs = h.get_es_filesystem("NP", 2019)
+    assert fs is not None
+    assert seen == [{"network": "FDSN:NP"},
+                    {"network": "FDSN:NP", "year": 2019}]
+
+
+def test_a_403_never_changes_the_scope():
+    """403 means "no access", so a differently shaped request cannot help.
+
+    Escalating on it was how a denied temporary network ended up being asked
+    for without a year - the request EarthScope singled out.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeNoAccess
+
     h = CompositeS3ObjectHelper()
     seen = []
 
     def fake(net, year=None):
         seen.append(h.es_scope(net, year))
-        if "year" in h.es_scope(net, year):
-            raise RuntimeError("EarthScope refused credentials for scope ...")
-        return _Cred()
+        raise EarthScopeNoAccess("403")
 
     h.get_es_credential = fake
-    fs = h.get_es_filesystem("ZI", 2019)
-    assert fs is not None
-    assert seen == [{"network": "FDSN:ZI", "year": 2019},
-                    {"network": "FDSN:ZI"}]
+    try:
+        h.get_es_filesystem("ZI", 2019)
+    except EarthScopeNoAccess:
+        pass
+    else:
+        raise AssertionError("403 must surface")
+    assert seen == [{"network": "FDSN:ZI", "year": 2019}], seen
+    assert h.es_scope("ZI", 2019) == {"network": "FDSN:ZI", "year": 2019}
 
 
 def test_a_refused_exchange_still_raises_when_both_fail():
@@ -362,22 +409,22 @@ def test_401_and_403_are_verdicts_not_congestion():
     )
 
 
-def test_not_entitled_is_distinct_from_missing():
-    # 404 (no such network-year) is a plan correction; 403 (not entitled) is a
+def test_no_access_is_distinct_from_missing():
+    # 404 (no such network-year) is a plan correction; 403 (no access) is a
     # request to EarthScope. Conflating them sends the wrong ticket.
     from sb_catalog.src.s3_helper import (EarthScopeNetworkYearNotFound,
-                                          EarthScopeNotEntitled)
-    assert not issubclass(EarthScopeNotEntitled, EarthScopeNetworkYearNotFound)
-    assert not issubclass(EarthScopeNotEntitled, FileNotFoundError), (
+                                          EarthScopeNoAccess)
+    assert not issubclass(EarthScopeNoAccess, EarthScopeNetworkYearNotFound)
+    assert not issubclass(EarthScopeNoAccess, FileNotFoundError), (
         "403 must not be swallowed by the listing loop's FileNotFoundError "
-        "handler - an entitlement gap has to be visible"
+        "handler - an access gap has to be visible"
     )
 
 
 def test_a_denied_network_does_not_kill_the_shard():
     """403 must not propagate out of the listing loop.
 
-    EarthScopeNotEntitled is a RuntimeError - deliberately NOT a
+    EarthScopeNoAccess is a RuntimeError - deliberately NOT a
     FileNotFoundError, so it stays visible - which means the loop's
     FileNotFoundError handler does not catch it. Unhandled, a shard on a denied
     network burns ten Batch retries, fails permanently, requeues and fails
@@ -394,6 +441,307 @@ def test_a_denied_network_does_not_kill_the_shard():
     handlers = [h for node in ast.walk(fn) if isinstance(node, ast.Try)
                 for h in node.handlers]
     names = {ast.dump(h.type) for h in handlers if h.type is not None}
-    assert any("EarthScopeNotEntitled" in n for n in names), (
+    assert any("EarthScopeNoAccess" in n for n in names), (
         "the listing loop must handle a denied network"
     )
+
+
+# --- a refusal is cached as hard as a success ------------------------------
+#
+# EarthScope, 2026-09-04: "We were effectively getting DOSed by your workers...
+# when it gets a 400/403/404 back from our creds endpoint, it is retrying
+# aggressively. 400/403/404s should not be retried."
+
+
+def test_a_403_is_asked_once_and_never_again():
+    """The listing loop calls get_filesystem once per DAY per network.
+
+    Uncached, a single 403 became one credential request per day of the shard -
+    ~366 for a year-long shard - repeated by every worker and every requeue.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeNoAccess
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    def fake(net, year=None):
+        calls.append((net, year))
+        raise EarthScopeNoAccess("403 no access")
+
+    h.get_es_credential = fake
+
+    for _ in range(366):                       # a year-long shard, day by day
+        try:
+            h.get_filesystem("ZI", 2019)
+        except EarthScopeNoAccess:
+            pass
+    assert len(calls) == 1, f"403 must be asked once, asked {len(calls)}x"
+
+
+def test_a_404_is_asked_once_and_never_again():
+    from sb_catalog.src.s3_helper import EarthScopeNetworkYearNotFound
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    def fake(net, year=None):
+        calls.append((net, year))
+        raise EarthScopeNetworkYearNotFound("404 no such network-year")
+
+    h.get_es_credential = fake
+
+    for _ in range(366):
+        try:
+            h.get_filesystem("5A", 2018)
+        except FileNotFoundError:
+            pass
+    assert len(calls) == 1, f"404 must be asked once, asked {len(calls)}x"
+
+
+def test_a_400_is_asked_once_per_scope_including_the_escalation():
+    """A 400 may be corrected once, by adding the year. Then it is final."""
+    from sb_catalog.src.s3_helper import EarthScopeScopeRefused
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    def fake(net, year=None):
+        calls.append(h.es_scope(net, year))
+        raise EarthScopeScopeRefused("400 bad request")
+
+    h.get_es_credential = fake
+
+    for _ in range(366):
+        try:
+            h.get_filesystem("NP", 2019)
+        except EarthScopeScopeRefused:
+            pass
+    # Once year-less, once with the year, then never again.
+    assert calls == [{"network": "FDSN:NP"},
+                     {"network": "FDSN:NP", "year": 2019}], calls
+
+
+def test_a_401_stops_every_network_not_just_one():
+    """A rejected token is not a fact about a network.
+
+    Caching it per scope would let a bad refresh token re-present itself once
+    per network per day of the shard.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeAuthFailed
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    def fake(net, year=None):
+        calls.append((net, year))
+        raise EarthScopeAuthFailed("401 token rejected")
+
+    h.get_es_credential = fake
+
+    for net, year in [("ZI", 2019), ("XD", 2018), ("NP", 2020), ("ZI", 2011)]:
+        try:
+            h.get_filesystem(net, year)
+        except EarthScopeAuthFailed:
+            pass
+    assert len(calls) == 1, f"401 must stop everything, asked {len(calls)}x"
+
+
+def test_a_verdict_survives_the_next_shard():
+    """A worker claims shard after shard in ONE process.
+
+    Per-instance caching made every shard re-learn the same refusals, so the
+    saving was undone every few minutes.
+    """
+    from sb_catalog.src.s3_helper import EarthScopeNoAccess
+
+    calls = []
+
+    def fake(net, year=None):
+        calls.append((net, year))
+        raise EarthScopeNoAccess("403 no access")
+
+    for _ in range(20):                        # twenty shards, one process
+        h = CompositeS3ObjectHelper()
+        h.get_es_credential = fake
+        try:
+            h.get_filesystem("ZI", 2019)
+        except EarthScopeNoAccess:
+            pass
+    assert len(calls) == 1, f"asked {len(calls)}x across 20 shards"
+
+
+def test_a_yearless_request_for_a_temporary_network_is_never_sent():
+    """"i see requests for a temporary network without a year - this will
+    never succeed". We answer it ourselves instead of asking."""
+    from sb_catalog.src.s3_helper import EarthScopeScopeIncomplete
+
+    h = CompositeS3ObjectHelper()
+    sent = []
+
+    def fake_client():
+        raise AssertionError(f"a request was sent: {sent}")
+
+    h.es_client = fake_client
+    try:
+        h.get_es_credential("ZI")              # temporary code, no year
+    except EarthScopeScopeIncomplete:
+        pass
+    else:
+        raise AssertionError("a year-less temporary scope must be refused")
+
+
+def test_the_exchange_is_rate_limited_per_scope():
+    """A refresh loop must hit our own limiter, not EarthScope's."""
+    from sb_catalog.src.s3_helper import (ES_REFRESH_BUDGET,
+                                          EarthScopeExchangeThrottled)
+
+    h = CompositeS3ObjectHelper()
+    calls = []
+
+    class _Client:
+        class user:
+            @staticmethod
+            def get_aws_credentials(**kw):
+                calls.append(kw)
+                return _Cred()
+
+    h.es_client = lambda: _Client
+    for _ in range(ES_REFRESH_BUDGET):
+        h.get_es_credential("ZI", 2019)
+    try:
+        h.get_es_credential("ZI", 2019)
+    except EarthScopeExchangeThrottled:
+        pass
+    else:
+        raise AssertionError("the budget must stop the next exchange")
+    assert len(calls) == ES_REFRESH_BUDGET
+
+
+def test_the_sdk_client_is_built_once_per_process():
+    """earthscope-sdk 1.8.0 caches issued credentials in memory on the service
+    object and nowhere else - the disk cache 1.3.x had is gone. A client per
+    call threw that cache away every time and re-bootstrapped OAuth."""
+    import sb_catalog.src.s3_helper as sh
+
+    built = []
+
+    class _FakeClient:
+        def __init__(self):
+            built.append(1)
+
+        def close(self):
+            pass
+
+    sh._ES_STATE["client"] = None
+    try:
+        h1, h2 = CompositeS3ObjectHelper(), CompositeS3ObjectHelper()
+        sh._ES_STATE["client"] = _FakeClient()   # stand in for the real one
+        for _ in range(50):
+            assert h1.es_client() is h2.es_client()
+        assert len(built) == 1
+    finally:
+        sh._ES_STATE["client"] = None
+
+
+def test_denials_are_counted_per_scope_not_per_object():
+    """`_read_waveform_from_s3` resets its own counter on every call.
+
+    On its own that re-ran the refresh for each of the thousands of objects in
+    a station-day we are no access to.
+    """
+    h = CompositeS3ObjectHelper()
+    for i in range(1, 6):
+        assert h.note_access_denied("ZI", 2019) == i
+    # A read that succeeds says the scope is fine after all.
+    h.clear_access_denied("ZI", 2019)
+    assert h.note_access_denied("ZI", 2019) == 1
+    # And another scope is unaffected.
+    assert h.note_access_denied("ZI", 2011) == 1
+
+
+def test_permission_and_filenotfound_are_handled_before_oserror():
+    """Both subclass OSError, so an OSError handler placed first shadows them.
+
+    It did, since 070a4fd. A denied object never refreshed and never returned:
+    the `while True` loop re-HEADed it as fast as the socket allowed until the
+    900 s station-day timeout. Tight request loop, per denied object - and the
+    ES_DENIED_ATTEMPTS budget below it had never once executed.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).parent.parent / "sb_catalog/src/s3_helper.py"
+    tree = ast.parse(src.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "_read_waveform_from_s3")
+    order = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Try):
+            for h in node.handlers:
+                if h.type is None:
+                    continue
+                order += [n.id for n in ast.walk(h.type)
+                          if isinstance(n, ast.Name)]
+    for narrow in ("PermissionError", "FileNotFoundError"):
+        assert narrow in order and "OSError" in order
+        assert order.index(narrow) < order.index("OSError"), (
+            f"{narrow} subclasses OSError; handled after it, it is dead code"
+        )
+
+
+def test_an_auth_flow_error_is_terminal_and_global():
+    """A bad refresh token is not congestion and is not about a scope.
+
+    `InvalidRefreshTokenError` and friends carry no `.response`, so the
+    status-code branch never saw them and they fell into the retry loop - and
+    every attempt re-ran the refresh grant against login.earthscope.org. Five
+    token-endpoint hits per scope, per shard, per worker, for a token that had
+    already been rejected.
+    """
+    import sys
+    import types
+
+    from sb_catalog.src.s3_helper import EarthScopeAuthFailed
+
+    class _AuthFlowError(Exception):
+        pass
+
+    class _InvalidRefreshToken(_AuthFlowError):
+        pass
+
+    err = types.ModuleType("earthscope_sdk.auth.error")
+    err.AuthFlowError = _AuthFlowError
+    err.UnauthorizedError = type("UnauthorizedError", (_AuthFlowError,), {})
+    err.UnauthenticatedError = type(
+        "UnauthenticatedError", (_AuthFlowError,), {})
+    saved = sys.modules.get("earthscope_sdk.auth.error")
+    sys.modules["earthscope_sdk.auth.error"] = err
+
+    attempts = []
+    h = CompositeS3ObjectHelper()
+
+    class _Client:
+        class user:
+            @staticmethod
+            def get_aws_credentials(**kw):
+                attempts.append(kw)
+                raise _InvalidRefreshToken("refresh token exchange failed")
+
+    h.es_client = lambda: _Client
+    try:
+        for net, year in [("ZI", 2019), ("XD", 2018), ("NP", 2020)]:
+            try:
+                h.get_es_credential(net, year)
+            except EarthScopeAuthFailed:
+                pass
+            else:
+                raise AssertionError("an auth-flow error must be terminal")
+        assert len(attempts) == 1, (
+            f"a rejected token must be presented once, not {len(attempts)}x"
+        )
+    finally:
+        if saved is not None:
+            sys.modules["earthscope_sdk.auth.error"] = saved
+        else:
+            del sys.modules["earthscope_sdk.auth.error"]

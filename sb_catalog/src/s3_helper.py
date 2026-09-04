@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import time
 from abc import abstractmethod
@@ -63,16 +64,23 @@ EARTHSCOPE_RESTRICTED_ACCESS_POINT = os.environ.get(
 # permissions problem rather than a renamed role.
 EARTHSCOPE_ROLE = os.environ.get("EARTHSCOPE_ROLE", "s3-miniseed-v2")
 ES_CREDENTIAL_ATTEMPTS = int(os.environ.get("ES_CREDENTIAL_ATTEMPTS", "5"))
+# Ceiling on how often ONE scope may be re-exchanged inside
+# ES_REFRESH_WINDOW seconds. A credential is good for an hour, so anything
+# above this is our retry logic churning, not a real expiry - and churn on a
+# shared endpoint is indistinguishable from an attack. Exceeding it raises
+# locally, costing EarthScope nothing.
+ES_REFRESH_BUDGET = int(os.environ.get("ES_REFRESH_BUDGET", "3"))
+ES_REFRESH_WINDOW = float(os.environ.get("ES_REFRESH_WINDOW", "300"))
 # FDSN reserves codes beginning with a digit or X/Y/Z for temporary deployments,
 # and reassigns them, so a credential for one is additionally scoped by year.
 ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
 
 
-class EarthScopeNotEntitled(RuntimeError):
+class EarthScopeNoAccess(RuntimeError):
     """HTTP 403: the account may not read this network at all.
 
     Different from `EarthScopeNetworkYearNotFound` (404, the archive has no such
-    network-year) and from a wrong scope (400). This one is a real entitlement
+    network-year) and from a wrong scope (400). This one is a real access
     gap and should be loud - it means shards on that network cannot run, and
     somebody has to ask EarthScope.
 
@@ -84,7 +92,7 @@ class EarthScopeNotEntitled(RuntimeError):
 class EarthScopeNetworkYearNotFound(FileNotFoundError):
     """EarthScope has no such network-year: HTTP 404 from the token exchange.
 
-    Distinct from a wrong scope and from a missing entitlement. Temporary codes
+    Distinct from a wrong scope and from a missing grant of access. Temporary codes
     are reused, so the campaign plan legitimately contains network-years the
     archive never held - our station metadata says ZI has 2019 stations, and
     EarthScope answers `network FDSN:ZI year 2019 not found`.
@@ -95,8 +103,86 @@ class EarthScopeNetworkYearNotFound(FileNotFoundError):
     """
 
 
+class EarthScopeScopeRefused(RuntimeError):
+    """HTTP 400: the request itself is malformed for this network.
+
+    The case that matters is a temporary network asked for without a year.
+    FDSN reuses temporary codes across experiments, so EarthScope authorises
+    them at the year level and a year-less request for one can never succeed.
+    Retrying it is pure load, which is how this fleet came to be reported as a
+    denial of service on 2026-09-04.
+    """
+
+
+class EarthScopeScopeIncomplete(EarthScopeScopeRefused):
+    """A 400 we recognised without sending it.
+
+    Raised when a network is on `network+year` scoping and the caller has no
+    year to give. EarthScope would answer 400; we answer it ourselves.
+    """
+
+
+class EarthScopeAuthFailed(RuntimeError):
+    """HTTP 401: the token itself was rejected.
+
+    Not scoped to a network - every request this worker makes will fail the
+    same way - so it is remembered process-wide and the shard fails fast
+    rather than re-presenting a bad token once per network-day.
+    """
+
+
+class EarthScopeExchangeThrottled(RuntimeError):
+    """Refused locally by our own rate limit, never sent.
+
+    Deliberately NOT one of the terminal verdicts: the window reopens, so a
+    genuine renewal an hour later still goes through.
+    """
+
+
+# Verdicts on the request, not congestion. None of these is ever retried, and
+# each is remembered for the life of the process so the same question is never
+# asked twice. EarthScope's 2026-09-04 report - "400/403/404s should not be
+# retried" - is enforced here and nowhere else.
+ES_TERMINAL = (
+    EarthScopeNoAccess,           # 403 - no access to this network/year
+    EarthScopeNetworkYearNotFound,   # 404 - no such FDSN code
+    EarthScopeScopeRefused,          # 400 - malformed, incl. missing year
+    EarthScopeAuthFailed,            # 401 - bad token
+)
+
+
+# Process-wide, not per helper. A worker claims shard after shard in one
+# process and builds a fresh CompositeS3ObjectHelper for each, so per-instance
+# state made every shard re-learn the same verdicts from EarthScope and
+# re-bootstrap OAuth. These are facts about the account and the archive, not
+# about a shard, so they outlive one.
+_ES_STATE = {
+    "refused": {},        # scope key -> terminal exception, never re-asked
+    "auth_failed": None,  # 401: not scoped to a network, so it stops everything
+    "exchanges": {},      # scope key -> [monotonic stamps], for the rate limit
+    "denials": {},        # scope key -> consecutive AccessDenied count
+    "client": None,       # the one earthscope_sdk client this process uses
+}
+
+
+def reset_earthscope_state() -> None:
+    """Forget every cached verdict and drop the SDK client.
+
+    For tests and for a long-lived process whose access has genuinely changed;
+    a campaign worker should never need it.
+    """
+    client = _ES_STATE["client"]
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
+    _ES_STATE.update(refused={}, auth_failed=None, exchanges={},
+                     denials={}, client=None)
+
+
 FDSN_ATTEMPTS = int(os.environ.get("FDSN_ATTEMPTS", "8"))
-# Denied GETs to tolerate before concluding the role lacks the entitlement.
+# Denied GETs to tolerate before concluding the role lacks the access.
 ES_DENIED_ATTEMPTS = int(os.environ.get("ES_DENIED_ATTEMPTS", "2"))
 # Retries to tolerate on a transient S3 error before giving the station-day up.
 S3_BUSY_ATTEMPTS = int(os.environ.get("S3_BUSY_ATTEMPTS", "6"))
@@ -359,12 +445,63 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # so nothing short of a GET can tell them apart.
         self.es_scope_mode = {}               # net -> mode, below
         self.es_scope_tried = {}              # net -> {modes already denied}
+        # Answers EarthScope has already given. 400/403/404/401 are verdicts on
+        # the request, so the same request is never sent twice: the entry is
+        # the exception itself, re-raised without touching the network.
+        #
+        # This is the fix for the 2026-09-04 report. `load_waveforms` asks for a
+        # filesystem once per day per network and `_read_waveform_from_s3` once
+        # per object, and every one of those calls used to re-run the exchange
+        # after a refusal - a year-long shard on a network we are no access
+        # to sent ~366 credential requests, multiplied by every worker in the
+        # fleet, forever.
+        self.es_refused = _ES_STATE["refused"]   # scope key -> terminal exc
+        # The SDK caches issued credentials in memory on the service object
+        # (`_aws_creds_by_key`) and, since 1.8.0, nowhere else - so building a
+        # fresh EarthScopeClient per call threw that cache away every time and
+        # guaranteed a round trip, plus an OAuth token refresh whenever the
+        # access token had not been persisted. One client per process keeps the
+        # SDK's own cache, its access token and its connection pool alive; see
+        # `_ES_STATE`.
         logger.info(
             f"EarthScope: open data anonymous for "
             f"{','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}; "
             f"all other networks via {EARTHSCOPE_RESTRICTED_ACCESS_POINT} "
             f"(role {EARTHSCOPE_ROLE}, acquired on first use)"
         )
+
+    @property
+    def es_auth_failed(self):
+        return _ES_STATE["auth_failed"]
+
+    @es_auth_failed.setter
+    def es_auth_failed(self, exc):
+        _ES_STATE["auth_failed"] = exc
+
+    @property
+    def es_exchanges(self):
+        return _ES_STATE["exchanges"]
+
+    @property
+    def es_denials(self):
+        return _ES_STATE["denials"]
+
+    def es_client(self):
+        """The one EarthScope client this process uses.
+
+        Built lazily - constructing it bootstraps OAuth, which a campaign on
+        the public buckets must never pay for - and then kept, so the SDK can
+        serve a repeat request for the same scope from its own memory cache
+        instead of asking EarthScope again.
+        """
+        if _ES_STATE["client"] is None:
+            # Imported here, not at module scope: building an object key needs
+            # no credentials machinery, and an eager import made every consumer
+            # of the path helpers - including the dashboard job in CI - depend
+            # on the SDK.
+            from earthscope_sdk import EarthScopeClient
+            _ES_STATE["client"] = EarthScopeClient()
+        return _ES_STATE["client"]
 
     def get_prefix(self, net, year, day) -> str:
         return self.helpers[self.get_data_center(net)].get_prefix(net, year, day)
@@ -413,7 +550,7 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         Unscoped credentials for `s3-miniseed-v2` carry `s3:ListBucket` but not
         `s3:GetObject`: every LIST succeeds and every GET returns AccessDenied.
         That asymmetry is why this looked for two weeks like a missing
-        entitlement - listing works, so the role is obviously assumed, and the
+        access - listing works, so the role is obviously assumed, and the
         denial arrives only at the read.
         """
         mode = self.es_scope_mode.setdefault(net, self.default_scope_mode(net))
@@ -422,34 +559,70 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             scope["year"] = int(year)
         return scope
 
-    def escalate_scope_mode(self, net) -> bool:
-        """Switch a network to the other scoping and discard what was cached
-        under the old one. Returns False once both have been tried.
+    def es_scope_key(self, net, year=None) -> str:
+        return json.dumps(self.es_scope(net, year), sort_keys=True)
 
-        The token exchange itself cannot tell us which scoping a network wants:
-        it returns 200 and a valid-looking credential either way, and only the
-        GET distinguishes them. So the scoping is *learned from a denial* - and
-        learned once per network per worker, not per object, since the flip is
-        remembered in `es_scope_mode`.
+    def es_verdict(self, net, year=None):
+        """The terminal answer already held for this scope, or None.
+
+        Checked before every exchange. A 401 is not scoped to a network - the
+        token is bad for everything - so it short-circuits all of them.
         """
-        tried = self.es_scope_tried.setdefault(net, set())
+        if self.es_auth_failed is not None:
+            return self.es_auth_failed
+        return self.es_refused.get(self.es_scope_key(net, year))
+
+    def es_record_verdict(self, net, year, exc) -> None:
+        """Remember a refusal so the same request is never sent again."""
+        if isinstance(exc, EarthScopeAuthFailed):
+            self.es_auth_failed = exc
+            return
+        key = self.es_scope_key(net, year)
+        if key not in self.es_refused:
+            logger.warning(
+                f"EarthScope refused {key} ({type(exc).__name__}). Not "
+                f"retrying: this is a verdict on the request. Every later "
+                f"read of that scope is answered from memory."
+            )
+        self.es_refused[key] = exc
+
+    def escalate_scope_mode(self, net) -> bool:
+        """Add the year to a network's scope after a 400. One direction only.
+
+        `default_scope_mode` is a guess and it can be wrong: a code we read as
+        permanent may in fact be authorised per year. Discovering that costs
+        one extra request, and the corrected mode is remembered per network, so
+        it is paid once per worker rather than per object.
+
+        The reverse direction is gone. Dropping the year from a temporary
+        network's request produces exactly what EarthScope reported on
+        2026-09-04 - "requests for a temporary network without a year - this
+        will never succeed" - because temporary FDSN codes are reused across
+        experiments and are therefore authorised at the year level. It was
+        reachable from a 403, which is the one status that guarantees the
+        retry is pointless, and every object of a denied station-day walked
+        into it. So: escalation never removes scope, only adds it, and it is
+        driven only by a 400.
+        """
         current = self.es_scope_mode.setdefault(
             net, self.default_scope_mode(net))
+        tried = self.es_scope_tried.setdefault(net, set())
         tried.add(current)
-        other = "network" if current == "network+year" else "network+year"
-        if other in tried:
+        if current != "network":
+            return False                      # nothing safe left to ask
+        if "network+year" in tried:
             return False
-        self.es_scope_mode[net] = other
-        # Drop every credential and filesystem held for this network, whichever
-        # year they were scoped to: they were all built under the old mode.
+        self.es_scope_mode[net] = "network+year"
+        # Drop every credential and filesystem held for this network: they were
+        # all built under the old mode.
         stale = [k for k in self.credentials if f'"FDSN:{net}"' in k]
         for k in stale:
             self.credentials.pop(k, None)
             self.es_fs.pop(k, None)
         logger.warning(
-            f"EarthScope: {net} denied under '{current}' scoping; retrying as "
-            f"'{other}'. If this is consistent for {net}, the default in "
-            f"`default_scope_mode` is wrong for it."
+            f"EarthScope: {net} refused a year-less scope with 400; retrying "
+            f"once as 'network+year'. If this is consistent for {net}, the "
+            f"default in `default_scope_mode` is wrong for it."
         )
         return True
 
@@ -460,6 +633,13 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         thousands of GETs behind one credential, and the token exchange is an
         OAuth round trip. Renewal is driven by expiry, not by call count.
         """
+        verdict = self.es_verdict(net, year)
+        if verdict is not None:
+            # Already answered. `load_waveforms` asks once per day per network
+            # and `_read_waveform_from_s3` once per object, so re-asking here
+            # is what turned one refusal into thousands of requests.
+            raise verdict
+
         scope = self.es_scope(net, year)
         key = json.dumps(scope, sort_keys=True)
         cred = self.credentials.get(key)
@@ -470,43 +650,97 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                 logger.warning(f"EarthScope credential renewed for {scope}.")
             try:
                 self.credentials[key] = self.get_es_credential(net, year)
-            except RuntimeError as exc:
-                # A wrong scope can fail at either end: refused here at the
-                # exchange, or accepted here and denied at the GET. Escalate on
-                # both, or the fallback only covers half the ways to be wrong.
-                # Terminates because escalate_scope_mode returns False once
-                # both scopings have been tried.
-                #
-                # Log the refusal BEFORE escalating. Escalation replaces one
-                # error with another, and without this the surviving message is
-                # the second attempt's - which explains why the fallback failed
-                # and says nothing about why the fallback was needed.
-                logger.warning(f"Scope {scope} refused: {exc}")
-                if not self.escalate_scope_mode(net):
-                    raise
-                return self.get_es_filesystem(net, year)
+            except ES_TERMINAL as exc:
+                # Recorded here rather than in `get_es_credential` so a
+                # monkeypatched exchange is covered too, and so this holds
+                # whichever layer produced the verdict.
+                self.es_record_verdict(net, year, exc)
+                # A 400 is the ONE status where a different request may
+                # legitimately succeed, and only by adding the year we omitted.
+                # `escalate_scope_mode` returns False the second time, so this
+                # recursion is at most one level deep.
+                if isinstance(exc, EarthScopeScopeRefused) and \
+                        not isinstance(exc, EarthScopeScopeIncomplete) and \
+                        self.escalate_scope_mode(net):
+                    logger.warning(f"Scope {scope} refused with 400: {exc}")
+                    return self.get_es_filesystem(net, year)
+                raise
             self.set_es_filesystem(key)
         return self.es_fs[key]
 
+    def _es_throttle(self, key) -> None:
+        """Refuse locally when one scope is being re-exchanged too often.
+
+        Nothing here reaches EarthScope. A credential lives an hour, so more
+        than ES_REFRESH_BUDGET exchanges of the same scope inside
+        ES_REFRESH_WINDOW seconds is our own retry logic churning - the
+        signature of the traffic EarthScope reported - and the cheapest place
+        to stop it is before the socket.
+        """
+        now = time.monotonic()
+        stamps = [t for t in self.es_exchanges.get(key, [])
+                  if now - t < ES_REFRESH_WINDOW]
+        if len(stamps) >= ES_REFRESH_BUDGET:
+            self.es_exchanges[key] = stamps
+            raise EarthScopeExchangeThrottled(
+                f"Refusing to exchange {key} again: {len(stamps)} exchanges "
+                f"in the last {ES_REFRESH_WINDOW:.0f}s, budget is "
+                f"{ES_REFRESH_BUDGET}. A credential is valid for an hour, so "
+                f"this is a retry loop, not an expiry. Raised locally - no "
+                f"request was sent."
+            )
+        stamps.append(now)
+        self.es_exchanges[key] = stamps
+
     def get_es_credential(self, net, year=None):
+        """Exchange one scope for temporary AWS credentials.
+
+        Every 4xx except 429 is terminal; only 429 and 5xx are retried, with
+        exponential backoff and jitter so a fleet-wide blip does not resolve
+        into every worker knocking in lockstep.
+
+        The verdict is recorded HERE as well as in `get_es_filesystem`, so that
+        the callers that use the exchange directly - `netyear_sweep`,
+        `diag_earthscope` - get the same memory. Recording twice is harmless;
+        not recording at one of the two entry points is not.
         """
-        Set 5 minutes buffer time to update credential
-        """
-        # Imported here, not at module scope: building an object key needs no
-        # credentials machinery, and an eager import made every consumer of the
-        # path helpers - including the dashboard job in CI - depend on the SDK.
-        from earthscope_sdk import EarthScopeClient
+        try:
+            return self._exchange_es_credential(net, year)
+        except ES_TERMINAL as exc:
+            self.es_record_verdict(net, year, exc)
+            raise
+
+    def _exchange_es_credential(self, net, year=None):
+        verdict = self.es_verdict(net, year)
+        if verdict is not None:
+            raise verdict
 
         scope = self.es_scope(net, year)
+        key = json.dumps(scope, sort_keys=True)
+
+        # A network on year scoping with no year to give: EarthScope would
+        # answer 400, and this is the request they saw. Answer it here.
+        if self.es_scope_mode.get(net) == "network+year" and "year" not in scope:
+            exc = EarthScopeScopeIncomplete(
+                f"Refusing to ask for {scope} without a year: {net} is a "
+                f"temporary FDSN code, those are reused across experiments, "
+                f"and EarthScope authorises them per year. A year-less request "
+                f"can only ever return 400, so it is not sent. The caller must "
+                f"pass the year of the data it is about to read."
+            )
+            self.es_record_verdict(net, year, exc)
+            raise exc
+
+        self._es_throttle(key)
+
         last = None
         for attempt in range(1, ES_CREDENTIAL_ATTEMPTS + 1):
             try:
-                with EarthScopeClient() as client:
-                    return client.user.get_aws_credentials(
-                        role=EARTHSCOPE_ROLE,
-                        ttl_threshold=self.ttl_threshold,
-                        **scope,
-                    )
+                return self.es_client().user.get_aws_credentials(
+                    role=EARTHSCOPE_ROLE,
+                    ttl_threshold=self.ttl_threshold,
+                    **scope,
+                )
             except Exception as exc:
                 last = exc
                 # The SDK raises its OWN types for 401 and 403 instead of an
@@ -515,37 +749,55 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                 # sweep measured the cost of not knowing that: network `LH`
                 # burned 25 s per year - five attempts, five-second sleeps -
                 # re-asking a question already answered 403.
-                from earthscope_sdk.auth.error import (UnauthenticatedError,
+                from earthscope_sdk.auth.error import (AuthFlowError,
+                                                       UnauthenticatedError,
                                                        UnauthorizedError)
                 if isinstance(exc, UnauthorizedError):
-                    raise EarthScopeNotEntitled(
+                    raise EarthScopeNoAccess(
                         f"EarthScope returned 403 for {scope} on role "
-                        f"{EARTHSCOPE_ROLE}: the account is not entitled to "
-                        f"network {net}. Not retryable - ask EarthScope for "
-                        f"access, or drop {net} from the campaign."
+                        f"{EARTHSCOPE_ROLE}: the account does not have access to "
+                        f"network {net}"
+                        f"{' for ' + str(year) if 'year' in scope else ''}. "
+                        f"Not retryable - ask EarthScope for access, or drop "
+                        f"it from the campaign."
                     ) from exc
                 if isinstance(exc, UnauthenticatedError):
-                    raise RuntimeError(
+                    raise EarthScopeAuthFailed(
                         f"EarthScope returned 401 for {scope}: the credential "
                         f"itself was rejected. Retrying cannot fix a bad "
                         f"token - check ES_OAUTH2__REFRESH_TOKEN in Secrets "
                         f"Manager (quakescope/earthscope-refresh-token)."
                     ) from exc
+                if isinstance(exc, AuthFlowError):
+                    # Every remaining AuthFlowError is about OUR credentials,
+                    # not about this scope: InvalidRefreshTokenError,
+                    # NoRefreshTokenError, the device-code errors. None is
+                    # congestion, and none is fixed by asking again - but they
+                    # carry no `.response`, so the status-code branch below
+                    # never saw them and they fell into the retry loop. Each
+                    # attempt re-ran the refresh grant against
+                    # login.earthscope.org, so a revoked token became five
+                    # token-endpoint hits per scope, per shard, per worker.
+                    raise EarthScopeAuthFailed(
+                        f"EarthScope authentication failed before the request "
+                        f"for {scope} was made ({type(exc).__name__}: "
+                        f"{str(exc)[:200]}). This is our token, not this "
+                        f"scope - retrying re-runs the refresh grant and "
+                        f"cannot succeed. Check ES_OAUTH2__REFRESH_TOKEN in "
+                        f"Secrets Manager (quakescope/earthscope-refresh-token)."
+                    ) from exc
                 # Report the HTTP status and body, not just the class.
                 # "HTTPStatusError" alone is indistinguishable between "not
-                # entitled", "no such network-year" and "malformed parameter",
+                # allowed", "no such network-year" and "malformed parameter",
                 # and the retry loop then hides it five times over.
                 resp = getattr(exc, "response", None)
                 detail = f"{type(exc).__name__}"
                 if resp is not None:
                     body = (resp.text or "").strip().replace("\n", " ")[:300]
                     detail = f"HTTP {resp.status_code} {body}"
-                    # 4xx is a verdict, not congestion. Retrying a rejected
-                    # scope just burns the budget - 25 s per network here -
-                    # and buries the one line that says why.
                     code = resp.status_code
                     # 404 means this network-year is not in the archive at
-                    # all. Not a scope error and not an entitlement error, so
+                    # all. Not a scope error and not an access error, so
                     # it must NOT trigger escalation: flipping the scope would
                     # ask a malformed question, get a 400, and then mark the
                     # network as having exhausted both scopings - poisoning
@@ -556,25 +808,49 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
                         raise EarthScopeNetworkYearNotFound(
                             f"EarthScope has no {scope}: {detail}"
                         ) from exc
+                    if code == 400:
+                        raise EarthScopeScopeRefused(
+                            f"EarthScope rejected the scope {scope} as a bad "
+                            f"request: {detail}. Temporary FDSN codes need a "
+                            f"year; this is a verdict on the request, not "
+                            f"congestion, and is not retried."
+                        ) from exc
                     if 400 <= code < 500 and code != 429:
                         raise RuntimeError(
                             f"EarthScope refused credentials for scope "
                             f"{scope} on role {EARTHSCOPE_ROLE}: {detail}. "
-                            f"This is a "
-                            f"verdict on the request, not congestion - check "
-                            f"the scope before retrying."
+                            f"This is a verdict on the request, not "
+                            f"congestion - check the scope before retrying."
                         ) from exc
+                if attempt == ES_CREDENTIAL_ATTEMPTS:
+                    break
+                # Exponential backoff with full jitter. The old fixed 5 s put
+                # every worker that saw the same blip back on the endpoint at
+                # the same instant, which is how a transient 5xx turned into a
+                # synchronised stampede.
+                delay = random.uniform(
+                    0, min(30.0, 2.0 * (2 ** (attempt - 1))))
+                retry_after = None
+                if resp is not None:
+                    with_header = resp.headers.get("retry-after")
+                    if with_header:
+                        try:
+                            retry_after = float(with_header)
+                        except ValueError:
+                            retry_after = None
+                if retry_after is not None:
+                    delay = max(delay, min(retry_after, 60.0))
                 logger.warning(
                     f"EarthScope credential request failed for {scope} "
                     f"({attempt}/{ES_CREDENTIAL_ATTEMPTS}): {detail}. "
-                    f"Sleeping 5 seconds."
+                    f"Sleeping {delay:.1f}s."
                 )
-                time.sleep(5)
+                time.sleep(delay)
         # Fail rather than retry forever. An unbounded loop here never completes
         # and never errors, so a Spot worker holds its shard until the lease
         # expires and the next worker inherits the same hang.
         raise RuntimeError(
-            f"Could not obtain EarthScope credentials after "
+            f"Could not obtain EarthScope credentials for {scope} after "
             f"{ES_CREDENTIAL_ATTEMPTS} attempts. Set ES_OAUTH2__REFRESH_TOKEN and "
             f"EARTHSCOPE_S3_ACCESS_POINT, or restrict the campaign to the public "
             f"SCEDC/NCEDC buckets."
@@ -603,20 +879,53 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
     def update_es_filesystem(self, net, year=None, escalate=False):
         """Force a new credential after a denial, discarding the cached one.
 
-        `escalate` switches to the other scoping first. A denial has two
-        plausible causes and they need opposite responses: an expired token
-        wants the same request again, a mis-scoped one wants a different
-        request. The caller tries them in that order, cheapest first.
+        `escalate` adds the year to the scope first, and only for a network
+        that was not year-scoped already - see `escalate_scope_mode`. A denial
+        has two plausible causes and they need different responses: an expired
+        token wants the same request again, a scope that was missing the year
+        wants a more specific one. The caller tries them in that order.
         """
         if self.get_data_center(net) != "earthscope" or \
                 EarthScopeS3ObjectHelper.is_open_data(net):
             return                            # anonymous; nothing to renew
+        verdict = self.es_verdict(net, year)
+        if verdict is not None:
+            raise verdict                     # already answered; do not re-ask
         if escalate and self.escalate_scope_mode(net):
             return self.get_es_filesystem(net, year)
         key = json.dumps(self.es_scope(net, year), sort_keys=True)
         self.credentials.pop(key, None)
         self.es_fs.pop(key, None)
         return self.get_es_filesystem(net, year)
+
+    def _is_restricted(self, net) -> bool:
+        return (self.get_data_center(net) == "earthscope"
+                and not EarthScopeS3ObjectHelper.is_open_data(net))
+
+    def note_access_denied(self, net, year=None) -> int:
+        """Count an AccessDenied on this scope and return the running total.
+
+        Per scope, not per object. The old counter lived in
+        `_read_waveform_from_s3` and reset on every call, so a station-day we
+        are genuinely no access to re-ran the whole refresh dance for each
+        of its objects - thousands of token exchanges to re-learn one fact.
+        Reset by `clear_access_denied` as soon as a read on that scope
+        succeeds, so a real expiry still gets its refresh.
+
+        Only meaningful for the credentialed tier: a denial on an anonymous
+        bucket has no credential to renew, so it keeps the per-object bound and
+        nothing accumulates.
+        """
+        if not self._is_restricted(net):
+            return 0
+        key = self.es_scope_key(net, year)
+        self.es_denials[key] = self.es_denials.get(key, 0) + 1
+        return self.es_denials[key]
+
+    def clear_access_denied(self, net, year=None) -> None:
+        """A read succeeded, so the scope is good; restore its refresh budget."""
+        if self._is_restricted(net):
+            self.es_denials.pop(self.es_scope_key(net, year), None)
 
 
 class S3DataSource:
@@ -644,6 +953,7 @@ class S3DataSource:
             self.stations = stations.split(",")
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.db = db
+        self._logged = set()                  # see `_log_once`
         self.s3helper = CompositeS3ObjectHelper()
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
@@ -743,8 +1053,8 @@ class S3DataSource:
                     with stage("s3.list"):
                         listing = self.s3helper.list_day(net, fs, prefix)
                     avail_uri[net] += listing
-                except EarthScopeNotEntitled as exc:
-                    # 403 is a fact about entitlement, not a transient fault.
+                except EarthScopeNoAccess as exc:
+                    # 403 is a fact about access, not a transient fault.
                     # Failing the shard means ten retries, permanent failure,
                     # and a requeue to fail again - so a network we are simply
                     # not allowed would look exactly like a broken fleet. Treat
@@ -753,8 +1063,30 @@ class S3DataSource:
                     # Loud, not silent: unlike a 404 this is worth acting on,
                     # and the sweep exists to find them before launch rather
                     # than during it.
-                    logger.error(f"{net} {day:%Y.%j}: {exc}")
+                    # Once per network, not once per day: the verdict is
+                    # cached, so the only thing repeating would be the log.
+                    self._log_once(f"denied:{net}",
+                                   f"{net}: {exc} Skipping this network for "
+                                   f"the rest of the shard.")
                     continue
+                except EarthScopeNetworkYearNotFound as exc:
+                    # The archive has no such network-year. Quiet, and answered
+                    # from `es_refused` on every later day of the shard rather
+                    # than re-asked - 5A/2018 alone would otherwise have sent
+                    # one credential request per day it does not exist for.
+                    logger.debug(f"{net} {day:%Y.%j}: {exc}")
+                except EarthScopeScopeRefused as exc:
+                    # 400. Either the scope is wrong in a way escalation could
+                    # not fix, or we declined to send a request that cannot
+                    # succeed. Loud, because it means the plan and the archive
+                    # disagree about this network - but not fatal, and not
+                    # retried.
+                    self._log_once(f"scope:{net}:{day.year}",
+                                   f"{net} {day.year}: {exc}")
+                except EarthScopeExchangeThrottled as exc:
+                    # Our own rate limit, not EarthScope's answer. Nothing was
+                    # sent; skip the day and let the window reopen.
+                    logger.warning(f"{net} {day:%Y.%j}: {exc}")
                 except FileNotFoundError:
                     logger.debug(f"Path does not exist {prefix}")
                     pass
@@ -853,6 +1185,29 @@ class S3DataSource:
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
 
+    def _log_once(self, key: str, message: str) -> None:
+        """Say it at ERROR the first time and at DEBUG after.
+
+        The listing loop runs once per day per network, so a cached verdict
+        would otherwise print an identical error line for every day of the
+        shard - hundreds of them, all describing one fact.
+        """
+        if key in self._logged:
+            logger.debug(message)
+            return
+        self._logged.add(key)
+        logger.error(message)
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        """Exponential backoff with full jitter, capped at 30 s.
+
+        A fixed sleep put every worker that saw the same blip back on the
+        endpoint at the same instant: a transient fault became a synchronised
+        stampede, which from the far side is indistinguishable from an attack.
+        """
+        return random.uniform(0, min(30.0, 2.0 * (2 ** (attempt - 1))))
+
     async def _read_with_timeout(self, uri, net, station, day,
                                  sourcename=None) -> obspy.Stream:
         """One object read, bounded by STATION_DAY_TIMEOUT.
@@ -905,13 +1260,28 @@ class S3DataSource:
 
         """
         # A refresh fixes an *expired* credential. It cannot fix a credential
-        # that was never entitled to the object, and retrying one forever is
+        # that was never allowed to read the object, and retrying one forever is
         # indistinguishable from a hang: a profiling shard sat on a single
         # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
         # Bound the attempts and say what is actually wrong.
         denied = busy = 0
         while True:
-            fs = self.s3helper.get_filesystem(net, year)
+            try:
+                # Inside the loop and inside a handler: after a denial this can
+                # raise the verdict EarthScope already gave, and that must end
+                # the object rather than escape into the picking loop.
+                fs = self.s3helper.get_filesystem(net, year)
+            except EarthScopeAuthFailed:
+                raise                         # bad token: fail the shard, loudly
+            except (EarthScopeNoAccess, EarthScopeScopeRefused,
+                    EarthScopeExchangeThrottled) as exc:
+                logger.error(f"No credential for {uri}: {exc}")
+                return obspy.Stream()
+            except FileNotFoundError:
+                return obspy.Stream()
+            except RuntimeError as exc:
+                logger.error(f"No credential for {uri}: {exc}")
+                return obspy.Stream()
             try:
                 # Separately timed: this is a HEAD round trip before every GET,
                 # which is pure latency and doubles the request count.
@@ -931,40 +1301,95 @@ class S3DataSource:
                                             sourcename=sourcename)
                         else:
                             st = obspy.read(buff)
+                    # The scope reads, so any earlier denial on it was a real
+                    # expiry. Give the refresh budget back.
+                    self.s3helper.clear_access_denied(net, year)
                     with stage("resample"):
                         return downsample_to_target(st)
-            except OSError as e:
-                if e.errno == 5:
-                    logger.warning(f"Not authorized to access this resource: {uri}")
-                    return obspy.Stream()
+            # ORDER MATTERS. PermissionError and FileNotFoundError both
+            # subclass OSError, so the `except OSError` that used to sit first
+            # shadowed both of them completely. Neither handler could run: an
+            # AccessDenied (s3fs maps it to PermissionError, with no errno) fell
+            # out of the OSError branch without returning, the `while True`
+            # went round again, and the object was re-HEADed as fast as the
+            # network allowed until STATION_DAY_TIMEOUT killed it 900 s later.
+            # That is a tight request loop against EarthScope's access point
+            # per denied object, and it meant the whole ES_DENIED_ATTEMPTS
+            # budget below - the code that is supposed to bound refreshes - had
+            # never once executed.
             except PermissionError as e:
                 denied += 1
+                # Per scope, not per object: `denied` resets on every call, so
+                # on its own it re-ran the whole refresh dance for each of the
+                # thousands of objects in a station-day we are no access to.
+                # `scope_denied` remembers across them, so the fleet asks
+                # EarthScope once per scope instead of once per object.
+                scope_denied = self.s3helper.note_access_denied(net, year)
+                if scope_denied > ES_DENIED_ATTEMPTS:
+                    # Said once per scope, not once per object.
+                    if scope_denied == ES_DENIED_ATTEMPTS + 1:
+                        logger.error(
+                            f"Access denied for {uri} after "
+                            f"{ES_DENIED_ATTEMPTS} refreshes - refreshing the "
+                            f"credential did not help, so this is not an "
+                            f"expiry. Credential scope was "
+                            f"{self.s3helper.es_scope(net, year)} on role "
+                            f"{EARTHSCOPE_ROLE}. An unscoped credential lists "
+                            f"but never reads, so first check that scope is "
+                            f"reaching the token exchange; if it is, the "
+                            f"account genuinely has no access to {net}. Restrict the "
+                            f"campaign to Open Data "
+                            f"({','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}) "
+                            f"plus SCEDC/NCEDC to proceed without it. Every "
+                            f"later object on this scope is skipped without "
+                            f"asking EarthScope again."
+                        )
+                    return obspy.Stream()
                 if denied > ES_DENIED_ATTEMPTS:
-                    logger.error(
-                        f"Access denied {denied} times for {uri} - refreshing "
-                        f"the credential did not help, so this is not an "
-                        f"expiry. Credential scope was "
-                        f"{self.s3helper.es_scope(net, year)} on role "
-                        f"{EARTHSCOPE_ROLE}. An unscoped credential lists but "
-                        f"never reads, so first check that scope is reaching "
-                        f"the token exchange; if it is, the account genuinely "
-                        f"lacks {net}. Restrict the campaign to Open Data "
-                        f"({','.join(sorted(EARTHSCOPE_OPEN_DATA_NETWORKS))}) "
-                        f"plus SCEDC/NCEDC to proceed without it. Skipping."
-                    )
                     return obspy.Stream()
                 logger.debug(e.args[0])
                 # First denial: assume an expired token and re-request the same
-                # scope. Second: assume the scope itself is wrong and flip it.
-                # Cheapest explanation first, and both are tried before the
-                # station-day is abandoned.
-                self.s3helper.update_es_filesystem(
-                    net, year, escalate=denied > 1)
+                # scope. Second: assume the scope was missing its year and add
+                # one. Cheapest explanation first, and neither ever drops scope
+                # - see `escalate_scope_mode`.
+                try:
+                    self.s3helper.update_es_filesystem(
+                        net, year, escalate=denied > 1)
+                except EarthScopeAuthFailed:
+                    raise                     # bad token: fail the shard
+                except ES_TERMINAL as exc:
+                    # EarthScope has now answered definitively. Stop.
+                    logger.error(f"Cannot renew the credential for {uri}: {exc}")
+                    return obspy.Stream()
+                except EarthScopeExchangeThrottled as exc:
+                    logger.warning(f"{exc}")
+                    return obspy.Stream()
+                except RuntimeError as exc:
+                    logger.error(f"Cannot renew the credential for {uri}: {exc}")
+                    return obspy.Stream()
                 logger.warning(
                     f"Credential refreshed after access denied "
                     f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}; scope now "
                     f"{self.s3helper.es_scope(net, year)}"
                 )
+            except FileNotFoundError:
+                return obspy.Stream()
+            except OSError as e:
+                if e.errno == 5:
+                    logger.warning(f"Not authorized to access this resource: {uri}")
+                    return obspy.Stream()
+                # Any other OSError used to fall through without returning and
+                # spin the loop. Treat it as the transient it usually is, under
+                # the same budget as a busy S3.
+                busy += 1
+                if busy > S3_BUSY_ATTEMPTS:
+                    logger.error(
+                        f"{type(e).__name__} on {uri} after {busy} attempts; "
+                        f"giving up on this object rather than holding the "
+                        f"shard open."
+                    )
+                    return obspy.Stream()
+                time.sleep(self._backoff(busy))
             except ClientError:
                 busy += 1
                 if busy > S3_BUSY_ATTEMPTS:
@@ -974,12 +1399,13 @@ class S3DataSource:
                         f"shard open."
                     )
                     return obspy.Stream()
+                delay = self._backoff(busy)
                 logger.warning(
                     f"S3 might be busy ({busy}/{S3_BUSY_ATTEMPTS}). "
-                    f"Sleep 5 seconds and retry."
+                    f"Sleep {delay:.1f}s and retry."
                 )
-                time.sleep(5)
-            except (FileNotFoundError, ValueError, TypeError):
+                time.sleep(delay)
+            except (ValueError, TypeError):
                 return obspy.Stream()
             except Exception:
                 # `except Exception`, never a bare `except:`. A bare clause also
