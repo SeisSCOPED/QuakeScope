@@ -76,6 +76,13 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
           aws-region: us-east-2
+          # The default session is one hour and this job now outlives it.
+          # western holds 129,831 Parquet objects whose footers have to be
+          # read, and it is counted last, so on 2026-09-04 the credentials
+          # expired mid-count and the page reported western as 0 picks with an
+          # "could not be read" note - honest, but wrong-looking, while 11.7 GB
+          # of picks sat in the bucket.
+          role-duration-seconds: 21600
 
       - name: Configure AWS (access keys)
         if: steps.creds.outputs.mode == 'keys'

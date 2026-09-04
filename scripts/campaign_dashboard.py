@@ -294,6 +294,11 @@ def gather(s3, b, campaigns):
             sampled.append((name,) + ps["sampled"])
         if ps.get("error"):
             unreadable.append((name, ps["error"]))
+            # A count that FAILED is not a count of zero. Rendering it as "0"
+            # put western at zero picks on 2026-09-04 while 11.7 GB of its
+            # picks sat in the bucket - the note underneath said so, but a
+            # number in a table outweighs a caption every time.
+            picks = None
         # Planned station-days come from the queue, not the manifests: the
         # manifests only describe what is already finished, and the plan panel
         # is about what is still to come.
@@ -313,7 +318,8 @@ def gather(s3, b, campaigns):
         # the count from the manifests instead made the two disagree - 9 files
         # against 49 MB - because a running shard has written objects but has
         # no manifest yet.
-        total_picks += picks; total_bytes += nbytes; total_files += nobjs
+        total_picks += picks or 0        # None = not read, not zero
+        total_bytes += nbytes; total_files += nobjs
 
     coords = {}
     try:
@@ -784,7 +790,12 @@ def render(g, examples):
             f'<td class="bar"><span style="width:{max(c["shards"]/mx*100,0.6):.2f}%">'
             f'<i style="width:{p:.2f}%"></i></span></td>'
             f'<td class="num">{c["done"]:,}</td><td class="num">{c["shards"]:,}</td>'
-            f'<td class="num">{p:.2f}%</td><td class="num">{c["picks"]:,}</td></tr>')
+            f'<td class="num">{p:.2f}%</td>'
+            f'<td class="num">'
+            + (f'{c["picks"]:,}' if c["picks"] is not None
+               else '<span class="unread" title="the count failed this run; '
+                    'see the note below">not read</span>')
+            + '</td></tr>')
 
     # ---- campaign plan: what each queue will cost and how long it will take.
     # Every figure here is DERIVED from one measured rate; nothing is observed.
@@ -912,6 +923,7 @@ display:flex;align-items:center;gap:6px}}
 .plan .dot,td .dot{{width:8px;height:8px;border-radius:50%;
 background:var(--camp);display:inline-block;margin-right:6px}}
 tr.off td{{opacity:.55}}
+.unread{{color:var(--warn,#b45309);font-weight:600}}
 .blocked{{font-size:10.5px;font-weight:640;letter-spacing:.03em;
 text-transform:uppercase;color:var(--warning);border:1px solid var(--warning);
 border-radius:3px;padding:0 4px;margin-left:6px;cursor:help}}
