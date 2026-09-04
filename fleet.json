@@ -2,7 +2,7 @@
   "_comment": "Fleet targets, read by .github/workflows/fleet.yml every 15 minutes. Edit through the Fleet workflow (Actions -> Fleet -> Run workflow) rather than by hand: the workflow commits its change here, so this file is the audit trail of who scaled what and when. target 0 stops a campaign without losing its place - the queue is durable, so it resumes where it left off.",
   "campaigns": {
     "western": {
-      "target": 900,
+      "target": 200,
       "job_definition": "quakescope_2026_western:19",
       "weight": "original",
       "procs": 4,
