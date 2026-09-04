@@ -125,7 +125,18 @@ def _count_rows_cached(campaign, files):
     from concurrent.futures import ThreadPoolExecutor
 
     key = f"{campaign}/.dashboard/rowcount.json"
-    s3 = boto3.client("s3", region_name=REGION)
+    # Adaptive retries, like the main client. This job reads the same bucket a
+    # 900-worker fleet is writing to, and on 2026-09-04 a plain client with
+    # default retries lost the whole run to
+    #
+    #   ClientError (SlowDown) ... reached max retries: 4
+    #
+    # on one small GetObject for the cache file. The dashboard is the
+    # interruptible party in that contention and should behave like it.
+    from botocore.config import Config as _Cfg
+    s3 = boto3.client("s3", region_name=REGION, config=_Cfg(
+        retries={"max_attempts": 10, "mode": "adaptive"},
+        max_pool_connections=PICK_COUNT_THREADS + 4))
     try:
         cache = json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
     except Exception:
@@ -215,6 +226,9 @@ def parquet_stats(campaign, max_files=None):
     try:
         out["picks"], out["partial"] = _count_rows_cached(campaign, files)
     except Exception as exc:
+        # Throttled or otherwise unreadable. Report it and carry on to the next
+        # campaign: one contended prefix should cost its own count, not the
+        # whole page. The row renders "not read" rather than 0.
         out["error"] = f"{type(exc).__name__}: {exc}"[:120]
         return out
 
