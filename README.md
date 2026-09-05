@@ -20,6 +20,43 @@ If you use QuakeScope in research, please cite:
 
 See [CITATION.cff](CITATION.cff) for BibTeX and other formats.
 
+## Running a campaign from your phone
+
+The whole fleet is driven from one GitHub Actions workflow, so a phone is
+enough. In the GitHub app:
+
+**Repo → Actions → "▶ Run or stop a campaign (Fleet)" → Run workflow**, pick a
+campaign and a number of workers.
+
+That is the only button. Everything else is automatic:
+
+| you pick | what happens |
+|---|---|
+| `dryrun3`, target 1 | a tiny test queue, one worker, a couple of minutes — do this first |
+| any campaign, target 0 | stops launching new workers |
+| a campaign for the first time | an **access survey** runs instead of the fleet; run it again afterwards |
+| a campaign, target 50 | 50 workers, if the survey says the data is readable |
+
+**It refuses rather than wastes.** Before anything launches, the workflow
+checks that the image is not the build that caused the 2026-09-04 incident,
+that we are not already overloading EarthScope, and that we can actually read
+the data this campaign plans to read. If any of those fail it explains why and
+launches nothing. Read the run's summary — the reason is written in plain
+English.
+
+**Two things it does not do.** Setting a target to 0 stops *new* workers; it
+does not stop ones already running (terminate those from the AWS console, or
+ask someone with CLI access). And the scheduled top-up keeps a campaign at its
+committed target every 15 minutes, so a campaign left at 50 will stay at 50
+until somebody sets it to 0.
+
+**To check everything is healthy without launching anything:**
+Actions → "✅ Preflight" → Run workflow. It answers "safe to run a campaign" or
+tells you what is wrong, and it changes nothing.
+
+Background, if a run refuses and you want to know why:
+[the incident report](https://seisscoped.org/QuakeScope/earthscope_credential_audit.html).
+
 ## Quick Start
 
 **Local tutorials (5 min)**:

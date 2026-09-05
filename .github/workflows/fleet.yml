@@ -1,4 +1,4 @@
-name: Fleet
+name: "▶ Run or stop a campaign (Fleet)"
 
 # Holds the campaign fleets at their target size, and lets you change that
 # target from anywhere - including the GitHub mobile app, which is the point.
@@ -27,21 +27,26 @@ name: Fleet
 # The change is committed to fleet.json, so that file is the audit trail of who
 # scaled what and when. target 0 stops a campaign without losing its place.
 
+run-name: >-
+  ${{ github.event_name == 'schedule'
+      && 'Scheduled top-up'
+      || format('{0} → {1} workers · by {2}', inputs.campaign, inputs.target, github.actor) }}
+
 on:
   schedule:
     - cron: "*/15 * * * *"     # top up; offset from the other jobs by minute
   workflow_dispatch:
     inputs:
       campaign:
-        description: "Which campaign to change"
+        description: "Campaign. Start with dryrun3 if you are unsure - it is a tiny test queue."
         required: true
         type: choice
         options: [western, global, obs, dryrun3, dryrun4]
       target:
-        description: "Workers to hold (0 stops it; the queue keeps its place)"
+        description: "How many workers. 0 stops new ones. First run of a campaign starts an access survey instead."
         required: true
         type: string
-        default: "100"
+        default: "0"
 
 permissions:
   contents: write        # commits the new target to fleet.json
@@ -266,6 +271,95 @@ jobs:
               subprocess.run(["git", "pull", "--rebase", "-X", "theirs", "--autostash",
                               "origin", os.environ["GITHUB_REF_NAME"]])
           sys.exit(1)
+          PY
+
+      # WHETHER THE DATA IS THERE, as distinct from whether we may run
+      # (operator), what would run (quarantine) and how loudly (rate).
+      #
+      # EarthScope embargoes recent years of a temporary FDSN code and opens
+      # them later, and codes are reused between experiments, so "we planned
+      # this network-year" and "we may read it today" are different questions.
+      # Nothing asked the second one. On 2026-09-05 a 57-worker fleet spent an
+      # hour discovering the answer one shard at a time: 2,010 of 2,506 shard
+      # failures were embargoed years of 7D and 2F.
+      #
+      # `netyear-sweep` asks it properly - one cheap credential request per
+      # (network, year), paced. ~1,600 pairs is about seven minutes on one
+      # worker and costs pennies. So: no survey, no fleet. The first dispatch
+      # runs the survey instead of the campaign and says so; the second reads
+      # it and either launches or explains why it will not.
+      - name: Do we actually have the data?
+        if: github.event_name == 'workflow_dispatch' && inputs.target != '0'
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+          TARGET: ${{ inputs.target }}
+          ACCESS_MAX_AGE_DAYS: ${{ vars.ACCESS_MAX_AGE_DAYS || '30' }}
+          ACCESS_MIN_READABLE: ${{ vars.ACCESS_MIN_READABLE || '0.10' }}
+        run: |
+          python - <<'PY'
+          import datetime, json, os, sys
+          import boto3
+
+          camp = os.environ["CAMPAIGN"]
+          max_age = float(os.environ["ACCESS_MAX_AGE_DAYS"])
+          floor = float(os.environ["ACCESS_MIN_READABLE"])
+          BUCKET = "quakescope-picks-2026"
+          key = f"{camp}/access.json"
+          s3 = boto3.client("s3")
+          cfg = json.load(open("fleet.json"))["campaigns"][camp]
+
+          def submit_survey(why):
+              b = boto3.client("batch", region_name="us-east-2")
+              r = b.submit_job(
+                  jobName=f"survey-{camp}",
+                  jobQueue="niyiyu_earthscope_missing_station",
+                  jobDefinition=cfg["job_definition"],
+                  containerOverrides={"command": [
+                      "netyear-sweep",
+                      "--campaign", f"s3://{BUCKET}/{camp}",
+                      "--out", f"s3://{BUCKET}/{key}",
+                      "--pace", "0.25"]})
+              print(f"::error::{why} Started an access survey instead of the "
+                    f"fleet (job {r['jobId'][:8]}, about 7 minutes, one "
+                    f"worker). Run this workflow again when it finishes and it "
+                    f"will use the result. Nothing was launched.")
+
+          try:
+              obj = s3.get_object(Bucket=BUCKET, Key=key)
+          except Exception:
+              submit_survey(f"No access survey for {camp}.")
+              sys.exit(1)
+
+          # Seconds, floored at 0: a survey written moments ago has a tiny
+          # negative timedelta and `.days` rounds that to -1.
+          age = max(0.0, (datetime.datetime.now(datetime.timezone.utc)
+                          - obj["LastModified"]).total_seconds() / 86400)
+          if age > max_age:
+              submit_survey(f"The access survey for {camp} is {age:.0f} days old "
+                            f"(limit {max_age:.0f} days); embargoes move.")
+              sys.exit(1)
+
+          a = json.load(obj["Body"])
+          present = a.get("present", 0)
+          denied, missing = len(a.get("denied", [])), len(a.get("missing", []))
+          checked = a.get("checked") or (present + denied + missing) or 1
+          frac = present / checked
+          print(f"::notice::{camp}: survey {age:.1f} day(s) old — {present} of "
+                f"{checked} network-years readable ({frac:.0%}), {denied} "
+                f"embargoed or denied, {missing} not in the archive.")
+
+          if frac < floor:
+              print(f"::error::Only {frac:.0%} of {camp}'s planned network-years "
+                    f"are readable, below the {floor:.0%} floor. {os.environ['TARGET']} "
+                    f"workers would spend most of their time on data we cannot "
+                    f"read. Re-plan the campaign, or ask EarthScope about the "
+                    f"embargoed years, before launching. Nothing was launched.")
+              sys.exit(1)
+          if frac < 0.5:
+              print(f"::warning::{camp} is only {frac:.0%} readable. Embargoed "
+                    f"shards are blocked on first contact rather than retried, "
+                    f"so this is not wasteful - but the campaign will finish "
+                    f"well short of its plan until those years open.")
           PY
 
       # A manual run edits the target first, so the top-up below uses the new

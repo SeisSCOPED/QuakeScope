@@ -1,0 +1,71 @@
+name: "✅ Preflight — is it safe to run?"
+
+# The read-only companion to the Fleet workflow. It launches nothing, changes
+# nothing, and answers one question: are we about to repeat 2026-09-04?
+#
+# It exists because that question used to be answered from memory. On
+# 2026-09-04 the fleet sent 351,735 rejected token requests to EarthScope over
+# four hours and nobody here noticed - the archive operator told us. Every
+# control added since is checked here, so the answer is something you run.
+#
+# The result goes to the run SUMMARY rather than the log, because a summary is
+# readable on a phone and a log is not.
+
+run-name: >-
+  ${{ github.event_name == 'schedule' && 'Scheduled check' || format('Checked by {0}', github.actor) }}
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every six hours. The thing that actually stops a runaway is the rate
+    # breaker inside the Fleet workflow, which runs every 15 minutes; this is a
+    # slower, wider sweep that catches drift - a policy loosened, versioning
+    # turned off, a campaign repointed at the quarantined build.
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+  id-token: write        # OIDC to assume the AWS role
+
+concurrency:
+  group: preflight
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet boto3
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # vars, NOT secrets - see the note in fleet.yml. Written as secrets.*
+          # this resolves to an empty string and the failure surfaces later as
+          # NoCredentialsError.
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Check
+        id: check
+        run: |
+          # --skip-selftest: the offline self-test needs the picking
+          # dependencies, which this job deliberately does not install. CI runs
+          # it on every commit instead.
+          python scripts/preflight.py --markdown --skip-selftest \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say so in the log too
+        if: always()
+        run: |
+          if [ "${{ steps.check.outcome }}" = "success" ]; then
+            echo "::notice::Preflight clear — safe to run a campaign."
+          else
+            echo "::error::Preflight found something. Open the run summary."
+          fi
