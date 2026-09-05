@@ -94,12 +94,21 @@
 
 <a class="card" href="earthscope_credential_audit.html">
   <h3>EarthScope credential audit — 2026-09-04 incident</h3>
-  <p>Our workers overloaded EarthScope's credentials endpoint: 260,322 rejected
-  token requests in 66 minutes, and 20,024 malformed requests for temporary
-  networks. Five defects in one file, each linked to the line that caused it and
-  the line that replaced it, with a self-test EarthScope can run on their own
-  account.</p>
-  <div class="meta">Fleet stopped · fix in <a href="https://github.com/SeisSCOPED/QuakeScope/pull/32">PR&nbsp;#32</a></div>
+  <p>Our workers overloaded EarthScope's credentials endpoint: 351,735 rejected
+  token requests over four hours, peaking at 5,104/min, and 3,925 requests for
+  temporary networks that omitted the year and could only be refused. Five
+  defects in one file, each linked to the line that caused it and the line that
+  replaced it, with a self-test that runs on any EarthScope account.</p>
+  <div class="meta">Fixed and merged · validated by two bounded dry runs · campaigns still stopped</div>
+</a>
+
+<a class="card" href="granular_credentials.html">
+  <h3>Reading an archive behind per-object credentials</h3>
+  <p>What breaks when a few hundred workers read an archive whose credentials
+  are issued per network and per year. Eight defects and what each one
+  generalises to, how to find them before the archive operator does, and what
+  the archive side can do to make a client's job possible.</p>
+  <div class="meta">Engineering note · drawn from the incident above</div>
 </a>
 
 <h2>Reports</h2>
