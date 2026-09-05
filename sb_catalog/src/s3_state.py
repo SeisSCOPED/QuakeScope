@@ -10,6 +10,7 @@ no endpoint to keep alive:
         shards.jsonl              the work queue            (new)
         claims/<shard_id>.json    who is working on what    (new)
         complete/<shard_id>.json  what finished             (was: picks_record)
+        blocked/<shard_id>.json   what cannot run YET       (new)
         progress/<shard_id>.json  mid-shard checkpoints     (new)
         manifests/<job_id>.json   what each job wrote       (ParquetPickWriter)
         runs/<run_id>.json        provenance                (was: sb_runs)
@@ -265,6 +266,59 @@ class S3CampaignState:
         n = len(self._key("complete")) + 1
         return {k[n:-len(".json")] for k in self._list("complete/") if k.endswith(".json")}
 
+    def blocked_ids(self) -> set[str]:
+        """Shards that cannot run yet, and must not be handed out.
+
+        A shard whose networks are embargoed is not a failure and not work in
+        progress - it is work that is not available. Failing it instead sent it
+        straight back to the queue (`worker.release`), where the next worker
+        claimed it, failed it identically, and released it again. On
+        2026-09-05 that spin was most of what a 57-worker fleet did.
+
+        BLOCKED IS NOT PERMANENT. EarthScope embargoes recent years of a
+        temporary code and releases them later, and codes are reused between
+        experiments, so today's refusal is next year's data. `unblock()` clears
+        these once a fresh access survey says the year has opened.
+        """
+        n = len(self._key("blocked")) + 1
+        return {k[n:-len(".json")] for k in self._list("blocked/")
+                if k.endswith(".json")}
+
+    def block(self, shard_id: str, reason: str, scope: Optional[dict] = None) -> None:
+        """Take a shard out of rotation, recording what would have to change."""
+        self._put_json(self._key("blocked", f"{shard_id}.json"), {
+            "shard_id": shard_id,
+            "reason": reason,
+            "scope": scope or {},
+            "blocked": _utcnow(),
+        })
+        # Drop the claim so the record is "not available" rather than "held by
+        # a worker that has gone away".
+        try:
+            self.s3.delete_object(Bucket=self.bucket,
+                                  Key=self._key("claims", f"{shard_id}.json"))
+        except ClientError:
+            pass
+        logger.warning(f"Blocked {shard_id}: {reason}")
+
+    def unblock(self, shard_ids=None) -> int:
+        """Return blocked shards to the queue. All of them, or the ones named.
+
+        Call this after an access survey shows a network-year has opened;
+        nothing else brings a blocked shard back.
+        """
+        ids = self.blocked_ids() if shard_ids is None else set(shard_ids)
+        n = 0
+        for sid in ids:
+            try:
+                self.s3.delete_object(Bucket=self.bucket,
+                                      Key=self._key("blocked", f"{sid}.json"))
+                n += 1
+            except ClientError as exc:
+                logger.warning(f"Could not unblock {sid}: {exc}")
+        logger.info(f"Unblocked {n} shard(s)")
+        return n
+
     def claim(self, shard_id: str) -> bool:
         """Atomically take a shard. False if someone else holds a live claim."""
         key = self._key("claims", f"{shard_id}.json")
@@ -367,9 +421,11 @@ class S3CampaignState:
         done = self.completed_ids()
         n = len(self._key("claims")) + 1
         claimed = {k[n:-len(".json")] for k in self._list("claims/") if k.endswith(".json")}
+        blocked = self.blocked_ids()
         return {
             "total": len(shards),
             "complete": len(done),
-            "in_flight": len(claimed - done),
-            "remaining": len(shards) - len(done),
+            "in_flight": len(claimed - done - blocked),
+            "blocked": len(blocked),
+            "remaining": len(shards) - len(done) - len(blocked),
         }

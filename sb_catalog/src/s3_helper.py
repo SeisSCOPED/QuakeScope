@@ -143,6 +143,27 @@ class EarthScopeAuthFailed(RuntimeError):
     """
 
 
+class ShardNotAvailable(RuntimeError):
+    """This shard cannot run yet, and retrying will not change that.
+
+    Raised when a shard's restricted networks are embargoed (403) or absent
+    from the archive (404). NOT an error in the ordinary sense: EarthScope
+    embargoes recent years of a temporary code and opens them later, and codes
+    are reused between experiments, so this is a statement about today.
+
+    It exists so the worker can BLOCK the shard rather than fail it. Failing
+    released it back to the queue, where the next worker claimed it, failed it
+    the same way, and released it again - on 2026-09-05 that spin was most of
+    what a 57-worker fleet did, on top of the shards it was failing for our own
+    throttling. `scope` carries the network-year that has to open for this
+    shard to become runnable.
+    """
+
+    def __init__(self, message, scope=None):
+        super().__init__(message)
+        self.scope = scope or {}
+
+
 class EarthScopeExchangeThrottled(RuntimeError):
     """Refused locally by our own rate limit, never sent.
 
@@ -1143,6 +1164,19 @@ class S3DataSource:
                 f"EarthScope preflight: {exc}. Credentials are working; this "
                 f"network-year simply is not in the archive. Continuing."
             )
+        except EarthScopeNoAccess as exc:
+            # 403: we may not read this network-year TODAY. Embargo, or a
+            # different experiment reusing the code. Neither is a defect and
+            # neither is fixed by running the shard again, so the shard is
+            # taken out of rotation rather than failed - see
+            # `S3CampaignState.block`, and `unblock` for when it opens.
+            raise ShardNotAvailable(
+                f"{restricted[0]} {self.start.year} is not readable with this "
+                f"account today ({exc}). EarthScope embargoes recent years of "
+                f"a temporary code and opens them later, so this shard is "
+                f"blocked rather than failed; re-survey access and unblock.",
+                scope={"network": restricted[0], "year": self.start.year},
+            ) from exc
         except Exception as exc:
             n_sta = sum(1 for s in self.stations
                         if s.split(".")[0] in set(restricted))

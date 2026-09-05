@@ -41,6 +41,7 @@ from typing import Optional
 import pandas as pd
 
 from .profiling import profile
+from .s3_helper import ShardNotAvailable
 from .s3_state import S3CampaignState
 
 logger = logging.getLogger("worker")
@@ -355,8 +356,13 @@ def loop(args, proc_index: int = 0) -> None:
     shards = state.read_shards()
     stations = state.get_stations()
     done = state.completed_ids()
+    # Shards whose networks are not readable today. Skipped like completed
+    # ones: claiming them only to discover the embargo again is the spin this
+    # exists to stop. One LIST, same as `completed_ids`.
+    blocked = state.blocked_ids()
     logger.info(
-        f"Queue {args.campaign}: {len(shards)} shards, {len(done)} already complete"
+        f"Queue {args.campaign}: {len(shards)} shards, {len(done)} already "
+        f"complete, {len(blocked)} blocked (not readable yet)"
     )
 
     # Offsetting the start point keeps N processes from contending on the same
@@ -367,12 +373,12 @@ def loop(args, proc_index: int = 0) -> None:
         off = (proc_index * 7919) % len(order)
         order = order[off:] + order[:off]
 
-    n_done = n_failed = 0
+    n_done = n_failed = n_blocked = 0
     try:
         for idx in order:
             shard = shards[idx]
             sid = shard["shard_id"]
-            if sid in done or state.is_complete(sid):
+            if sid in done or sid in blocked or state.is_complete(sid):
                 continue
             if not state.claim(sid):
                 continue
@@ -397,6 +403,19 @@ def loop(args, proc_index: int = 0) -> None:
             except Preempted:
                 stop_beat.set()
                 raise
+            except ShardNotAvailable as exc:
+                # Not a failure: the data is not readable YET. Releasing it
+                # would put it straight back in the queue for the next worker
+                # to discover the same thing, which is what turned an embargoed
+                # network into a fleet-wide spin on 2026-09-05. Take it out of
+                # rotation instead, recording the network-year that has to open.
+                stop_beat.set()
+                logger.info(f"Shard {sid} not available: {exc}")
+                n_blocked += 1
+                state.block(sid, str(exc), getattr(exc, "scope", None))
+                holding["shard"] = None
+                reclaim_memory()
+                continue
             except Exception as exc:
                 stop_beat.set()
                 n_failed += 1
@@ -470,6 +489,13 @@ def loop(args, proc_index: int = 0) -> None:
         # Exit non-zero so the jobs controller surfaces a wholly broken campaign
         # instead of reporting SUCCEEDED, as it did when every shard failed on a
         # missing environment variable.
+        if n_blocked:
+            logger.info(
+                f"No shard completed, but {n_blocked} were blocked as not yet "
+                f"readable. That is a queue with nothing available, not a "
+                f"broken worker."
+            )
+            return 0
         logger.error("No shard completed - failing the job")
         sys.exit(1)
 
