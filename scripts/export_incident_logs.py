@@ -276,6 +276,22 @@ def main(argv=None):
     except Exception:
         retention = None
 
+    # The manifest describes the EXPORT DIRECTORY, not just this run. A run
+    # with --windows incident used to overwrite it with that one window and
+    # silently drop the other three, so the index disagreed with the files
+    # sitting next to it. Pick up every summary and every raw file present.
+    sdir = os.path.join(a.out, "summary")
+    for fn in sorted(os.listdir(sdir)) if os.path.isdir(sdir) else []:
+        if fn.endswith(".json"):
+            w = fn[:-5]
+            if w not in summaries:
+                summaries[w] = json.load(open(os.path.join(sdir, fn)))
+    rdir = os.path.join(a.out, "raw")
+    for fn in sorted(os.listdir(rdir)) if os.path.isdir(rdir) else []:
+        fp = os.path.join(rdir, fn)
+        if fp not in files:
+            files.append(fp)
+
     manifest = {
         "what": "Raw CloudWatch evidence for the 2026-09-04 EarthScope "
                 "credential incident and the dry runs that validated the fix.",
@@ -287,7 +303,8 @@ def main(argv=None):
             datetime.timezone.utc).isoformat(timespec="seconds"),
         "redaction": "every event passed through export_incident_logs.redact(); "
                      "verified by re-scanning the written files",
-        "windows": {k: {"why": WINDOWS[k][2], **summaries[k]} for k in summaries},
+        "windows": {k: {"why": WINDOWS.get(k, ("", "", ""))[2], **summaries[k]}
+                    for k in sorted(summaries)},
         "files": {os.path.relpath(f, a.out): {
             "bytes": os.path.getsize(f), "sha256": sha256(f)} for f in files},
     }
