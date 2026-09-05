@@ -194,6 +194,15 @@ about the incident from the people we were overloading. Nothing in the stack
 alarmed. A metric filter on the outbound-request log line, with an alarm wired
 to zero the fleet, is trivial next to the cost of the alternative.
 
+**Least privilege is about your own blast radius, not the incident.** The
+campaign role held `AmazonS3FullAccess` throughout. It had nothing to do with
+the overload — archive reads use the archive operator's credentials — but it
+meant every worker could delete any of the nine buckets in the account,
+including other people's, while the code contains two real deletion paths and
+the catalogue bucket has no versioning. Scoped now; the method, and the reason
+simulation beats reading the policy, is in
+[`../aws_least_privilege.md`](../aws_least_privilege.md).
+
 **Retention must outlive the investigation.** The log group keeps five days.
 Every number in the incident report rested on data due to be deleted before the
 follow-up work was finished. Export first, analyse second.
