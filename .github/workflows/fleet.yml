@@ -36,7 +36,7 @@ on:
         description: "Which campaign to change"
         required: true
         type: choice
-        options: [western, global, obs]
+        options: [western, global, obs, dryrun3]
       target:
         description: "Workers to hold (0 stops it; the queue keeps its place)"
         required: true
