@@ -184,6 +184,90 @@ jobs:
           print("::notice::no quarantined image would run")
           PY
 
+      # HOW MUCH TRAFFIC WE ARE ALREADY MAKING, as distinct from the guards
+      # above. On 2026-09-04 the fleet sent 351,735 token requests to
+      # EarthScope over four hours and nobody here noticed - the archive
+      # operator told us. Nothing in the stack alarmed.
+      #
+      # A CloudWatch metric filter with an alarm is the textbook control and
+      # needs permissions this account may not have. This workflow already runs
+      # every 15 minutes with credentials and already knows how to set targets
+      # to zero, so the check lives here instead. It is weaker than an alarm -
+      # 15-minute granularity, and it stops the fleet rather than paging a
+      # human - but the incident ran for four hours, so 15 minutes would have
+      # caught it early.
+      #
+      # THRESHOLD. The incident sustained 2,193 requests/min and peaked at
+      # 5,104. Ordinary traffic is far below: a whole fleet restarting
+      # bootstraps OAuth once per process, roughly 800 requests spread over a
+      # few minutes, and dryrun4 sent 11 in 1h45m. 500/min therefore sits about
+      # 10x above a legitimate restart burst and 4x below the incident.
+      - name: Stop the fleet if we are hammering EarthScope
+        env:
+          ES_RATE_LIMIT_PER_MIN: ${{ vars.ES_RATE_LIMIT_PER_MIN || '500' }}
+        run: |
+          python - <<'PY'
+          import datetime, json, os, subprocess, sys
+          import boto3
+
+          WINDOW_MIN = 15
+          limit = float(os.environ["ES_RATE_LIMIT_PER_MIN"])
+          logs = boto3.client("logs", region_name="us-east-2")
+          end = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+          start = end - WINDOW_MIN * 60 * 1000
+
+          # A CloudWatch hiccup must not zero a healthy fleet. Anything other
+          # than a clean answer is treated as "no evidence of a problem".
+          try:
+              n, tok = 0, None
+              while True:
+                  kw = dict(logGroupName="/aws/batch/job", startTime=start,
+                            endTime=end, limit=10000,
+                            filterPattern='"POST https://login.earthscope.org/oauth/token"')
+                  if tok:
+                      kw["nextToken"] = tok
+                  r = logs.filter_log_events(**kw)
+                  n += len(r.get("events", []))
+                  tok = r.get("nextToken")
+                  if not tok:
+                      break
+          except Exception as exc:
+              print(f"::warning::could not read the token rate ({exc}); "
+                    f"not acting on it")
+              raise SystemExit(0)
+
+          rate = n / WINDOW_MIN
+          print(f"::notice::EarthScope token endpoint: {n:,} requests in the "
+                f"last {WINDOW_MIN} min = {rate:,.0f}/min (limit {limit:,.0f})")
+          if rate <= limit:
+              raise SystemExit(0)
+
+          d = json.load(open("fleet.json"))
+          live = {k: v["target"] for k, v in d["campaigns"].items() if v["target"] > 0}
+          for v in d["campaigns"].values():
+              v["target"] = 0
+          json.dump(d, open("fleet.json", "w"), indent=2)
+          open("fleet.json", "a").write("\n")
+          print(f"::error::{rate:,.0f} token requests/min exceeds {limit:,.0f}. "
+                f"Every campaign target set to 0 (was {live}). This is the "
+                f"2026-09-04 shape: see reports/earthscope_credential_audit.html "
+                f"before restarting anything.")
+          subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+          subprocess.run(["git", "config", "user.email",
+                          "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
+          subprocess.run(["git", "add", "fleet.json"], check=True)
+          subprocess.run(["git", "commit", "-m",
+                          f"Fleet: stopped automatically, {rate:.0f} token req/min [skip ci]"],
+                         check=True)
+          for _ in range(3):
+              if subprocess.run(["git", "push", "origin",
+                                 f"HEAD:{os.environ['GITHUB_REF_NAME']}"]).returncode == 0:
+                  break
+              subprocess.run(["git", "pull", "--rebase", "-X", "theirs", "--autostash",
+                              "origin", os.environ["GITHUB_REF_NAME"]])
+          sys.exit(1)
+          PY
+
       # A manual run edits the target first, so the top-up below uses the new
       # value in the same run - press the button, see it take effect.
       - name: Set the new target
