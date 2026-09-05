@@ -309,12 +309,62 @@ def test_the_learned_year_scoping_survives_the_next_shard():
     assert seen1 == [{"network": "FDSN:NP"},
                      {"network": "FDSN:NP", "year": 2019}]
 
+    # Shard 2, with shard 1's credential still live. A credential is good for
+    # an hour and a shard lasts minutes, so the second shard should not go to
+    # EarthScope at all. Holding these per helper is what tripped our own
+    # `_es_throttle` on 2026-09-05 and failed 496 readable shards.
     h2, seen2 = shard()
-    assert h2.get_es_filesystem("NP", 2019) is not None, (
-        "shard 2 raised shard 1's cached year-less 400 instead of asking "
+    assert h2.get_es_filesystem("NP", 2019) is not None
+    assert seen2 == [], f"a live credential was re-exchanged: {seen2}"
+
+    # Shard 3, after the credential has gone - expiry, or a fresh process.
+    # NOW the exchange has to happen, and this is where the scope mode has to
+    # have survived: if it reset, this rebuilds the year-less key, finds shard
+    # 1's cached 400 and gives up on the network for the life of the process.
+    from sb_catalog.src.s3_helper import _ES_STATE
+    _ES_STATE["credentials"].clear()
+    _ES_STATE["filesystems"].clear()
+
+    h3, seen3 = shard()
+    assert h3.get_es_filesystem("NP", 2019) is not None, (
+        "shard 3 raised shard 1's cached year-less 400 instead of asking "
         "with the year it had already learned to send")
-    # And it costs nothing to know: the year-less question is not re-asked.
-    assert seen2 == [{"network": "FDSN:NP", "year": 2019}], seen2
+    assert seen3 == [{"network": "FDSN:NP", "year": 2019}], seen3
+
+
+def test_shards_in_a_row_do_not_trip_our_own_rate_limit():
+    """The 2026-09-05 waste: 496 readable shards failed on our own throttle.
+
+    `_es_throttle` refuses more than ES_REFRESH_BUDGET exchanges of one scope
+    inside ES_REFRESH_WINDOW. That is the right instinct - repeated exchanges
+    of the same scope are a retry loop, not an expiry - but the credential
+    cache lived on the helper, and a worker builds one helper per shard. So a
+    worker taking shards on the same network re-exchanged a credential that
+    was still valid, three shards tripped the budget, and the throttle refusal
+    failed the shard in `_check_archives_reachable`. The shard was then
+    released back to the queue for the next worker to fail the same way.
+
+    Network C answered HTTP 200 throughout. We had access and refused
+    ourselves.
+    """
+    from sb_catalog.src.s3_helper import ES_REFRESH_BUDGET
+
+    calls = []
+    for _ in range(ES_REFRESH_BUDGET + 3):      # more shards than the budget
+        h = CompositeS3ObjectHelper()
+
+        def fake(net, year=None, _h=h):
+            calls.append((net, year))
+            return _Cred()
+
+        h.get_es_credential = fake
+        # Each shard reads the same network, the way a campaign does.
+        assert h.get_es_filesystem("C", 2019) is not None
+
+    assert len(calls) == 1, (
+        f"one credential should serve every shard until it expires; "
+        f"{len(calls)} exchanges would trip the {ES_REFRESH_BUDGET}-per-window "
+        f"budget and fail readable shards")
 
 
 def test_the_scope_mode_shares_the_lifetime_of_the_verdicts():

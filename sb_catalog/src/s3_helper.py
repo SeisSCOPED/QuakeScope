@@ -181,6 +181,10 @@ _ES_STATE = {
     # another on the next shard. See CompositeS3ObjectHelper.__init__.
     "scope_mode": {},     # net -> "network" | "network+year"
     "scope_tried": {},    # net -> {modes already refused}
+    # A credential lives an hour and a helper lives one shard, so these belong
+    # to the process too. Expiry is checked on every use.
+    "credentials": {},    # scope key -> AwsTemporaryCredentials
+    "filesystems": {},    # scope key -> S3FileSystem built from one
 }
 
 
@@ -203,7 +207,7 @@ def reset_earthscope_state() -> None:
         except Exception:
             pass
     for key in ("refused", "exchanges", "denials", "scope_mode",
-                "scope_tried"):
+                "scope_tried", "credentials", "filesystems"):
         _ES_STATE[key].clear()
     _ES_STATE["auth_failed"] = None
     _ES_STATE["client"] = None
@@ -466,8 +470,21 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         # the credential and the filesystem built from it are cached by scope.
         # A shard is planned within one network, so in practice this holds one
         # entry - two when the shard straddles a new year.
-        self.credentials = {}                 # scope key -> AwsTemporaryCredentials
-        self.es_fs = {}                       # scope key -> S3FileSystem
+        # PROCESS-WIDE, for the same reason the verdicts and the scope mode
+        # are. A credential is valid for an HOUR; a helper lives for ONE SHARD,
+        # a few minutes. Holding them per helper threw away a good credential
+        # every shard and re-exchanged it, which on 2026-09-05 tripped our own
+        # `_es_throttle` - three exchanges of one scope inside five minutes -
+        # and the throttle refusal then failed the shard in
+        # `_check_archives_reachable`. 496 shards failed that way in one hour
+        # on network C, which answers HTTP 200: we had access and refused
+        # ourselves, then requeued the shard so the next worker did it again.
+        #
+        # Expiry is still enforced per use in `get_es_filesystem`, which
+        # renews anything inside `ttl_threshold` of expiring, so sharing these
+        # across shards cannot serve a stale credential.
+        self.credentials = _ES_STATE["credentials"]   # scope key -> credential
+        self.es_fs = _ES_STATE["filesystems"]         # scope key -> S3FileSystem
         # Which scoping each network wants. Seeded from a guess, corrected by
         # the first denial - the token exchange returns 200 for either scoping,
         # so nothing short of a GET can tell them apart.
