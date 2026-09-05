@@ -102,6 +102,9 @@ def install_fake_sdk(behaviour, log):
     class EarthScopeClient:
         user = _User()
 
+        def __init__(self, *, ctx=None):
+            self.ctx = ctx
+
         def __enter__(self):
             return self
 
@@ -111,8 +114,31 @@ def install_fake_sdk(behaviour, log):
         def close(self):
             pass
 
+    class _Runner:
+        """Stands in for BackgroundSyncRunner. Nothing here is async, so it
+        only has to exist and be accepted by the fake SdkContext."""
+
+    class SdkContext:
+        def __init__(self, settings=None, *, runner=None):
+            self.runner = runner
+
     sdk = types.ModuleType("earthscope_sdk")
     sdk.EarthScopeClient = EarthScopeClient
+
+    # `es_client` pins the SDK's sync runner, which means importing two private
+    # submodules. Provide them, so the harness drives the same construction the
+    # workers do rather than the ImportError fallback - without these the
+    # client was built by a path production never takes, and every check
+    # reported 0 requests because the import failed inside the retry loop.
+    runner_mod = types.ModuleType("earthscope_sdk.common._sync_runner")
+    runner_mod.BackgroundSyncRunner = _Runner
+    ctx_mod = types.ModuleType("earthscope_sdk.common.context")
+    ctx_mod.SdkContext = SdkContext
+    common = types.ModuleType("earthscope_sdk.common")
+    common._sync_runner = runner_mod
+    common.context = ctx_mod
+    sdk.common = common
+
     err = types.ModuleType("earthscope_sdk.auth.error")
     err.AuthFlowError = _FakeAuthFlowError
     err.UnauthorizedError = _FakeUnauthorized
@@ -120,7 +146,10 @@ def install_fake_sdk(behaviour, log):
     auth = types.ModuleType("earthscope_sdk.auth")
     auth.error = err
     sys.modules.update({"earthscope_sdk": sdk, "earthscope_sdk.auth": auth,
-                        "earthscope_sdk.auth.error": err})
+                        "earthscope_sdk.auth.error": err,
+                        "earthscope_sdk.common": common,
+                        "earthscope_sdk.common._sync_runner": runner_mod,
+                        "earthscope_sdk.common.context": ctx_mod})
 
 
 def _cred(minutes=60):

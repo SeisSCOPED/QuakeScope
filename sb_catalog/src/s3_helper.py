@@ -541,7 +541,59 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             # of the path helpers - including the dashboard job in CI - depend
             # on the SDK.
             from earthscope_sdk import EarthScopeClient
-            _ES_STATE["client"] = EarthScopeClient()
+
+            # PIN THE RUNNER. `SdkContext._get_runner` chooses one the first
+            # time anything is syncified and then caches it for the life of the
+            # context: no running event loop in this thread -> SimpleSyncRunner,
+            # a loop already running -> BackgroundSyncRunner. Keeping one client
+            # per process (which is what stops the SDK re-bootstrapping OAuth)
+            # means that one choice is made by whoever happens to exchange
+            # first, and is then wrong for everybody else.
+            #
+            # That is not hypothetical. The first exchange of a shard comes from
+            # `_check_archives_reachable`, which is synchronous, so the context
+            # cached a SimpleSyncRunner; every later exchange comes from inside
+            # `load_waveforms`, which is `async def`, and SimpleSyncRunner calls
+            # `run_until_complete` on its own loop from inside the running one:
+            #
+            #     RuntimeError: Cannot run the event loop while another loop
+            #                   is running
+            #
+            # A bare RuntimeError, carrying no `.response`, raised before any
+            # request is sent - so it is not terminal, and the retry loop spent
+            # five attempts on something no retry could fix. The 2026-09-05 dry
+            # run lost every shard that crossed a year boundary this way, and
+            # every shard longer than the one-hour credential TTL would have
+            # gone the same way at its first renewal.
+            #
+            # BackgroundSyncRunner runs the coroutine on a thread of its own and
+            # blocks on the future, which is safe from a caller in an event loop
+            # and from one not in an event loop. Choosing it explicitly makes
+            # the client independent of which context happened to build it.
+            # Both of these are SDK-private (`common._sync_runner`,
+            # `common.context`), so an upgrade may move or rename them. That
+            # must not be able to take a campaign down: if they are gone, build
+            # the client the ordinary way and carry on with the SDK's own
+            # choice. The failure that returns is one shard at a time on
+            # multi-year reads, which is survivable; an ImportError here is
+            # every exchange in the process, which is not.
+            try:
+                from earthscope_sdk.common._sync_runner import \
+                    BackgroundSyncRunner
+                from earthscope_sdk.common.context import SdkContext
+                client = EarthScopeClient(
+                    ctx=SdkContext(runner=BackgroundSyncRunner()))
+            except Exception as exc:
+                logger.warning(
+                    f"Could not pin the EarthScope SDK sync runner "
+                    f"({type(exc).__name__}: {exc}). Falling back to the "
+                    f"SDK's own choice, which is made by whichever caller "
+                    f"exchanges first: expect credential exchanges from "
+                    f"inside the read loop to fail if that caller was "
+                    f"synchronous. See es_client()."
+                )
+                client = EarthScopeClient()
+            _ES_STATE["client"] = client
         return _ES_STATE["client"]
 
     def get_prefix(self, net, year, day) -> str:

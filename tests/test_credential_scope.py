@@ -340,6 +340,75 @@ def test_the_scope_mode_shares_the_lifetime_of_the_verdicts():
         "network": "FDSN:NP", "year": 2019}
 
 
+def test_the_sdk_client_can_exchange_from_inside_an_event_loop():
+    """Found by the 2026-09-05 dry run; 3 of 8 shards lost to it.
+
+    `SdkContext` picks a sync runner the FIRST time anything is syncified and
+    caches it for the life of the context: no running loop in this thread gets
+    a SimpleSyncRunner, a running loop gets a BackgroundSyncRunner. One client
+    per process - which is what stops the SDK re-bootstrapping OAuth on every
+    call - means that single choice is made by whichever caller exchanges
+    first and is then wrong for every other caller.
+
+    A shard's first exchange comes from `_check_archives_reachable`, which is
+    synchronous. Every later one comes from inside `load_waveforms`, which is
+    `async def`. So the context cached the runner that cannot work there, and
+    the second year of any shard that crosses a year boundary failed with a
+    bare RuntimeError before a request was ever sent - retried five times,
+    because a bare RuntimeError carries no status and is not terminal.
+
+    Any shard outliving the one-hour credential TTL would have failed the same
+    way at its first renewal, which is most of the campaign.
+    """
+    import asyncio
+    import gc
+    import inspect
+    import warnings
+
+    import pytest
+
+    pytest.importorskip("earthscope_sdk.common._sync_runner")
+    from sb_catalog.src.s3_helper import _ES_STATE
+
+    # Whatever es_client() builds must carry a runner that survives being
+    # called from inside a loop. Assert on the runner the SDK would use.
+    from earthscope_sdk.common._sync_runner import (BackgroundSyncRunner,
+                                                    SimpleSyncRunner)
+
+    async def _work():
+        return "ok"
+
+    # The runner we pin: usable from both contexts.
+    good = BackgroundSyncRunner().syncify(_work)
+    assert good() == "ok"                       # sync caller
+
+    async def _from_loop(fn):
+        return fn()
+    assert asyncio.run(_from_loop(good)) == "ok"   # caller inside a loop
+
+    # The runner the SDK would have cached from a synchronous first call, and
+    # which is what broke in production. Pinned here so that if a future change
+    # lets it back in, this test says why it matters.
+    bad = SimpleSyncRunner().syncify(_work)
+    assert bad() == "ok"
+    # The failing call abandons its coroutine, which is the point - it raises
+    # before anything is awaited - so silence the warning that proves it.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(RuntimeError, match="another loop is running"):
+            asyncio.run(_from_loop(bad))
+        # Collect it here rather than letting it surface as a warning against
+        # whichever unrelated test happens to trigger the next collection.
+        gc.collect()
+
+    # And our client is built with the safe one rather than by accident.
+    src = inspect.getsource(CompositeS3ObjectHelper.es_client)
+    assert "BackgroundSyncRunner" in src, (
+        "es_client must pin the runner; letting SdkContext choose makes the "
+        "choice depend on whether the first exchange happened to be async")
+    assert _ES_STATE["client"] is None          # nothing was really built
+
+
 def test_a_403_never_changes_the_scope():
     """403 means "no access", so a differently shaped request cannot help.
 
