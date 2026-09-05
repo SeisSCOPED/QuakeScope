@@ -409,6 +409,91 @@ def test_the_sdk_client_can_exchange_from_inside_an_event_loop():
     assert _ES_STATE["client"] is None          # nothing was really built
 
 
+def _denying_source(heads, cap=60):
+    """An S3DataSource whose every HEAD is refused, the way s3fs refuses one.
+
+    s3fs maps S3 AccessDenied to PermissionError with a message and NO errno,
+    which is the whole reason D5 hid: `except OSError` sat first and both
+    PermissionError and FileNotFoundError subclass it.
+    """
+    from sb_catalog.src.s3_helper import S3DataSource
+
+    helper = CompositeS3ObjectHelper()
+
+    class _FS:
+        def info(self, uri):
+            heads.append(uri)
+            if len(heads) > cap:
+                raise AssertionError(
+                    f"the read loop is spinning: {len(heads)} HEADs for a "
+                    f"single denied object, with no way out. That is D5, and "
+                    f"in production it ran at socket speed against "
+                    f"EarthScope's access point until the 900 s station-day "
+                    f"timeout killed it.")
+            raise PermissionError("Forbidden")
+
+    helper.get_filesystem = lambda net, year=None: _FS()
+    refreshes = []
+    helper.update_es_filesystem = (
+        lambda net, year=None, escalate=False: refreshes.append(escalate))
+
+    src = object.__new__(S3DataSource)
+    src.s3helper = helper
+    src.limit_mb = None
+    return src, refreshes
+
+
+def test_a_denied_object_gives_up_instead_of_spinning():
+    """D5: the handler that bounds denials had never once executed.
+
+    `PermissionError` and `FileNotFoundError` both subclass `OSError`, and in
+    c5846f3 an `except OSError` sat before both, so neither could run. A denied
+    object fell out of that branch WITHOUT returning, the enclosing `while True`
+    went round again, and the object was re-HEADed as fast as the network
+    allowed until STATION_DAY_TIMEOUT killed the station-day 900 s later. One
+    profiling shard sat on a single denied GET for 447 minutes.
+
+    The audit could not find a single log line from the PermissionError branch
+    across the full five-day CloudWatch retention, which is how we know the
+    ES_DENIED_ATTEMPTS budget was dead code. Two live dry runs since have not
+    reached it either - we hold credentials that work - so this is the only
+    place the branch is actually exercised.
+    """
+    from sb_catalog.src.s3_helper import ES_DENIED_ATTEMPTS
+    import obspy
+
+    heads = []
+    src, refreshes = _denying_source(heads)
+    st = src._read_waveform_from_s3("s3://es/AV.X.2019.001", "AV", year=2019)
+
+    assert isinstance(st, obspy.Stream) and len(st) == 0, "must end the object"
+    # Bounded: one HEAD per refresh attempt, not thousands.
+    assert len(heads) <= ES_DENIED_ATTEMPTS + 1, heads
+    # And the branch really ran - a refresh was attempted, escalating only on
+    # the second denial, never dropping scope.
+    assert refreshes == [False, True][:len(refreshes)] and refreshes, refreshes
+
+
+def test_the_denial_budget_is_spent_per_scope_not_per_object():
+    """The budget lived in a local that reset on every object.
+
+    A station-day is thousands of objects; re-running the whole refresh dance
+    for each of them is the same tight loop one level up. `note_access_denied`
+    counts per scope, so the second denied object on a scope we have already
+    given up on costs nothing.
+    """
+    heads = []
+    src, refreshes = _denying_source(heads)
+    src._read_waveform_from_s3("s3://es/AV.X.2019.001", "AV", year=2019)
+    first_heads, first_refreshes = len(heads), len(refreshes)
+
+    src._read_waveform_from_s3("s3://es/AV.X.2019.002", "AV", year=2019)
+    assert len(refreshes) == first_refreshes, (
+        "the second object on a scope already given up on re-ran the refresh")
+    assert len(heads) - first_heads <= 1, (
+        "the second object should cost at most one HEAD, not another budget")
+
+
 def test_a_403_never_changes_the_scope():
     """403 means "no access", so a differently shaped request cannot help.
 
