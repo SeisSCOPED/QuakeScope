@@ -918,6 +918,62 @@ def render(g, examples):
          + f"${spend:,.2f}",
          f"vCPU-h x ${FARGATE_SPOT_RATE}/vCPU-h — not a billed figure"),
     ]
+    # Live state, read from fleet.json and Batch. No prose: this is a status
+    # board, not a record of how we got here.
+    try:
+        _cfg = _json.load(open("fleet.json"))["campaigns"]
+    except Exception:
+        _cfg = {}
+    _live = {k: v.get("target", 0) for k, v in _cfg.items() if v.get("target", 0) > 0}
+    _vcpu = g.get("vcpu_now", 0)
+    if _live:
+        _state, _note = "Running", ", ".join(
+            f"{k} &times; {v}" for k, v in sorted(_live.items()))
+    elif _vcpu:
+        _state, _note = "Draining", ("targets are 0; workers already started "
+                                     "are still finishing")
+    else:
+        _state, _note = "Stopped", "every target 0, nothing running"
+
+    # What we may actually read, per campaign, from the access surveys. This is
+    # the question the page exists to answer: where is there data for us.
+    #
+    # Its own client: `render` is not handed one, and leaning on the try/except
+    # below would have turned a NameError into "not surveyed" on every row -
+    # a wrong answer that looks like a real one.
+    import boto3 as _boto3
+    _s3 = _boto3.client("s3")
+    _rows = []
+    for _c in sorted({c["name"] for c in g["camps"]} | set(_cfg)):
+        try:
+            _o = _s3.get_object(Bucket=BUCKET, Key=f"{_c}/access.json")
+            _a = _json.load(_o["Body"])
+            _p = _a.get("present", 0)
+            _d, _m = len(_a.get("denied", [])), len(_a.get("missing", []))
+            _tot = _a.get("checked") or (_p + _d + _m) or 1
+            _age = (now() - _o["LastModified"].replace(tzinfo=None)).days
+            _rows.append(
+                f'<tr><th scope="row">{_c}</th>'
+                f'<td class="num">{_p:,}</td><td class="num">{_d:,}</td>'
+                f'<td class="num">{_m:,}</td>'
+                f'<td class="num">{100 * _p / _tot:.0f}%</td>'
+                f'<td class="num">{_age}d</td></tr>')
+        except Exception:
+            _rows.append(
+                f'<tr><th scope="row">{_c}</th>'
+                f'<td colspan="5" class="empty">not surveyed</td></tr>')
+
+    opsnote = (
+        f'<div class="opsnote"><h3><span class="dot"></span>{_state}</h3>'
+        f'<p>{_note}'
+        + (f' &middot; {_vcpu:.0f} vCPU in Batch' if _vcpu else '')
+        + '</p>'
+        '<table><caption>Network-years we may read, per campaign</caption>'
+        '<thead><tr><th>campaign</th><th class="num">readable</th>'
+        '<th class="num">embargoed</th><th class="num">not in archive</th>'
+        '<th class="num">readable</th><th class="num">surveyed</th></tr></thead>'
+        f'<tbody>{"".join(_rows)}</tbody></table></div>')
+
     tile_html = "".join(
         f'<div class="tile"><div class="k">{k}</div><div class="v">{v}</div>'
         f'<div class="n">{n}</div></div>' for k, v, n in tiles)
@@ -1116,31 +1172,7 @@ overflow-x:auto;font-size:12px;line-height:1.5}}
 
 <div class="tiles">{tile_html}</div>
 
-<div class="opsnote">
-  <h3>Campaigns are stopped, deliberately</h3>
-  <p>On 2026-09-04 EarthScope reported that our fleet was denial-of-servicing
-  their credentials endpoint: <b>351,735</b> rejected token requests over four
-  hours, peaking at 5,104/min. All 208 workers were terminated and every
-  campaign target set to 0. The cause was five defects in one file, all in how
-  the client handled a refusal; the fix is merged, and the fleet workflow now
-  refuses to launch the build that caused it.</p>
-  <p>Two bounded dry runs since have validated it against the live endpoint.
-  The first sent <b>8 credential requests across 5 scopes</b> where the old
-  build would have sent ~11,315 per shard, and found a further defect of our
-  own making — one that lost every work unit crossing a year boundary. The
-  second read real restricted data: 6 shards, 1,500 station-days,
-  <b>1,240,055 picks</b>, with four mid-read credential renewals, which is the
-  case that would have failed before that fix.</p>
-  <p>The three campaign job definitions still name the incident build and are
-  quarantined. Raising a target requires registering new revisions first, which
-  has not been done.
-  &#8594; <a href="earthscope_credential_audit.html"><strong>The incident report</strong></a>
-  &#8212; what happened, each defect linked to the line that caused it, and the
-  measurements re-derived from exported logs.
-  &#8594; <a href="granular_credentials.html"><strong>What to watch for</strong></a>
-  &#8212; the eight defects generalised, for anyone building this shape of
-  client.</p>
-</div>
+{opsnote}
 
 <h2>Picks per station</h2>
 <p class="cap">Stations are triangles, positioned by longitude and latitude,

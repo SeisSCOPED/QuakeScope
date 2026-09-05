@@ -289,6 +289,7 @@ jobs:
       # runs the survey instead of the campaign and says so; the second reads
       # it and either launches or explains why it will not.
       - name: Do we actually have the data?
+        id: access
         if: github.event_name == 'workflow_dispatch' && inputs.target != '0'
         env:
           CAMPAIGN: ${{ inputs.campaign }}
@@ -308,6 +309,10 @@ jobs:
           s3 = boto3.client("s3")
           cfg = json.load(open("fleet.json"))["campaigns"][camp]
 
+          def say(md):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(md + "\n")
+
           def submit_survey(why):
               b = boto3.client("batch", region_name="us-east-2")
               r = b.submit_job(
@@ -319,25 +324,37 @@ jobs:
                       "--campaign", f"s3://{BUCKET}/{camp}",
                       "--out", f"s3://{BUCKET}/{key}",
                       "--pace", "0.25"]})
-              print(f"::error::{why} Started an access survey instead of the "
-                    f"fleet (job {r['jobId'][:8]}, about 7 minutes, one "
-                    f"worker). Run this workflow again when it finishes and it "
-                    f"will use the result. Nothing was launched.")
+              # SUCCEED. This step did something useful and deliberate; a red
+              # run tells the person holding the phone that it broke.
+              print(f"::notice::{why} Started an access survey instead "
+                    f"(job {r['jobId'][:8]}). Nothing was launched.")
+              say(f"## ⏳ Checking access to {camp} first\n\n"
+                  f"{why}\n\n"
+                  f"An access survey is running now — about **2 minutes**. It "
+                  f"asks EarthScope which of this campaign's network-years we "
+                  f"may actually read, so workers are not started on data that "
+                  f"is embargoed.\n\n"
+                  f"### What to do\n"
+                  f"**Wait ~2 minutes, then run this workflow again** with the "
+                  f"same settings. It will use the survey and launch.\n\n"
+                  f"_Nothing was started, and nothing is costing money._")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("launch=no\n")
 
           try:
               obj = s3.get_object(Bucket=BUCKET, Key=key)
           except Exception:
-              submit_survey(f"No access survey for {camp}.")
-              sys.exit(1)
+              submit_survey(f"{camp} has never been surveyed.")
+              sys.exit(0)
 
           # Seconds, floored at 0: a survey written moments ago has a tiny
           # negative timedelta and `.days` rounds that to -1.
           age = max(0.0, (datetime.datetime.now(datetime.timezone.utc)
                           - obj["LastModified"]).total_seconds() / 86400)
           if age > max_age:
-              submit_survey(f"The access survey for {camp} is {age:.0f} days old "
-                            f"(limit {max_age:.0f} days); embargoes move.")
-              sys.exit(1)
+              submit_survey(f"The survey for {camp} is {age:.0f} days old "
+                            f"(limit {max_age:.0f}), and embargoes move.")
+              sys.exit(0)
 
           a = json.load(obj["Body"])
           present = a.get("present", 0)
@@ -354,7 +371,19 @@ jobs:
                     f"workers would spend most of their time on data we cannot "
                     f"read. Re-plan the campaign, or ask EarthScope about the "
                     f"embargoed years, before launching. Nothing was launched.")
+              say(f"## 🛑 Not launching {camp}\n\n"
+                  f"Only **{frac:.0%}** of this campaign's network-years are "
+                  f"readable today, below the {floor:.0%} floor.\n\n"
+                  f"{denied} are embargoed or denied and {missing} are not in "
+                  f"the archive. Starting {os.environ['TARGET']} workers would "
+                  f"spend most of their time on data we cannot read.\n\n"
+                  f"_Nothing was started._")
               sys.exit(1)
+          say(f"## ✅ Launching {camp}\n\n"
+              f"**{present} of {checked}** network-years are readable "
+              f"({frac:.0%}). Survey is {age:.1f} day(s) old.\n\n"
+              f"Embargoed years are skipped on first contact rather than "
+              f"retried, so they cost nothing.")
           if frac < 0.5:
               print(f"::warning::{camp} is only {frac:.0%} readable. Embargoed "
                     f"shards are blocked on first contact rather than retried, "
@@ -365,7 +394,7 @@ jobs:
       # A manual run edits the target first, so the top-up below uses the new
       # value in the same run - press the button, see it take effect.
       - name: Set the new target
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && steps.access.outputs.launch != 'no'
         env:
           CAMPAIGN: ${{ inputs.campaign }}
           TARGET: ${{ inputs.target }}
@@ -454,6 +483,7 @@ jobs:
           fi
 
       - name: Top up every campaign to its target
+        if: steps.access.outputs.launch != 'no'
         run: |
           python - <<'PY'
           import json, subprocess, sys
