@@ -92,9 +92,12 @@ dollars of compute — and **bucket versioning is not enabled**, so a delete is
 permanent. Least privilege here is not a compliance exercise; it is the
 difference between losing one prefix and losing everything the account holds.
 
-> **Still open:** enabling versioning on `quakescope-picks-2026`, with a
-> lifecycle rule expiring noncurrent versions after ~30 days, would remove the
-> "permanent" from that sentence. It is independent of IAM and cheap.
+> **Done 2026-09-05:** versioning is enabled on `quakescope-picks-2026`, with
+> lifecycle rules expiring noncurrent versions after 30 days, aborting
+> incomplete multipart uploads after 7, and clearing expired delete markers.
+> The scoped policy grants `s3:DeleteObject` but **not**
+> `s3:DeleteObjectVersion`, so a worker can create a delete marker and cannot
+> destroy history.
 
 ## The recipe, for a role this document does not cover
 
@@ -115,16 +118,46 @@ difference between losing one prefix and losing everything the account holds.
 Step 6 is the one most often skipped, and it is the one that catches the action
 you forgot to list.
 
+## The role split, and the direction that catches people
+
+`SeisBenchBatchRole` used to be both the Batch **job** role and the ECS
+**execution** role, so a container's own permissions were also the platform's.
+They are now two roles:
+
+| role | holds | so that |
+|---|---|---|
+| `SeisBenchExecutionRole` | ECS task execution + `GetSecretValue` on one ARN | pull the image, write logs, inject the EarthScope token |
+| `SeisBenchBatchRole` | `QuakeScopeCatalogueS3` only | the container reaches one bucket and nothing else |
+
+**On Fargate the EXECUTION role resolves `secrets:`, not the job role.** This is
+the part that is easy to get backwards, and getting it backwards fails at task
+start with `ResourceInitializationError: unable to pull secrets`, which reads
+like a Secrets Manager problem rather than a role problem.
+
+The consequence worth having: the campaign container is handed
+`ES_OAUTH2__REFRESH_TOKEN` as an environment variable but **cannot read the
+secret itself**, and cannot pull or push images.
+
+Doing it in this order matters, because the middle state is the dangerous one:
+
+1. Create the execution role and give it what the platform needs.
+2. Register new job definition revisions pointing at it — **all** of them.
+   Seven definitions here still named the old role; stripping first would have
+   made every one of them fail to start.
+3. Run something real and confirm the secret still arrives.
+4. Only then remove the execution policy and the secret read from the job role.
+
+Between 2 and 4 both roles work, so there is no window where a job cannot
+start. Skipping 3 means discovering the mistake on a campaign.
+
 ## Not covered by IAM
 
-Two exposures on this account that scoping a role does not touch, recorded so
-they are not mistaken for solved:
-
-- **`AmazonECSTaskExecutionRolePolicy` and the job role are the same role.** A
-  compromised container has the execution role's permissions too. Splitting
-  them is the standard shape and has not been done here.
 - **CloudWatch retention is five days** on the only record of what the fleet
   did. That is a deliberate choice; the mitigation is to export what matters
   before it ages out — see
   [`scripts/export_incident_logs.py`](../scripts/export_incident_logs.py) and
   [`incident_2026_09_04/EVIDENCE.md`](incident_2026_09_04/EVIDENCE.md).
+- **Rate limiting is client-side.** The fleet workflow counts token-endpoint
+  requests every 15 minutes and zeroes every campaign above
+  `ES_RATE_LIMIT_PER_MIN`. That is a circuit breaker, not a quota: it stops a
+  runaway within a quarter of an hour rather than preventing one.
