@@ -73,6 +73,31 @@ def main() -> None:
 
         return netyear_main(sys.argv[2:])
 
+    # The EarthScope self-test, so the image can prove its own behaviour:
+    #
+    #     docker run --rm ghcr.io/seisscoped/quakescope:<tag> selftest --offline
+    #
+    # Offline mode sends nothing and needs no account. The harness stays in
+    # scripts/ rather than moving into the package, because CI and anyone
+    # following the incident report run it from a checkout; this just makes the
+    # same file reachable through the image's fixed ENTRYPOINT. Two candidate
+    # roots because the layout differs: /code/scripts in the image,
+    # <repo>/scripts from a checkout.
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        import os
+        import runpy
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        for root in (os.path.dirname(here), os.path.dirname(os.path.dirname(here))):
+            cand = os.path.join(root, "scripts", "earthscope_selftest.py")
+            if os.path.exists(cand):
+                sys.argv = [cand] + sys.argv[2:]
+                runpy.run_path(cand, run_name="__main__")   # raises SystemExit
+                return 0
+        print("selftest: scripts/earthscope_selftest.py is not in this image",
+              file=sys.stderr)
+        return 2
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",

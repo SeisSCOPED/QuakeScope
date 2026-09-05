@@ -84,8 +84,17 @@ RUN pip install --no-cache-dir \
 # source, and a v3 campaign has no database to trust. It lives in the analysis
 # image, which does talk to DocumentDB.
 
-# copy the content of the local src directory to the working directory
-COPY src/ src/
+# The build context is the REPOSITORY ROOT (see .dockerignore and docker.yml),
+# not sb_catalog/, so that scripts/ can come in too. Paths here are therefore
+# repo-relative.
+COPY sb_catalog/src/ src/
+
+# The EarthScope self-test ships in the image so it can be run without cloning
+# anything: `docker run --rm <image> selftest --offline`. It is the artifact
+# the incident report points at, and an artifact nobody can run is not
+# evidence. Small, no extra dependencies - it imports the same s3_helper the
+# worker does.
+COPY scripts/ scripts/
 
 # Pretrained weights, committed in the repo and copied straight in - so the
 # build fetches no weights over the network at all and the image cannot vary
@@ -114,7 +123,7 @@ COPY src/ src/
 # subcommand used by campaigns defaults to jma_wc and is unaffected.
 #
 # To add a weight, see models/v3/phasenet/README.md.
-COPY models/v3/ /root/.seisbench/models/v3/
+COPY sb_catalog/models/v3/ /root/.seisbench/models/v3/
 
 
 # command to run on container start

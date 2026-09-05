@@ -1,0 +1,36 @@
+# The image build context is the REPOSITORY ROOT, so that `scripts/` can be
+# copied in alongside `sb_catalog/src/`. Without this file that would mean
+# uploading 8.2 GB of pixi environments to the builder on every build.
+#
+# Keep this list tight rather than clever: anything not excluded here is sent
+# to the daemon, and the two things the image actually needs are
+# sb_catalog/src, sb_catalog/models/v3 and scripts.
+
+.pixi/
+.git/
+.github/
+
+# Rendered pages, notebooks and their outputs. None of it runs in a worker.
+reports/
+docs/
+tutorials/
+notebooks/
+
+# Tests run in CI from a checkout, never inside the image.
+tests/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Exported incident logs and other local working files: large, and private.
+incident_export/
+*.jsonl.gz
+*.parquet
+dryrun*.json
+oomfix_job.json
+
+# Editor and OS noise.
+.DS_Store
+.idea/
+.vscode/
+*.swp

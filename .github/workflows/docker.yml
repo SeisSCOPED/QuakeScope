@@ -39,7 +39,11 @@ jobs:
       - name: Build Docker Image
         uses: docker/build-push-action@v3
         with:
-          context: "{{defaultContext}}:sb_catalog"
+          # Root context so scripts/ is available to COPY; the
+          # Dockerfile still lives under sb_catalog/. .dockerignore
+          # keeps the 8.2 GB of pixi envs out of the upload.
+          context: .
+          file: sb_catalog/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
