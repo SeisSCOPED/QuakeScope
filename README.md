@@ -36,6 +36,7 @@ That is the only button. Everything else is automatic:
 | any campaign, target 0 | stops launching new workers |
 | a campaign for the first time | an **access survey** runs instead of the fleet; run it again afterwards |
 | a campaign, target 50 | 50 workers, if the survey says the data is readable |
+| ⏹ STOP | everything stops and is terminated, now |
 
 **It refuses rather than wastes.** Before anything launches, the workflow
 checks that the image is not the build that caused the 2026-09-04 incident,
@@ -44,11 +45,18 @@ the data this campaign plans to read. If any of those fail it explains why and
 launches nothing. Read the run's summary — the reason is written in plain
 English.
 
-**Two things it does not do.** Setting a target to 0 stops *new* workers; it
-does not stop ones already running (terminate those from the AWS console, or
-ask someone with CLI access). And the scheduled top-up keeps a campaign at its
-committed target every 15 minutes, so a campaign left at 50 will stay at 50
-until somebody sets it to 0.
+**To stop everything, now:** Actions → **"⏹ STOP — terminate running
+workers"** → Run workflow. It defaults to `all`, sets every target to 0, and
+terminates the workers that are already running.
+
+Use it rather than setting a target to 0 if you want things to actually stop.
+A target of 0 only stops *new* workers; ones already running keep going until
+their queue empties or they hit the 24-hour job timeout. On 2026-09-05 that was
+57 workers still burning for 50 minutes after every target read 0.
+
+**One thing to remember.** The scheduled top-up holds a campaign at its
+committed target every 15 minutes, so a campaign left at 50 stays at 50 until
+somebody sets it to 0 or presses STOP.
 
 **To check everything is healthy without launching anything:**
 Actions → "✅ Preflight" → Run workflow. It answers "safe to run a campaign" or

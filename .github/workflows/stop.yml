@@ -1,0 +1,170 @@
+name: "⏹ STOP — terminate running workers"
+
+# The emergency stop, separate from the Fleet workflow on purpose.
+#
+# Setting a target to 0 stops REPLACEMENT. It does not touch workers already
+# running, which then keep going until their queue empties or the 24-hour job
+# timeout - on 2026-09-05 that was 57 workers and 456 vCPU continuing for 50
+# minutes after every target read 0, because "stopped" and "stopping" look the
+# same from the Fleet workflow. Terminating needed a laptop and an AWS client,
+# which is exactly the wrong requirement for the one action you want at 2am
+# from a phone.
+#
+# So this is its own button, it defaults to EVERYTHING, and it asks nothing
+# else. An accidental stop costs one re-launch; not being able to stop costs
+# money for as long as nobody notices. The asymmetry decides the design.
+#
+# ORDER MATTERS. Targets are set to 0 and committed BEFORE anything is
+# terminated. The scheduled top-up runs every 15 minutes and would happily
+# replace workers killed while its target still said 50.
+
+run-name: "STOP ${{ inputs.campaign }} · by ${{ github.actor }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "What to stop. 'all' is the safe answer in an emergency."
+        required: true
+        type: choice
+        default: all
+        options: [all, western, global, obs, dryrun3, dryrun4]
+
+permissions:
+  contents: write        # commits the zeroed targets
+  id-token: write        # OIDC to assume the AWS role
+
+concurrency:
+  group: fleet           # never race the Fleet workflow
+  cancel-in-progress: false
+
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same allowlist as the Fleet workflow, and hardcoded here for the same
+      # reason: a list living in a file this workflow edits could rewrite
+      # itself, and a repository variable changes with no commit to review.
+      - name: Only an approved operator may stop the fleet
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          ALLOWED="mdenolle"
+          for who in $ALLOWED; do
+            if [ "$who" = "$ACTOR" ]; then echo "operator: $ACTOR"; exit 0; fi
+          done
+          echo "::error::$ACTOR is not an approved fleet operator."
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet boto3
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Zero the targets first
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+        run: |
+          python - <<'PY'
+          import json, os
+          camp = os.environ["CAMPAIGN"]
+          d = json.load(open("fleet.json"))
+          was = {k: v["target"] for k, v in d["campaigns"].items()}
+          for k, v in d["campaigns"].items():
+              if camp in ("all", k):
+                  v["target"] = 0
+          json.dump(d, open("fleet.json", "w"), indent=2)
+          open("fleet.json", "a").write("\n")
+          print(f"::notice::targets {was} -> "
+                f"{ {k: v['target'] for k, v in d['campaigns'].items()} }")
+          PY
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          if ! git diff --quiet -- fleet.json; then
+            git add fleet.json
+            git commit -m "Fleet: STOP ${{ inputs.campaign }} [skip ci]"
+            for i in 1 2 3; do
+              git push origin "HEAD:${GITHUB_REF_NAME}" && break
+              git pull --rebase -X theirs --autostash origin "${GITHUB_REF_NAME}"
+            done
+          fi
+
+      - name: Terminate what is running
+        env:
+          CAMPAIGN: ${{ inputs.campaign }}
+        run: |
+          python - <<'PY'
+          import json, os, time
+          import boto3
+
+          camp = os.environ["CAMPAIGN"]
+          names = tuple(json.load(open("fleet.json"))["campaigns"])
+          want = names if camp == "all" else (camp,)
+          b = boto3.client("batch", region_name="us-east-2")
+          Q = "niyiyu_earthscope_missing_station"
+          LIVE = ("SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING")
+
+          killed, seen = [], 0
+          for st in LIVE:
+              tok = None
+              while True:
+                  kw = dict(jobQueue=Q, jobStatus=st, maxResults=100)
+                  if tok:
+                      kw["nextToken"] = tok
+                  r = b.list_jobs(**kw)
+                  for j in r["jobSummaryList"]:
+                      # OURS ONLY. The queue is shared with other groups, and
+                      # stopping their work would be a much worse mistake than
+                      # leaving ours running.
+                      if not j["jobName"].startswith(names):
+                          seen += 1
+                          continue
+                      if j["jobName"].startswith(want):
+                          b.terminate_job(
+                              jobId=j["jobId"],
+                              reason=f"Stopped from the STOP workflow by "
+                                     f"{os.environ.get('GITHUB_ACTOR', '?')}")
+                          killed.append(j["jobName"])
+                  tok = r.get("nextToken")
+                  if not tok:
+                      break
+
+          def say(md):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(md + "\n")
+
+          if killed:
+              print(f"::notice::terminated {len(killed)} job(s)")
+              say(f"## ⏹ Stopped\n\n**{len(killed)}** worker(s) terminated "
+                  f"and every selected target set to 0.\n\n"
+                  f"Nothing will be replaced: the scheduled top-up holds the "
+                  f"committed target, which is now 0.\n\n"
+                  f"_{seen} other job(s) on this shared queue were left "
+                  f"alone._")
+          else:
+              say(f"## Nothing to stop\n\n"
+                  f"No workers of ours were running. Targets are set to 0 "
+                  f"anyway, so nothing will start.\n\n"
+                  f"_{seen} other job(s) on this shared queue were left "
+                  f"alone._")
+
+          # Terminate is asynchronous; show what actually went away rather than
+          # claiming success from the API call returning.
+          time.sleep(20)
+          left = 0
+          for st in LIVE:
+              left += sum(1 for j in b.list_jobs(jobQueue=Q, jobStatus=st)["jobSummaryList"]
+                          if j["jobName"].startswith(want))
+          say(f"\n{left} of ours still winding down 20s later"
+              + (" — terminate is asynchronous, they will go." if left else "."))
+          PY
