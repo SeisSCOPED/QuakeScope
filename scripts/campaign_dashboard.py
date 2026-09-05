@@ -951,17 +951,29 @@ def render(g, examples):
             _p = _a.get("present", 0)
             _d, _m = len(_a.get("denied", [])), len(_a.get("missing", []))
             _tot = _a.get("checked") or (_p + _d + _m) or 1
-            _age = (now() - _o["LastModified"].replace(tzinfo=None)).days
+            # now() is timezone-AWARE and so is LastModified. Stripping the
+            # tzinfo from one of them raised TypeError, which the except below
+            # then reported as "not surveyed" - a wrong answer wearing the
+            # costume of a real one.
+            _age = (now() - _o["LastModified"]).days
             _rows.append(
                 f'<tr><th scope="row">{_c}</th>'
                 f'<td class="num">{_p:,}</td><td class="num">{_d:,}</td>'
                 f'<td class="num">{_m:,}</td>'
                 f'<td class="num">{100 * _p / _tot:.0f}%</td>'
                 f'<td class="num">{_age}d</td></tr>')
-        except Exception:
+        except _s3.exceptions.NoSuchKey:
+            # The honest, expected case: this campaign has never been surveyed.
             _rows.append(
                 f'<tr><th scope="row">{_c}</th>'
                 f'<td colspan="5" class="empty">not surveyed</td></tr>')
+        except Exception as _exc:
+            # Anything else is a fault on OUR side, and saying "not surveyed"
+            # would hide it behind a plausible-looking row.
+            _rows.append(
+                f'<tr><th scope="row">{_c}</th>'
+                f'<td colspan="5" class="empty">survey unreadable: '
+                f'{type(_exc).__name__}</td></tr>')
 
     opsnote = (
         f'<div class="opsnote"><h3><span class="dot"></span>{_state}</h3>'

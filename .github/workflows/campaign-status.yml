@@ -25,7 +25,14 @@ name: Campaign status
 
 on:
   schedule:
-    - cron: "23 * * * *"     # hourly, offset from aws-watch's :07
+    # Every three hours, not hourly. A full render walks 316,467 pick
+    # objects and takes about 2.5 HOURS, so an hourly trigger queued behind
+    # the previous one and each new arrival cancelled the one waiting: five
+    # consecutive runs cancelled on 2026-09-05 and the published page went
+    # two hours stale while showing a status that had changed. A schedule
+    # slower than the job is the minimum for it to ever finish; making the
+    # render read manifests instead of Parquet footers is the actual fix.
+    - cron: "23 */3 * * *"
   workflow_dispatch:
 
 permissions:
