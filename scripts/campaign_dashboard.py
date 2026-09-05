@@ -681,6 +681,7 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
     an example that cannot be fetched is skipped rather than faked.
     """
     import random
+    import re
 
     import obspy
     import pandas as pd
@@ -693,8 +694,21 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
 
     rng = random.Random(seed)
     fs = S3FileSystem(anon=True)
-    helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper()}
+    helpers = {"scedc": SCEDCS3ObjectHelper(), "ncedc": NCEDCS3ObjectHelper(),
+               "earthscope": EarthScopeS3ObjectHelper()}
     by_campaign = {}
+
+    def anonymous(net) -> bool:
+        """Whether this dashboard job can fetch this network's raw data.
+
+        SCEDC and NCEDC are public. EarthScope is public for the Open Data
+        networks only - the rest sit behind an access point needing a token
+        this job deliberately does not carry.
+        """
+        dc = NETWORK_MAPPING.get(net)
+        if dc in ("scedc", "ncedc"):
+            return True
+        return dc == "earthscope" and EarthScopeS3ObjectHelper.is_open_data(net)
 
     for c in campaigns:
         objs = []
@@ -703,11 +717,30 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
             objs += [o["Key"] for o in page.get("Contents", [])]
         if not objs:
             continue                       # campaign has written nothing yet
-        df = pd.read_parquet(f"s3://{BUCKET}/{rng.choice(objs)}")
-        if df.empty:
-            continue
-        strong = df[df.conf >= min_conf]
-        if strong.empty:
+
+        # Choose among objects we can actually illustrate. The picks are
+        # Hive-partitioned, so the network is in the key and this costs no
+        # reads. Without it the sampler drew one object uniformly and, with
+        # ~90% of them on restricted EarthScope networks, almost always drew
+        # one it had to discard - which is why this panel silently emptied.
+        usable = [k for k in objs
+                  if "network=" in k and anonymous(k.split("network=")[1].split("/")[0])]
+        if not usable:
+            continue                       # nothing here we may fetch
+        rng.shuffle(usable)
+
+        # Try several objects rather than one: a single Parquet can hold only
+        # marginal picks, or only stations whose day is missing upstream.
+        strong = None
+        for key in usable[:6]:
+            df = pd.read_parquet(f"s3://{BUCKET}/{key}")
+            if df.empty:
+                continue
+            cand = df[df.conf >= min_conf]
+            if not cand.empty:
+                strong = cand
+                break
+        if strong is None:
             continue                       # nothing confident here; no example
 
         out, tried = [], set()
@@ -722,14 +755,33 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
             tried.add(p.tid)
             net, sta, loc = (p.tid.split(".") + ["", ""])[:3]
             dc = NETWORK_MAPPING.get(net)
-            if dc not in helpers:
-                continue                   # EarthScope needs a token; skip
+            if dc not in helpers or not anonymous(net):
+                continue                   # restricted: no token here
             t = obspy.UTCDateTime(str(p.peak))
+            year, day = f"{t.year}", f"{t.julday:03d}"
             try:
-                key = helpers[dc].get_s3_path(net, sta, loc, p.cha,
-                                              f"{t.year}", f"{t.julday:03d}",
-                                              "Z")
+                if dc == "earthscope":
+                    # Open Data has no deterministic key: the basename is a
+                    # regex because the restricted access point appends a
+                    # version suffix and Open Data does not. So list the day
+                    # and match, the way the worker does.
+                    prefix = helpers[dc].get_prefix(net, year, day)
+                    pat = re.compile(helpers[dc].get_basename(
+                        net, sta, loc, p.cha, year, day, "Z"))
+                    hit = [k for k in fs.ls(prefix) if pat.search(k)]
+                    if not hit:
+                        continue
+                    key = hit[0]
+                else:
+                    key = helpers[dc].get_s3_path(net, sta, loc, p.cha,
+                                                  year, day, "Z")
                 tr = obspy.read(io.BytesIO(fs.open(key, "rb").read()))
+                if dc == "earthscope":
+                    # One multi-channel object per station-day, unlike SCEDC's
+                    # one-per-component. Keep the band the pick was made on.
+                    sel = tr.select(channel=f"{p.cha}Z")
+                    if len(sel):
+                        tr = sel
                 tr.merge(fill_value=0)
                 tr.trim(t - window[0], t + window[1])
                 if not len(tr) or tr[0].stats.npts < 50:
@@ -993,6 +1045,13 @@ h1{{font-size:21px;margin:0 0 2px}}
 h2{{font-size:15px;margin:34px 0 4px}}
 .cap{{color:var(--text-secondary);font-size:12.5px;margin:0 0 12px}}
 .tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}}
+.opsnote{{background:var(--surface-2);border-radius:11px;padding:15px 18px;
+margin:16px 0 4px;border-left:3px solid var(--series-1)}}
+.opsnote h3{{margin:0 0 8px;font-size:15px}}
+.opsnote p{{margin:0 0 9px;font-size:13.5px;line-height:1.55;
+color:var(--text-secondary);max-width:78ch}}
+.opsnote p:last-child{{margin-bottom:0}}
+.opsnote b{{color:var(--text)}}
 .tile{{background:var(--surface-2);border-radius:9px;padding:13px 14px}}
 .tile .k{{font-size:11.5px;color:var(--text-secondary);text-transform:uppercase;
 letter-spacing:.04em}}
@@ -1056,6 +1115,32 @@ overflow-x:auto;font-size:12px;line-height:1.5}}
 <p class="sub">{now():%Y-%m-%d %H:%M} UTC · Batch: {st} · rebuilt hourly</p>
 
 <div class="tiles">{tile_html}</div>
+
+<div class="opsnote">
+  <h3>Campaigns are stopped, deliberately</h3>
+  <p>On 2026-09-04 EarthScope reported that our fleet was denial-of-servicing
+  their credentials endpoint: <b>351,735</b> rejected token requests over four
+  hours, peaking at 5,104/min. All 208 workers were terminated and every
+  campaign target set to 0. The cause was five defects in one file, all in how
+  the client handled a refusal; the fix is merged, and the fleet workflow now
+  refuses to launch the build that caused it.</p>
+  <p>Two bounded dry runs since have validated it against the live endpoint.
+  The first sent <b>8 credential requests across 5 scopes</b> where the old
+  build would have sent ~11,315 per shard, and found a further defect of our
+  own making — one that lost every work unit crossing a year boundary. The
+  second read real restricted data: 6 shards, 1,500 station-days,
+  <b>1,240,055 picks</b>, with four mid-read credential renewals, which is the
+  case that would have failed before that fix.</p>
+  <p>The three campaign job definitions still name the incident build and are
+  quarantined. Raising a target requires registering new revisions first, which
+  has not been done.
+  &#8594; <a href="earthscope_credential_audit.html"><strong>The incident report</strong></a>
+  &#8212; what happened, each defect linked to the line that caused it, and the
+  measurements re-derived from exported logs.
+  &#8594; <a href="granular_credentials.html"><strong>What to watch for</strong></a>
+  &#8212; the eight defects generalised, for anyone building this shape of
+  client.</p>
+</div>
 
 <h2>Picks per station</h2>
 <p class="cap">Stations are triangles, positioned by longitude and latitude,
