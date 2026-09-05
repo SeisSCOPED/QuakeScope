@@ -23,7 +23,7 @@
       "threads": 2
     },
     "dryrun3": {
-      "target": 0,
+      "target": 2,
       "job_definition": "quakescope_2026_global:3",
       "weight": "jma_wc",
       "procs": 4,
