@@ -141,6 +141,32 @@ def test_unblock_returns_them_when_the_embargo_lifts():
     assert st.blocked_ids() == set()
 
 
+def test_metadata_faults_are_flagged_apart_from_embargo():
+    """"335 blocked" and "335 blocked, 122 needing a human" differ.
+
+    An embargo resolves itself when EarthScope opens the year; a shard naming a
+    station the station table does not have, or an inventory request FDSN calls
+    malformed, never will. Both leave the queue the same way, but only one of
+    them is fine to leave alone, so the record carries which.
+    """
+    st = _state()
+    st.block("s1", "7D 2024 embargoed", {"network": "7D", "year": 2024})
+    st.block("s2", "LH.HDSE. absent from the station table",
+             {"stations": ["LH.HDSE."]}, kind="metadata")
+    st.block("s3", "FDSN rejected the inventory request",
+             {"networks": ["LH"]}, kind="metadata")
+
+    summary = st.blocked_summary()
+    assert summary["embargo"]["count"] == 1
+    assert summary["metadata"]["count"] == 2
+    # And it says enough to act on without opening S3 by hand.
+    ex = summary["metadata"]["examples"][0]
+    assert ex["shard_id"] in ("s2", "s3") and ex["reason"]
+
+    # Default stays embargo, so existing callers keep their meaning.
+    assert json.loads(st.s3.obj["camp/blocked/s1.json"])["kind"] == "embargo"
+
+
 def test_the_block_record_says_what_has_to_open():
     """A bare 'blocked' is useless six months later."""
     st = _state()

@@ -284,11 +284,23 @@ class S3CampaignState:
         return {k[n:-len(".json")] for k in self._list("blocked/")
                 if k.endswith(".json")}
 
-    def block(self, shard_id: str, reason: str, scope: Optional[dict] = None) -> None:
-        """Take a shard out of rotation, recording what would have to change."""
+    def block(self, shard_id: str, reason: str, scope: Optional[dict] = None,
+              kind: str = "embargo") -> None:
+        """Take a shard out of rotation, recording what would have to change.
+
+        `kind` separates the two reasons a shard is unavailable, because they
+        need different people:
+
+          embargo   EarthScope will open this year later. Nobody does anything;
+                    re-survey and `unblock` when it opens.
+          metadata  Our plan and our station table disagree, or FDSN rejects
+                    the request as malformed. This will NOT fix itself and
+                    wants a human.
+        """
         self._put_json(self._key("blocked", f"{shard_id}.json"), {
             "shard_id": shard_id,
             "reason": reason,
+            "kind": kind,
             "scope": scope or {},
             "blocked": _utcnow(),
         })
@@ -318,6 +330,28 @@ class S3CampaignState:
                 logger.warning(f"Could not unblock {sid}: {exc}")
         logger.info(f"Unblocked {n} shard(s)")
         return n
+
+    def blocked_summary(self, cap: int = 4000) -> dict:
+        """Counts and examples per kind, for anything that has to report them.
+
+        Reads the records rather than just counting keys, because "335 blocked"
+        and "335 blocked, 122 of them needing a human" are different situations
+        and only one of them is fine to leave alone.
+        """
+        out = {}
+        for sid in sorted(self.blocked_ids())[:cap]:
+            try:
+                rec = self._get_json(self._key("blocked", f"{sid}.json"))
+            except Exception:
+                rec = None
+            k = (rec or {}).get("kind", "embargo")
+            e = out.setdefault(k, {"count": 0, "examples": []})
+            e["count"] += 1
+            if len(e["examples"]) < 3 and rec:
+                e["examples"].append({"shard_id": sid,
+                                      "reason": rec.get("reason", "")[:160],
+                                      "scope": rec.get("scope", {})})
+        return out
 
     def is_blocked(self, shard_id: str) -> bool:
         return self._exists(self._key("blocked", f"{shard_id}.json"))

@@ -164,6 +164,29 @@ class ShardNotAvailable(RuntimeError):
         self.scope = scope or {}
 
 
+class ShardNeedsReview(RuntimeError):
+    """This shard cannot run, and a person has to look at why.
+
+    Distinct from `ShardNotAvailable`, which is EarthScope saying "not yet" and
+    will resolve itself when an embargo lifts. This is our metadata disagreeing
+    with reality: a shard naming a station the station table does not have, or
+    an inventory request FDSN rejects as malformed. Waiting changes neither.
+
+    Blocked rather than failed for the same reason embargo is - a failure is
+    released back to the queue and the next worker rediscovers it - but flagged
+    separately, because nobody should be waiting for these to fix themselves.
+
+    Observed on the 2026-09-06 western run: 122 shards cycling ~22 times each
+    on `LH.HDSE.`, `YW.FACN.` and FDSN 400s, which is why the last 122 shards
+    of a 99.8%-complete campaign would not finish.
+    """
+
+    def __init__(self, message, scope=None):
+        super().__init__(message)
+        self.scope = scope or {}
+        self.kind = "metadata"
+
+
 class EarthScopeExchangeThrottled(RuntimeError):
     """Refused locally by our own rate limit, never sent.
 
@@ -1129,6 +1152,19 @@ class S3DataSource:
         self.meta = self.db.get_station_metadata(
             self.stations, {"_id": 0, "id": 1, "channels": 1}
         ).set_index("id")
+        # Every station this shard names must be in the station table, or the
+        # read loop raises KeyError deep inside `load_waveforms` - which failed
+        # the shard, released it, and let the next worker rediscover it. Say it
+        # here, once, with the station named.
+        missing = [t for t in self.stations if t not in self.meta.index]
+        if missing:
+            raise ShardNeedsReview(
+                f"{len(missing)} of {len(self.stations)} stations in this shard "
+                f"are absent from the station table: {', '.join(missing[:5])}"
+                f"{'...' if len(missing) > 5 else ''}. The plan and the metadata "
+                f"disagree; regenerate the plan or the station table.",
+                scope={"stations": missing[:20]},
+            )
         logger.info(f"Done preparing metadata for the assigned stations")
 
         self.inventory = self._get_inventory()
@@ -1645,9 +1681,13 @@ class S3DataSource:
                 # bad request turns into an unbounded loop that looks like a
                 # busy server.
                 if "400" in str(exc) or "Bad request" in str(exc):
-                    raise RuntimeError(
+                    raise ShardNeedsReview(
                         f"FDSN rejected the inventory request for this shard: "
-                        f"{str(exc)[:200]}. channel={cha_code[:80]}"
+                        f"{str(exc)[:160]}. channel={cha_code[:80]}. The request "
+                        f"is malformed for this station set, so no number of "
+                        f"retries and no amount of waiting will change it.",
+                        scope={"networks": sorted(self.networks)[:10],
+                               "channels": cha_code[:80]},
                     ) from exc
                 logger.warning(
                     f"FDSN error ({attempt}/{FDSN_ATTEMPTS}): "

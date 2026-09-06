@@ -41,7 +41,7 @@ from typing import Optional
 import pandas as pd
 
 from .profiling import profile
-from .s3_helper import ShardNotAvailable
+from .s3_helper import ShardNeedsReview, ShardNotAvailable
 from .s3_state import S3CampaignState
 
 logger = logging.getLogger("worker")
@@ -373,7 +373,7 @@ def loop(args, proc_index: int = 0) -> None:
         off = (proc_index * 7919) % len(order)
         order = order[off:] + order[:off]
 
-    n_done = n_failed = n_blocked = 0
+    n_done = n_failed = n_blocked = n_review = 0
     try:
         for idx in order:
             shard = shards[idx]
@@ -403,6 +403,19 @@ def loop(args, proc_index: int = 0) -> None:
             except Preempted:
                 stop_beat.set()
                 raise
+            except ShardNeedsReview as exc:
+                # Our metadata is wrong, not EarthScope's answer. Same
+                # treatment as an embargo - out of rotation rather than back on
+                # the queue - but flagged, because an embargo resolves itself
+                # and this does not.
+                stop_beat.set()
+                n_review += 1
+                logger.error(f"Shard {sid} needs review: {exc}")
+                state.block(sid, str(exc), getattr(exc, "scope", None),
+                            kind="metadata")
+                holding["shard"] = None
+                reclaim_memory()
+                continue
             except ShardNotAvailable as exc:
                 # Not a failure: the data is not readable YET. Releasing it
                 # would put it straight back in the queue for the next worker
@@ -489,11 +502,11 @@ def loop(args, proc_index: int = 0) -> None:
         # Exit non-zero so the jobs controller surfaces a wholly broken campaign
         # instead of reporting SUCCEEDED, as it did when every shard failed on a
         # missing environment variable.
-        if n_blocked:
+        if n_blocked or n_review:
             logger.info(
-                f"No shard completed, but {n_blocked} were blocked as not yet "
-                f"readable. That is a queue with nothing available, not a "
-                f"broken worker."
+                f"No shard completed. {n_blocked} blocked as not yet "
+                f"readable, {n_review} set aside for review. That is a queue "
+                f"with nothing available, not a broken worker."
             )
             return 0
         logger.error("No shard completed - failing the job")

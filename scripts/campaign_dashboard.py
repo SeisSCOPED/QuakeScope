@@ -1022,6 +1022,21 @@ def render(g, examples):
     else:
         _state, _note = "Stopped", "every target 0, nothing running"
 
+    # Shards set aside, and WHY. An embargo clears itself when EarthScope opens
+    # the year; a metadata fault never does and wants a person, so the two are
+    # counted apart rather than summed into one reassuring number.
+    _review = {}
+    for _c in {c["name"] for c in g["camps"]} | set(_cfg):
+        try:
+            from sb_catalog.src.s3_state import S3CampaignState
+            _sum = S3CampaignState(f"s3://{BUCKET}/{_c}").blocked_summary()
+            if _sum:
+                _review[_c] = _sum
+        except Exception:
+            pass
+    _needs = {c: v["metadata"]["count"] for c, v in _review.items()
+              if v.get("metadata", {}).get("count")}
+
     # What we may actually read, per campaign, from the access surveys. This is
     # the question the page exists to answer: where is there data for us.
     #
@@ -1043,23 +1058,28 @@ def render(g, examples):
             # then reported as "not surveyed" - a wrong answer wearing the
             # costume of a real one.
             _age = (now() - _o["LastModified"]).days
+            _emb = _review.get(_c, {}).get("embargo", {}).get("count", 0)
+            _md = _review.get(_c, {}).get("metadata", {}).get("count", 0)
             _rows.append(
                 f'<tr><th scope="row">{_c}</th>'
                 f'<td class="num">{_p:,}</td><td class="num">{_d:,}</td>'
                 f'<td class="num">{_m:,}</td>'
                 f'<td class="num">{100 * _p / _tot:.0f}%</td>'
-                f'<td class="num">{_age}d</td></tr>')
+                f'<td class="num">{_age:.0f}d</td>'
+                f'<td class="num">{_emb:,}</td>'
+                f'<td class="num">{"" if not _md else f"<b>{_md:,}</b>"}</td>'
+                f'</tr>')
         except _s3.exceptions.NoSuchKey:
             # The honest, expected case: this campaign has never been surveyed.
             _rows.append(
                 f'<tr><th scope="row">{_c}</th>'
-                f'<td colspan="5" class="empty">not surveyed</td></tr>')
+                f'<td colspan="7" class="empty">not surveyed</td></tr>')
         except Exception as _exc:
             # Anything else is a fault on OUR side, and saying "not surveyed"
             # would hide it behind a plausible-looking row.
             _rows.append(
                 f'<tr><th scope="row">{_c}</th>'
-                f'<td colspan="5" class="empty">survey unreadable: '
+                f'<td colspan="7" class="empty">survey unreadable: '
                 f'{type(_exc).__name__}</td></tr>')
 
     opsnote = (
@@ -1067,11 +1087,19 @@ def render(g, examples):
         f'<p>{_note}'
         + (f' &middot; {_vcpu:.0f} vCPU in Batch' if _vcpu else '')
         + '</p>'
-        '<table><caption>Network-years we may read, per campaign</caption>'
+        '<table><caption>Network-years we may read, and shards set aside</caption>'
         '<thead><tr><th>campaign</th><th class="num">readable</th>'
         '<th class="num">embargoed</th><th class="num">not in archive</th>'
-        '<th class="num">readable</th><th class="num">surveyed</th></tr></thead>'
-        f'<tbody>{"".join(_rows)}</tbody></table></div>')
+        '<th class="num">%</th><th class="num">surveyed</th>'
+        '<th class="num">shards waiting</th>'
+        '<th class="num">needs review</th></tr></thead>'
+        f'<tbody>{"".join(_rows)}</tbody></table>'
+        + (f'<p class="needs"><b>{sum(_needs.values()):,} shard(s) need a '
+           f'human</b> &mdash; {", ".join(f"{c}: {n:,}" for c, n in sorted(_needs.items()))}. '
+           f'Their plan and station table disagree, or FDSN rejects the '
+           f'inventory request. Unlike an embargo these do not clear '
+           f'themselves.</p>' if _needs else '')
+        + '</div>')
 
     tile_html = "".join(
         f'<div class="tile"><div class="k">{k}</div><div class="v">{v}</div>'
@@ -1207,6 +1235,8 @@ margin:16px 0 4px;border-left:3px solid var(--series-1)}}
 color:var(--text-secondary);max-width:78ch}}
 .opsnote p:last-child{{margin-bottom:0}}
 .opsnote b{{color:var(--text)}}
+.opsnote .needs{{margin-top:10px;padding:9px 11px;border-radius:7px;
+background:var(--surface);border-left:3px solid var(--series-2)}}
 .tile{{background:var(--surface-2);border-radius:9px;padding:13px 14px}}
 .tile .k{{font-size:11.5px;color:var(--text-secondary);text-transform:uppercase;
 letter-spacing:.04em}}
