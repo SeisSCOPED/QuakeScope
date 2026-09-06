@@ -1,23 +1,23 @@
 cff-version: 1.2.0
 title: "QuakeScope: Machine Learning-based Seismic Phase Picking at Cloud Scale"
 abstract: >
-  A cloud-native workflow for automated seismic phase picking and earthquake
-  detection using deep learning (PhaseNet v7), deployed on AWS with containerized
-  models, elastic computing (Batch/Fargate), and managed database (DocumentDB).
-  Includes tools for model validation, cloud monitoring, and earthquake association.
+  A cloud-native workflow for automated seismic phase picking at petabyte scale,
+  deployed on AWS Batch/Fargate Spot with an S3-based work queue and Parquet
+  output. Uses PhaseNet v7 via SeisBench, supports EarthScope, SCEDC, NCEDC,
+  and OBS direct-access archives, and is orchestrated through GitHub Actions.
 
 authors:
   - family-names: Ni
     given-names: Yiyu
     affiliation: "Department of Earth and Space Sciences, University of Washington"
     email: niyiyu@uw.edu
-    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+    orcid: "https://orcid.org/0000-0001-5181-9700"
 
-  - family-names: Munchmeyer
+  - family-names: Münchmeyer
     given-names: Jannes
     affiliation: "Institut des Sciences de la Terre, Université Grenoble Alpes"
     email: munchmej@univ-grenoble-alpes.fr
-    orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+    orcid: "https://orcid.org/0000-0002-4006-9673"
 
   - family-names: Denolle
     given-names: Marine A.
@@ -37,8 +37,13 @@ keywords:
   - aws
   - containerization
 
-date-released: 2026-08-18
-version: "3.0.0"
+date-released: 2026-09-05
+version: "2026.09"
+
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.15548454"
+    description: "Zenodo archive of QuakeScope version 2025.05"
 
 references:
   - authors:
