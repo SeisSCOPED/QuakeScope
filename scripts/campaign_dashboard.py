@@ -67,7 +67,10 @@ QUOTA_VCPU = 12000                  # L-36FBB829, Fargate Spot, us-east-2
 # Parquet objects to scan for the per-station and per-day breakdowns. The
 # headline count is metadata-only and always exact; only the breakdowns are
 # capped, so the hourly job stays hourly as the catalogue grows.
-PARQUET_SCAN_CAP = int(os.environ.get("PARQUET_SCAN_CAP", "150"))
+# Retired 2026-09-05. The breakdowns used to read only the newest 150 objects
+# of 316,467 and the map drew 126 stations from that, presented as the
+# catalogue. `_breakdown_cached` accumulates instead, so there is nothing to
+# cap: a run reads only what it has never read.
 # Batch jobs to describe per run. A 1,500-task array accumulates thousands of
 # finished children and describing them all took the hourly job past 10 minutes.
 DESCRIBE_CAP = int(os.environ.get("DESCRIBE_CAP", "1500"))
@@ -185,6 +188,109 @@ def _count_rows_cached(campaign, files):
     return sum(cache.get(f, 0) for f in want), partial
 
 
+def _breakdown_cached(campaign, files):
+    """Per-station, per-day and per-station-month counts, incrementally.
+
+    The same trick as `_count_rows_cached`, applied to the breakdowns the map
+    and the time series draw. It used to read `PARQUET_SCAN_CAP` objects - 150
+    - out of 316,467 and present the result as the catalogue: the map showed
+    126 stations because that is how many appear in the newest 150 files, not
+    because that is how many there are.
+
+    A picks object is immutable, so a station-day counted once never needs
+    counting again. Only new objects are read; the aggregate is kept beside the
+    campaign, gzipped because the consumed-file list is the bulk of it.
+
+    COMPACTION IS THE HARD CASE. `parquet_compact` replaces many small objects
+    with one large one holding the same rows. Row COUNTS can subtract a
+    vanished file's contribution, but these aggregates cannot without storing
+    every file's per-station breakdown, which is far larger than the answer.
+    So a disappearance invalidates the cache and it rebuilds - bounded by
+    COLD_BATCH per run like the cold path above, and rare, because compaction
+    is deliberate and occasional.
+
+    Returns (per_station, per_day, per_station_month, files_not_yet_counted).
+    """
+    import gzip
+    from collections import defaultdict
+
+    import pyarrow.dataset as ds
+    from botocore.config import Config as _Cfg
+
+    key = f"{campaign}/.dashboard/breakdown.json.gz"
+    s3 = boto3.client("s3", region_name=REGION, config=_Cfg(
+        retries={"max_attempts": 10, "mode": "adaptive"}))
+    try:
+        raw = s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+        cache = json.loads(gzip.decompress(raw))
+    except Exception:
+        cache = {}
+    seen = set(cache.get("files", []))
+    want = set(files)
+    gone = seen - want
+    if gone:
+        # Cannot subtract; start again rather than double-count.
+        logging.getLogger("dashboard").info(
+            f"{campaign}: {len(gone)} object(s) vanished (compaction?); "
+            f"rebuilding the breakdown cache")
+        cache, seen = {}, set()
+
+    per_station = defaultdict(int, cache.get("per_station", {}))
+    per_day = defaultdict(int, cache.get("per_day", {}))
+    psm = defaultdict(int, cache.get("per_station_month", {}))
+
+    new = sorted(want - seen)
+    partial = 0
+    if len(new) > COLD_BATCH:
+        partial = len(new) - COLD_BATCH
+        new = new[-COLD_BATCH:]
+
+    if new:
+        import pandas as pd
+        # exclude_invalid_files: a live fleet is writing here, so a listing can
+        # include an object mid-upload. Skip it; the next run picks it up.
+        t = ds.dataset(new, format="parquet", filesystem=_arrow_fs(),
+                       partitioning="hive",
+                       exclude_invalid_files=True).to_table(
+                           columns=["tid", "peak"])
+        df = t.to_pandas()
+        if len(df):
+            d = pd.to_datetime(df["peak"], errors="coerce")
+            df = df.assign(_yr=d.dt.year, _doy=d.dt.dayofyear,
+                           _ym=d.dt.year * 100 + d.dt.month).dropna(
+                               subset=["_yr", "_doy", "_ym"])
+            for tid, n in df.groupby("tid").size().items():
+                per_station[str(tid)] += int(n)
+            for (yr, doy), n in df.groupby(["_yr", "_doy"]).size().items():
+                per_day[f"{int(yr)}|{int(doy)}"] += int(n)
+            for (tid, ym), n in df.groupby(["tid", "_ym"]).size().items():
+                psm[f"{tid}|{int(ym)}"] += int(n)
+        seen |= set(new)
+
+    if new or gone:
+        try:
+            body = gzip.compress(json.dumps({
+                "files": sorted(seen),
+                "per_station": dict(per_station),
+                "per_day": dict(per_day),
+                "per_station_month": dict(psm),
+            }).encode())
+            s3.put_object(Bucket=BUCKET, Key=key, Body=body)
+        except Exception:
+            # A cache that cannot be written is a slower next run, not a wrong
+            # answer: what is returned below is already correct.
+            pass
+    # Back to the tuple keys the caller expects.
+    return (
+        dict(per_station),
+        {(int(k.split("|")[0]), int(k.split("|")[1])): v
+         for k, v in per_day.items()},
+        {(k.rsplit("|", 1)[0], int(k.rsplit("|", 1)[1])): v
+         for k, v in psm.items()},
+        partial,
+    )
+
+
 def parquet_stats(campaign, max_files=None):
     """Pick counts straight from the Parquet, not from the manifests.
 
@@ -232,34 +338,15 @@ def parquet_stats(campaign, max_files=None):
         out["error"] = f"{type(exc).__name__}: {exc}"[:120]
         return out
 
-    # The breakdowns are what the map and the time series draw, and they are the
-    # expensive part. Cap the scan and report the cap rather than either
-    # stalling the hourly job or quietly showing a subset as if it were all.
-    scan = files
-    if max_files and len(files) > max_files:
-        scan = files[-max_files:]
-        out["sampled"] = (len(scan), len(files))
+    # The breakdowns the map and the time series draw. These used to read the
+    # newest PARQUET_SCAN_CAP objects - 150 of 316,467 - and the page then
+    # showed 126 stations as though that were the catalogue. They are now
+    # accumulated the same way the row count is: only objects never seen before
+    # are read, so the map covers everything and a run costs the new work only.
     try:
-        import pandas as pd
-        # A live fleet is writing into this prefix, so the listing can include
-        # an object that is mid-upload. Skip those rather than lose the whole
-        # breakdown to one partial file - it will be complete by the next run.
-        t = ds.dataset(scan, format="parquet", filesystem=_arrow_fs(),
-                       partitioning="hive",
-                       exclude_invalid_files=True).to_table(
-                           columns=["tid", "peak"])
-        df = t.to_pandas()
-        out["per_station"] = df.groupby("tid").size().to_dict()
-        d = pd.to_datetime(df["peak"])
-        out["per_day"] = (df.assign(yr=d.dt.year, doy=d.dt.dayofyear)
-                          .groupby(["yr", "doy"]).size().to_dict())
-        # Per station per MONTH, for the station picker. Monthly rather than
-        # daily on purpose: daily over 5,845 days x 53,082 stations does not
-        # embed in a page, and monthly still shows the two things the view is
-        # for - an outage, and the two weights disagreeing about a station.
-        out["per_station_month"] = (
-            df.assign(ym=d.dt.year * 100 + d.dt.month)
-              .groupby(["tid", "ym"]).size().to_dict())
+        (out["per_station"], out["per_day"], out["per_station_month"],
+         partial_bd) = _breakdown_cached(campaign, files)
+        out["partial"] = max(out.get("partial", 0), partial_bd)
     except Exception as exc:
         # The headline count already succeeded; only the breakdowns failed, so
         # keep the count and let the page say the map is thin rather than
@@ -326,7 +413,7 @@ def gather(s3, b, campaigns):
         # Picks and their breakdowns come from the Parquet itself, so a
         # preempted worker's output is counted even though it never wrote a
         # manifest.
-        ps = parquet_stats(name, max_files=PARQUET_SCAN_CAP)
+        ps = parquet_stats(name)
         picks = ps["picks"]
         for tid, n in ps["per_station"].items():
             per_station[str(tid)] += int(n)

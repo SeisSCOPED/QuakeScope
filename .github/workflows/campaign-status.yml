@@ -25,14 +25,12 @@ name: Campaign status
 
 on:
   schedule:
-    # Every three hours, not hourly. A full render walks 316,467 pick
-    # objects and takes about 2.5 HOURS, so an hourly trigger queued behind
-    # the previous one and each new arrival cancelled the one waiting: five
-    # consecutive runs cancelled on 2026-09-05 and the published page went
-    # two hours stale while showing a status that had changed. A schedule
-    # slower than the job is the minimum for it to ever finish; making the
-    # render read manifests instead of Parquet footers is the actual fix.
-    - cron: "23 */3 * * *"
+    # Hourly again. The render used to take ~2.5 h because the breakdowns
+    # re-read Parquet on every run, so hourly triggers queued behind each
+    # other and five consecutive runs were cancelled on 2026-09-05 while the
+    # published page went stale. Both the row count and the breakdowns are now
+    # accumulated per object, so a warm run reads only what is new.
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
