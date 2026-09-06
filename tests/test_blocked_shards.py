@@ -82,6 +82,26 @@ def test_a_blocked_shard_is_not_handed_out_again():
     assert "s1" not in st.completed_ids()
 
 
+def test_a_blocked_shard_cannot_be_reclaimed():
+    """The churn found by watching the 2026-09-05 obs run.
+
+    `block()` deletes the claim, so the shard is immediately claimable again,
+    and the worker's blocked set is read once at startup. Every process whose
+    set predated the block re-claimed, re-ran the archive check and re-blocked:
+    335 shards blocked 34,442 times - 103 each - while 11 runnable shards
+    waited behind them. Checking S3 in `claim` is what makes the block stick,
+    because the in-memory set cannot know about a block that happened after it
+    was read.
+    """
+    st = _state()
+    assert st.claim("s1") is True
+    st.block("s1", "7D 2024 embargoed", {"network": "7D", "year": 2024})
+    assert st.claim("s1") is False, "a blocked shard was handed out again"
+    # And it comes back when the embargo lifts.
+    st.unblock(["s1"])
+    assert st.claim("s1") is True
+
+
 def test_blocking_drops_the_claim():
     """Otherwise the shard reads as held by a worker that has gone away."""
     st = _state()

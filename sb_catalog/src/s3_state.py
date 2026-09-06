@@ -319,8 +319,22 @@ class S3CampaignState:
         logger.info(f"Unblocked {n} shard(s)")
         return n
 
+    def is_blocked(self, shard_id: str) -> bool:
+        return self._exists(self._key("blocked", f"{shard_id}.json"))
+
     def claim(self, shard_id: str) -> bool:
         """Atomically take a shard. False if someone else holds a live claim."""
+        # Blocked shards are not claimable, and this has to be checked against
+        # S3 rather than the set the worker read at startup. `block()` deletes
+        # the claim, so a blocked shard becomes claimable again the instant it
+        # is blocked; every process whose in-memory set predates that then
+        # re-claims it, re-runs the archive check, and re-blocks it. Measured
+        # on the 2026-09-05 obs run: 335 embargoed shards blocked 34,442 times,
+        # 103 times each, while the 11 runnable shards waited. It cost
+        # EarthScope nothing - the verdict cache answers the second ask
+        # locally - but it is most of what fifty workers were doing.
+        if self.is_blocked(shard_id):
+            return False
         key = self._key("claims", f"{shard_id}.json")
         record = {"shard_id": shard_id, "worker": self.worker_id, "claimed": _utcnow()}
         if self._put_json(key, record, if_absent=True):
