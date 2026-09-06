@@ -28,7 +28,9 @@ on:
         required: true
         type: choice
         default: all
-        options: [all, western, global, obs, dryrun3, dryrun4]
+        options: [all, western, global, obs,
+                  obs-early, obs-2026, western-2026, global-2026,
+                  dryrun3, dryrun4]
 
 permissions:
   contents: write        # commits the zeroed targets

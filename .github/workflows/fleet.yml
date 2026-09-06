@@ -41,7 +41,9 @@ on:
         description: "Campaign. Start with dryrun3 if you are unsure - it is a tiny test queue."
         required: true
         type: choice
-        options: [western, global, obs, dryrun3, dryrun4]
+        options: [western, global, obs,
+                  obs-early, obs-2026, western-2026, global-2026,
+                  dryrun3, dryrun4]
       target:
         description: "How many workers. 0 stops new ones. First run of a campaign starts an access survey instead."
         required: true
