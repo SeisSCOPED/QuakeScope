@@ -124,6 +124,8 @@ def _count_rows_cached(campaign, files):
     Deliberately NOT under picks/, or the dataset scan would try to read it as
     Parquet, and it would fall under the public-read grant. It stays private.
     """
+    import time
+
     import pyarrow.parquet as pq
     from concurrent.futures import ThreadPoolExecutor
 
@@ -171,9 +173,18 @@ def _count_rows_cached(campaign, files):
         def _rows(f):
             return pq.read_metadata(f, filesystem=afs).num_rows
 
+        deadline = time.time() + COLD_SECONDS
+        done_n = 0
         with ThreadPoolExecutor(max_workers=PICK_COUNT_THREADS) as ex:
-            for f, n in zip(new, ex.map(_rows, new)):
-                cache[f] = n
+            for i in range(0, len(new), 2000):
+                chunk = new[i:i + 2000]
+                for f, n in zip(chunk, ex.map(_rows, chunk)):
+                    cache[f] = n
+                done_n += len(chunk)
+                if time.time() > deadline:
+                    partial += len(new) - done_n
+                    new = new[:done_n]
+                    break
     for f in gone:
         cache.pop(f, None)
 
@@ -212,6 +223,7 @@ def _breakdown_cached(campaign, files):
     Returns (per_station, per_day, per_station_month, files_not_yet_counted).
     """
     import gzip
+    import time
     from collections import defaultdict
 
     import pyarrow.dataset as ds
@@ -247,13 +259,26 @@ def _breakdown_cached(campaign, files):
 
     if new:
         import pandas as pd
-        # exclude_invalid_files: a live fleet is writing here, so a listing can
-        # include an object mid-upload. Skip it; the next run picks it up.
-        t = ds.dataset(new, format="parquet", filesystem=_arrow_fs(),
-                       partitioning="hive",
-                       exclude_invalid_files=True).to_table(
-                           columns=["tid", "peak"])
-        df = t.to_pandas()
+        # CHUNKED, and on a clock. One to_table() over tens of thousands of
+        # files cannot be interrupted, so a run that ran out of time wrote
+        # nothing and the next run started from the same place - which is why
+        # this cache never appeared for western at all.
+        deadline = time.time() + COLD_SECONDS
+        afs = _arrow_fs()
+        got = []
+        for i in range(0, len(new), 1000):
+            chunk = new[i:i + 1000]
+            # exclude_invalid_files: a live fleet is writing here, so a listing
+            # can include an object mid-upload. Skip it; the next run gets it.
+            got.append(ds.dataset(chunk, format="parquet", filesystem=afs,
+                                  partitioning="hive",
+                                  exclude_invalid_files=True).to_table(
+                                      columns=["tid", "peak"]).to_pandas())
+            if time.time() > deadline:
+                partial += len(new) - (i + len(chunk))
+                new = new[:i + len(chunk)]
+                break
+        df = pd.concat(got, ignore_index=True) if got else pd.DataFrame()
         if len(df):
             d = pd.to_datetime(df["peak"], errors="coerce")
             df = df.assign(_yr=d.dt.year, _doy=d.dt.dayofyear,
@@ -362,6 +387,13 @@ PICK_COUNT_THREADS = int(os.environ.get("PICK_COUNT_THREADS", "16"))
 # New objects to count per run. Bounds the cold path so an hourly job stays
 # hourly; the remainder is carried to the next run and reported meanwhile.
 COLD_BATCH = int(os.environ.get("COLD_BATCH", "60000"))
+# Wall-clock ceiling on the cold fill, per campaign, per run. A COUNT is not
+# enough on its own: western is 275k objects, 60k of them did not finish inside
+# the hourly interval, the run was cancelled by the next one, and a cancelled
+# run writes NO cache - so every run redid the same work and was cancelled
+# again. western/breakdown.json.gz simply never appeared. Stopping on the clock
+# and persisting what is done makes each run leave the next one less to do.
+COLD_SECONDS = float(os.environ.get("COLD_SECONDS", "240"))
 
 
 def _arrow_fs():
@@ -1011,16 +1043,16 @@ def render(g, examples):
         _cfg = _json.load(open("fleet.json"))["campaigns"]
     except Exception:
         _cfg = {}
+    # dryrun* prefixes are scratch queues for testing the fleet. They are not
+    # science and they are not for this page.
+    _cfg = {k: v for k, v in _cfg.items() if not k.startswith("dryrun")}
     _live = {k: v.get("target", 0) for k, v in _cfg.items() if v.get("target", 0) > 0}
     _vcpu = g.get("vcpu_now", 0)
     if _live:
         _state, _note = "Running", ", ".join(
             f"{k} &times; {v}" for k, v in sorted(_live.items()))
-    elif _vcpu:
-        _state, _note = "Draining", ("targets are 0; workers already started "
-                                     "are still finishing")
     else:
-        _state, _note = "Stopped", "every target 0, nothing running"
+        _state, _note = "Idle", "no campaign is picking right now"
 
     # Shards set aside, and WHY. An embargo clears itself when EarthScope opens
     # the year; a metadata fault never does and wants a person, so the two are
@@ -1546,7 +1578,8 @@ def main():
     # prior runs (western-a, western-b), and a dashboard that lists whatever it
     # finds would bury the live campaign among them. Pass --campaigns to look at
     # a historical one - western-a still holds 106M picks.
-    ap.add_argument("--campaigns", default="global,obs,western")
+    ap.add_argument("--campaigns",
+                    default="global,obs,western,obs-early,obs-2026,western-2026,global-2026")
     a = ap.parse_args()
     # The hourly job shares S3 with the fleet. At 1,500 workers the dashboard
     # is the small, interruptible client in that contention, so it backs off
