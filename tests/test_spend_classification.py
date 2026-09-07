@@ -108,3 +108,53 @@ def test_calibration_skips_days_that_cannot_price_compute():
         assert act["daily"][day] - act["baseline_per_day"] > 0
     assert act["calibration_min_vcpu_hours_per_day"] > 0
     assert ONDEMAND_ALL_IN > 0
+
+
+def test_the_cost_prose_follows_the_artefact():
+    """What the page SAYS about the rate must match what the rate IS.
+
+    The spend section read "the published Fargate Spot list rate" and "nothing
+    here has been reconciled against what was actually charged" for an hour
+    after the rate started being derived from a real CloudBank invoice. Both
+    sentences were true when written and false when read - the failure this
+    project keeps repeating. The wording is now switched by the artefact's own
+    rate_is_calibrated flag, and this test is what keeps the two in step.
+    """
+    import json
+    import re
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "scripts"))
+    import campaign_dashboard as D
+
+    def flat(cal):
+        doc = {"generated": "2026-09-07T00:00:00+00:00",
+               "rate_per_vcpu_hour": 0.0313, "rate_is_calibrated": cal,
+               "categories": {"productive": {"jobs": 1, "vcpu_hours": 1.0,
+                                             "gb_hours": 2.0, "spend": 1.0}},
+               "total": {"jobs": 1, "vcpu_hours": 1.0, "gb_hours": 2.0,
+                         "spend": 1.0},
+               "by_campaign": {}}
+        g = dict(spend_doc=doc, per_station={}, per_day={},
+                 per_station_month={}, camps=[], sampled=[], unreadable=[],
+                 picks=0, bytes=0, files=0, coords={}, vcpu_now=0,
+                 vcpu_hours=0, status={}, vcpu_partial=False)
+        # Tags stripped and whitespace collapsed: the sentences wrap across
+        # lines in the source, so a raw substring search gives a false negative.
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", D.render(g, {})))
+
+    on = flat(True)
+    assert "derived from a real invoice" in on
+    assert "list price" in on          # only to say it is NOT one
+    assert "not a bill" not in on
+    assert "Nothing here has been reconciled" not in on
+
+    off = flat(False)
+    assert "list price nothing has checked" in off
+    assert "derived from a real invoice" not in off
+
+    # The badge stays in both: a reconciled TOTAL does not make the per-category
+    # split measured, and the heading must not imply it does.
+    for h in (on, off):
+        assert "estimated" in h

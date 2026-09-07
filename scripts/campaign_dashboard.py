@@ -1036,7 +1036,20 @@ def render(g, examples):
     done = sum(c["done"] for c in g["camps"])
     planned = sum(c["shards"] for c in g["camps"])
     pct = (100 * done / planned) if planned else 0
-    spend = g["vcpu_hours"] * FARGATE_SPOT_RATE
+    # The headline tile must use the SAME rate as the table below it. It used
+    # the FARGATE_SPOT_RATE constant while the table used the invoice-derived
+    # rate, so the top of the page showed a figure 2.4x lower than the section
+    # it summarised.
+    _rate = FARGATE_SPOT_RATE
+    _rate_note = f"vCPU-h x ${FARGATE_SPOT_RATE}/vCPU-h — a list rate, not a bill"
+    _sd0 = g.get("spend_doc") or {}
+    if _sd0.get("rate_per_vcpu_hour"):
+        _rate = _sd0["rate_per_vcpu_hour"]
+        _rate_note = (f"vCPU-h x ${_rate}/vCPU-h, "
+                      + ("derived from a real invoice"
+                         if _sd0.get("rate_is_calibrated") else
+                         "a list rate, not a bill"))
+    spend = g["vcpu_hours"] * _rate
     tiles = [
         ("Picks in the catalogue", f"{g['picks']:,}",
          "counted from the Parquet footers - exact, including work whose "
@@ -1051,7 +1064,7 @@ def render(g, examples):
          "jobs are described per run" if g.get("vcpu_partial") else "")),
         ("Spend (estimate)", ("\u2265 " if g.get("vcpu_partial") else "")
          + f"${spend:,.2f}",
-         f"vCPU-h x ${FARGATE_SPOT_RATE}/vCPU-h — not a billed figure"),
+         _rate_note),
     ]
     # Live state, read from fleet.json and Batch. No prose: this is a status
     # board, not a record of how we got here.
@@ -1285,14 +1298,29 @@ def render(g, examples):
                        else f"{_age * 60:.0f} min old")
         except Exception:
             _agetxt = "age unknown"
+        # The wording has to follow the artefact, not the day it was written.
+        # This paragraph said "the published list rate" and "nothing here has
+        # been reconciled against what was actually charged" for an hour after
+        # both stopped being true - the exact failure this project keeps
+        # hitting, prose asserting a state the system has moved past.
+        if sd.get("rate_is_calibrated"):
+            _how = (f"""<strong>Every figure in this section is an estimate,
+though a reconciled one.</strong> It is vCPU-hours, counted from Batch job
+start and stop times, multiplied by
+<code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h — a rate <em>derived from a
+real invoice</em> rather than a list price, by dividing a billed figure by the
+vCPU-hours measured over the same days. It bundles memory, logs, requests and
+addresses into the vCPU-hour, which holds only while the task shape does. The
+category split below is the estimate; the total is anchored to the bill.""")
+        else:
+            _how = (f"""<strong>Every figure in this section is an estimate,
+not a bill.</strong> It is vCPU-hours, counted from Batch job start and stop
+times, multiplied by <code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h, which is
+a list price nothing has checked. The real figure can differ in both
+directions: a list rate ignores the discount this account bills at, and
+vCPU-hours alone ignore memory, storage, transfer and requests.""")
         spend_block = f"""
-<p class="warn"><strong>Every figure in this section is an estimate, not a
-bill.</strong> It is vCPU-hours, counted from Batch job start and stop times,
-multiplied by the published Fargate Spot list rate of
-<code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h. Nothing here has been
-reconciled against what was actually charged, and the real figure can differ
-in both directions: the list rate ignores the discount this account bills at,
-and vCPU-hours ignore storage, data transfer and requests entirely.</p>
+<p class="warn">{_how}</p>
 <p class="cap">This account cannot read its own cost data. Cost Explorer,
 Budgets, Cost and Usage Reports and the Free Tier API are all denied by an
 explicit <code>Deny</code> in service control policy
@@ -1688,7 +1716,7 @@ durably accounted for.
 
 Every figure above except spend is counted from an S3 or Batch API response.
 <strong>Spend is derived</strong>: vCPU-hours from Batch job start and stop times,
-multiplied by <code>${FARGATE_SPOT_RATE}</code> per vCPU-hour. It is not a billed
+multiplied by <code>${_rate}</code> per vCPU-hour. It is not a directly billed
 figure — Cost Explorer, Budgets and Cost and Usage Reports are all denied on this
 account by an explicit <code>Deny</code> in service control policy
 <code>p-q1ngvul9</code>, this being a CloudBank-funded account billed through
