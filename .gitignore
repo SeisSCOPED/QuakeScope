@@ -176,3 +176,10 @@ dev/
 
 # submission history
 submissions/
+
+# Derived by tutorials/western_pick_validation.ipynb - re-downloaded/recomputed on demand
+tutorials/western_shards.jsonl
+tutorials/western_validation_cache*.parquet
+
+# Derived by tutorials/phasenet_obs_offshore_benchmark.ipynb - re-downloaded on demand
+tutorials/obs_benchmark_cache/

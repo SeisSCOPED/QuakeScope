@@ -21,8 +21,9 @@ pixi run -e tutorials jupyter nbconvert --to html --template lab \
 | [phasenet_sequence_comparison.html](phasenet_sequence_comparison.html) | Do the three weight sets hold up across five sequences, four regions, and two catalogs? | ~25 min |
 | [phasenet_aftershock_benchmark.html](phasenet_aftershock_benchmark.html) | Detailed S-recall benchmark on one dense Ridgecrest window, against 533 analyst S picks | ~5 min |
 | [phasenet_smoke_test_ridgecrest.html](phasenet_smoke_test_ridgecrest.html) | Does one weight set produce physically sensible picks at all? The first thing to run | ~2 min |
-| [phasenet_obs_offshore_benchmark.html](phasenet_obs_offshore_benchmark.html) | What do the ocean-bottom pickers buy over land models on OBS data, and does the hydrophone matter? | ~50 min |
+| [phasenet_obs_offshore_benchmark.html](phasenet_obs_offshore_benchmark.html) | What do the ocean-bottom pickers buy over land models on OBS data, does the hydrophone matter, and do the `obs` campaign's stored picks agree with published analyst picks? | ~10 min cold, ~3 min with the cache |
 | [quakexnet_alaska_test.html](quakexnet_alaska_test.html) | Does the PNW-trained classifier transfer to Alaska, and how much does window placement matter? | ~30 min |
+| [western_pick_validation.html](western_pick_validation.html) | Do the western campaign's stored picks reproduce when re-picked live from FDSN, and what is missing from them? | ~90 min |
 
 ## What these currently show
 
@@ -77,6 +78,24 @@ by **+0.0002**, helping 32 windows and hurting 35. Its sampling rate spans
 from noise at any of them. That `obstransformer` competes without a hydrophone
 at all points the same way: the gain is from training on ocean-bottom data, not
 from the fourth channel.
+
+**Offshore, against published picks.** The `obs` campaign's stored picks were
+scored against Barcheck's analyst-checked AACSE arrivals (65 OBS stations, 2018,
+CC BY) and against the University of Washington's real-time picks at Axial
+Seamount (7 stations, 2015–2025). On AACSE, **86% of the manual P and 86% of the
+manual S arrivals have a campaign pick within 1 s**, with median residuals of
++0.02 s (P) and +0.04 s (S); the 30 land stations of the same network, picked
+with the same weight, score 91% and 85%. Two OBS stations score zero because the
+archive's timing wanders by hours relative to the data the analysts worked with,
+and 5% of the analyst arrivals fall on station-days the campaign never read -
+runs of consecutive days inside shards that reported complete. Re-scored on
+the same AACSE windows against analyst picks at 1 s rather than an iasp91
+prediction at 10 s, the ordering above holds and the gaps widen: `obstransformer` 0.81 P / 0.87 S,
+the PickBlue pair 0.74–0.77 P, `original` 0.49 P. At Axial, where most events are below
+M 0 and S follows P by half a second, only 20–35% of the UW P picks have a
+campaign counterpart and S is essentially unmatched; recall reaches 0.5 for
+M 0.5–1.5. That is a limit of the weight set on caldera seismicity, not of the
+archive, and the campaign catalogue there should not be read below M 0.
 
 **The classifier.** QuakeXNet agrees with the Alaska catalog 78% of the time
 when the analysis window matches the training convention, and 16% when it does

@@ -140,6 +140,15 @@
   <div class="meta">5 stations per sequence · scored against analyst picks · ~25 min to run</div>
 </a>
 
+<a class="card" href="western_pick_validation.html">
+  <h3>Did the western campaign pick what it says it picked?</h3>
+  <p>Re-picks the campaign's own station-days through the production code path,
+  but reading waveforms over ObsPy/FDSN instead of the S3 buckets, and compares
+  pick for pick. 59,298 of 59,315 match exactly — and the station-days with no
+  picks at all turn out to be the interesting ones.</p>
+  <div class="meta">52 station-days · mainshock and quiet · independent data path · ~90 min to run</div>
+</a>
+
 <a class="card" href="phasenet_aftershock_benchmark.html">
   <h3>S-recall benchmark, dense Ridgecrest aftershocks</h3>
   <p>Twenty-one aftershocks in thirty minutes, several separated by seconds, scored
@@ -159,9 +168,11 @@
 <a class="card" href="phasenet_obs_offshore_benchmark.html">
   <h3>Ocean-bottom pickers offshore</h3>
   <p>What the three SeisBench OBS models buy over land models on ocean-bottom
-  data — Cascadia, the Alaska Peninsula, and the Blanco transform — and whether
-  the hydrophone channel earns its place.</p>
-  <div class="meta">3 deployments · 9 OBS stations · 5 models · ~50 min to run</div>
+  data — Cascadia, the Alaska Peninsula, and the Blanco transform — whether the
+  hydrophone channel earns its place, and how the <code>obs</code> campaign's
+  stored picks compare with analyst-checked arrivals on the AACSE array and with
+  the real-time catalogue at Axial Seamount.</p>
+  <div class="meta">3 deployments · 5 models · 65 AACSE stations against 30,618 analyst arrivals · ~10 min to run</div>
 </a>
 
 <p style="margin:-4px 0 18px;font-size:.9rem;color:var(--ink-2)">
@@ -284,6 +295,42 @@ roughly 5–15 points of detection, and no single one wins everywhere.</p>
   indistinguishable from noise at any of them. That <code>obstransformer</code>
   competes without a hydrophone at all points the same way: the advantage comes
   from training on ocean-bottom data, not from the fourth channel.
+</div>
+
+<p><strong>Offshore, against published picks.</strong> The <code>obs</code>
+campaign's stored picks, scored against Barcheck's analyst-checked AACSE arrivals
+(65 OBS stations, 2018) and against the University of Washington's real-time picks
+at Axial Seamount (7 stations, 2015–2025). Recall is on station-days the campaign
+holds picks for; the reference's silence is never counted as a false positive.
+Re-scored on the same AACSE windows against analyst picks at 1 s, the five models
+keep the ordering of the table above with wider gaps: <code>obstransformer</code>
+0.81 P / 0.87 S, the PickBlue pair 0.74–0.77 P, <code>original</code> 0.49 P.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Recall of the reference's picks</th><th>P</th><th>S</th><th>tolerance</th><th>reference</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>AACSE 2018, 65 OBS stations</td><td class="best">0.86</td><td class="best">0.86</td><td>1 s</td><td>analyst, manual picks</td></tr>
+    <tr><td>AACSE 2018, 30 land stations, same weight</td><td>0.91</td><td>0.85</td><td>1 s</td><td>analyst, manual picks</td></tr>
+    <tr><td>Axial 2015–2025, short-period EH</td><td>0.21</td><td>0.04</td><td>0.5 s</td><td>UW automatic picks</td></tr>
+    <tr><td>Axial 2015–2025, broadband HH</td><td>0.30</td><td>0.01</td><td>0.5 s</td><td>UW automatic picks</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>Where AACSE disagrees, the archive is the reason.</strong> Median
+  residuals are +0.02 s (P) and +0.04 s (S). Two OBS stations score zero because
+  the nearest campaign pick sits hours from the analyst's, drifting month to month
+  — a clock correction the archive does not carry — and 5% of the analyst arrivals
+  fall on station-days the campaign never read, in runs of consecutive days inside
+  shards that reported themselves complete. Axial is the opposite case:
+  the archive is fine, but the catalogue there is mostly sub-M0 events with S half
+  a second behind P, outside what the <code>obs</code> weights were trained on;
+  recall reaches 0.5 for M 0.5–1.5 and the campaign catalogue should not be read
+  below M 0.
 </div>
 
 <p><strong>The classifier.</strong> QuakeXNet agrees with the Alaska catalog 78% of
