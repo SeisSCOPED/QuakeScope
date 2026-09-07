@@ -49,7 +49,15 @@ import sys
 REGION = "us-east-2"
 QUEUE = "niyiyu_earthscope_missing_station"
 LOG_GROUP = "/aws/batch/job"
-FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2 published rate
+# us-east-2 Fargate ON-DEMAND list, from the AWS Pricing API on 2026-09-07.
+# Our tasks are 8 vCPU / 16 GB, so memory is 2.06 GB per vCPU and adds 23% on
+# top of the vCPU line. An earlier version of this script priced vCPU alone at
+# a guessed $0.0148 and left memory out entirely.
+FARGATE_ONDEMAND_VCPU_H = 0.04048
+FARGATE_ONDEMAND_GB_H = 0.004445
+# Fallback only, used when costs_actual.json carries no validated figure to
+# calibrate against. Nominal Fargate Spot is about 70% off list.
+FALLBACK_SPOT_FRACTION = 0.30
 DESCRIBE_CHUNK = 100
 # CloudWatch deletes on its own schedule, not on the stroke of the retention
 # hour, so the last few hours of the window are unreliable. Treat a job as
@@ -129,7 +137,12 @@ def main(argv=None):
         campaigns = ("western", "global", "obs")
     ours = campaigns + ("survey", "dryrun")
 
-    ids = []
+    # list_jobs(jobQueue=...) returns array PARENTS and standalone jobs - never
+    # the children of an array. A parent consumes nothing; its 1,500 children
+    # consume everything. western_a_full2 ran 1,467 tasks for 2,973 vCPU-hours
+    # on 2026-08-31 and this script counted none of it, because the parent was
+    # all it could see. Children have to be listed per array id.
+    ids, arrays = [], []
     for st in ("SUCCEEDED", "FAILED", "RUNNING", "STARTING", "RUNNABLE"):
         tok = None
         while True:
@@ -137,11 +150,32 @@ def main(argv=None):
             if tok:
                 kw["nextToken"] = tok
             r = b.list_jobs(**kw)
-            ids += [j["jobId"] for j in r["jobSummaryList"]
-                    if j["jobName"].startswith(ours)]
+            for j in r["jobSummaryList"]:
+                if not j["jobName"].startswith(ours):
+                    continue
+                if (j.get("arrayProperties") or {}).get("size"):
+                    arrays.append(j["jobId"])   # holds no resources itself
+                else:
+                    ids.append(j["jobId"])
             tok = r.get("nextToken")
             if not tok:
                 break
+    for aid in set(arrays):
+        for st in ("SUCCEEDED", "FAILED", "RUNNING", "STARTING", "RUNNABLE",
+                   "PENDING", "SUBMITTED"):
+            tok = None
+            while True:
+                kw = {"arrayJobId": aid, "jobStatus": st}
+                if tok:
+                    kw["nextToken"] = tok
+                r = b.list_jobs(**kw)
+                ids += [j["jobId"] for j in r["jobSummaryList"]]
+                tok = r.get("nextToken")
+                if not tok:
+                    break
+    if arrays:
+        print(f"{len(arrays)} array parent(s) expanded to {len(ids):,} jobs",
+              file=sys.stderr)
 
     now = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
 
@@ -159,10 +193,12 @@ def main(argv=None):
     done_streams = completed_streams(logs, int(max(horizon, since)), int(now))
     print(f"{len(done_streams):,} log streams completed at least one shard",
           file=sys.stderr)
-    spend = collections.Counter()
-    hours = collections.Counter()
+    hours = collections.Counter()        # vCPU-hours by category
+    gbh = collections.Counter()          # GB-hours by category
     jobs = collections.Counter()
-    by_campaign = collections.defaultdict(lambda: collections.Counter())
+    kind_of = {}                         # job index -> category
+    per_day_vh = collections.Counter()   # calendar day -> vCPU-hours, for
+    rows = []                            # calibration against billed days
 
     for i in range(0, len(ids), DESCRIBE_CHUNK):
         for d in b.describe_jobs(jobs=ids[i:i + DESCRIBE_CHUNK])["jobs"]:
@@ -172,7 +208,23 @@ def main(argv=None):
             stop = d.get("stoppedAt") or now
             rr = (d.get("container") or {}).get("resourceRequirements") or []
             vcpu = int(([x["value"] for x in rr if x["type"] == "VCPU"] or [8])[0])
+            mem = int(([x["value"] for x in rr if x["type"] == "MEMORY"]
+                       or [16384])[0]) / 1024.0
             vh = vcpu * (stop - start) / 3600000.0
+            gh = mem * (stop - start) / 3600000.0
+
+            # Spread across the calendar days the job actually spanned, so a
+            # job can be compared against a billed DAY. Charging a 20-hour job
+            # wholly to its start day misaligns it from the invoice.
+            t = start
+            while t < stop:
+                day = datetime.datetime.fromtimestamp(
+                    t / 1000, datetime.timezone.utc).date()
+                nxt = min(stop, datetime.datetime.combine(
+                    day + datetime.timedelta(days=1), datetime.time.min,
+                    datetime.timezone.utc).timestamp() * 1000)
+                per_day_vh[str(day)] += vcpu * (nxt - t) / 3600000.0
+                t = nxt
 
             # "Completed something" comes from the job's own log, because a
             # SUCCEEDED job that completed no shard is exactly the case worth
@@ -186,28 +238,75 @@ def main(argv=None):
             knowable = start >= horizon
 
             kind = classify(name, completed, knowable, d)
-            spend[kind] += vh * FARGATE_SPOT_RATE
             hours[kind] += vh
+            gbh[kind] += gh
             jobs[kind] += 1
-            camp = name.rsplit("-", 1)[0]
-            by_campaign[camp][kind] += vh * FARGATE_SPOT_RATE
+            rows.append((name.rsplit("-", 1)[0], kind, vh, gh))
+
+    # ---- CALIBRATION ------------------------------------------------------
+    # Pricing vCPU-hours at a list rate produced $1,111 against a validated
+    # $2,976. The gap was three things: array children never counted, memory
+    # never priced, and a guessed rate. Rather than guess again, derive ONE
+    # all-in rate from a billed figure over a window whose usage we measured:
+    #
+    #   $/vCPU-h = (billed - standing baseline - things that are not ours)
+    #              / (our vCPU-hours over the same days)
+    #
+    # It bundles memory, logs, requests and IPv4 into the vCPU-hour because our
+    # tasks are a fixed 8 vCPU / 16 GB shape, so those scale with vCPU-hours
+    # too. That holds only while the shape holds; change the task size and this
+    # must be recalibrated.
+    rate, basis = None, None
+    try:
+        act = json.load(open("costs_actual.json"))
+        w = act["campaign_window"]
+        days = [d for d in act["daily"] if w["start"] <= d <= w["end"]]
+        billed = sum(act["daily"][d] for d in days)
+        net = (billed - act["baseline_per_day"] * len(days)
+               - sum(e["amount"] for e in act.get("exclusions", [])))
+        used = sum(v for d, v in per_day_vh.items() if w["start"] <= d <= w["end"])
+        if used > 0 and net > 0:
+            rate = net / used
+            basis = (f"calibrated: ${net:,.2f} billed over {len(days)} days "
+                     f"({w['start']}..{w['end']}, less standing baseline and "
+                     f"{len(act.get('exclusions', []))} non-campaign item(s)) "
+                     f"/ {used:,.0f} vCPU-h measured over the same days")
+    except Exception as exc:
+        print(f"no calibration from costs_actual.json ({exc})", file=sys.stderr)
+    if rate is None:
+        rate = (FARGATE_ONDEMAND_VCPU_H + 2.0 * FARGATE_ONDEMAND_GB_H) \
+            * FALLBACK_SPOT_FRACTION
+        basis = (f"UNCALIBRATED fallback: {FALLBACK_SPOT_FRACTION:.0%} of "
+                 f"Fargate on-demand list for an 8 vCPU / 16 GB task")
+
+    spend = collections.Counter()
+    by_campaign = collections.defaultdict(lambda: collections.Counter())
+    for camp, kind, vh, gh in rows:
+        spend[kind] += vh * rate
+        by_campaign[camp][kind] += vh * rate
 
     total = sum(spend.values())
     order = ORDER
-    rows = [(k, jobs[k], hours[k], spend[k]) for k in order if jobs[k]]
+    table = [(k, jobs[k], hours[k], spend[k]) for k in order if jobs[k]]
 
     if a.out:
         doc = {
             "generated": datetime.datetime.now(
                 datetime.timezone.utc).isoformat(timespec="seconds"),
             "since": a.since,
-            "rate_per_vcpu_hour": FARGATE_SPOT_RATE,
-            "reconciled_against_a_bill": False,
+            "rate_per_vcpu_hour": round(rate, 6),
+            "rate_basis": basis,
+            "rate_is_calibrated": "calibrated" in basis,
+            "reconciled_against_a_bill": "calibrated" in basis,
+            "vcpu_hours_by_day": {d: round(v, 1)
+                                  for d, v in sorted(per_day_vh.items())},
             "categories": {k: {"jobs": jobs[k], "vcpu_hours": round(hours[k], 1),
+                               "gb_hours": round(gbh[k], 1),
                                "spend": round(spend[k], 2)} for k in order
                            if jobs[k]},
             "total": {"jobs": sum(jobs.values()),
                       "vcpu_hours": round(sum(hours.values()), 1),
+                      "gb_hours": round(sum(gbh.values()), 1),
                       "spend": round(total, 2)},
             "by_campaign": {c: {k: round(v, 2) for k, v in ct.items()}
                             for c, ct in by_campaign.items()},
@@ -222,22 +321,25 @@ def main(argv=None):
         print(f"wrote {a.out}", file=sys.stderr)
 
     if a.markdown:
-        print("| category | jobs | vCPU-h | spend | share |")
-        print("|---|--:|--:|--:|--:|")
-        for k, j, h, s in rows:
-            print(f"| {k} | {j:,} | {h:,.0f} | ${s:,.2f} | "
+        print("| category | jobs | vCPU-h | GB-h | spend | share |")
+        print("|---|--:|--:|--:|--:|--:|")
+        for k, j, h, s in table:
+            print(f"| {k} | {j:,} | {h:,.0f} | {gbh[k]:,.0f} | ${s:,.2f} | "
                   f"{100 * s / total if total else 0:.1f}% |")
         print(f"| **total** | **{sum(jobs.values()):,}** | "
-              f"**{sum(hours.values()):,.0f}** | **${total:,.2f}** | |")
+              f"**{sum(hours.values()):,.0f}** | **{sum(gbh.values()):,.0f}** | "
+              f"**${total:,.2f}** | |")
+        print(f"\n_${rate:.5f}/vCPU-h — {basis}._")
     else:
         print(f"QuakeScope spend"
               + (f" since {a.since}" if a.since else " (all Batch remembers)"))
-        print(f"  {'category':12} {'jobs':>6} {'vCPU-h':>10} {'spend':>11}   share")
-        for k, j, h, s in rows:
-            print(f"  {k:12} {j:>6,} {h:>10,.0f} {'$' + format(s, ',.2f'):>11}"
+        print(f"  {'category':12} {'jobs':>6} {'vCPU-h':>10} {'GB-h':>11} {'spend':>11}   share")
+        for k, j, h, s in table:
+            print(f"  {k:12} {j:>6,} {h:>10,.0f} {gbh[k]:>11,.0f} "
+                  f"{'$' + format(s, ',.2f'):>11}"
                   f"   {100 * s / total if total else 0:5.1f}%")
         print(f"  {'TOTAL':12} {sum(jobs.values()):>6,} "
-              f"{sum(hours.values()):>10,.0f} "
+              f"{sum(hours.values()):>10,.0f} {sum(gbh.values()):>11,.0f} "
               f"{'$' + format(total, ',.2f'):>11}")
         waste = spend["spinning"]
         if waste:
@@ -246,14 +348,12 @@ def main(argv=None):
                   f"({100 * waste / total:.0f}% of the total). That is the "
                   f"avoidable part.")
         if spend["log expired"]:
-            print(f"\n  ${spend['log expired']:,.2f} ({100 * spend['log expired'] / total:.0f}%) "
-                  f"is from jobs older than the log group's\n  retention "
-                  f"window. Whether they completed anything cannot be "
-                  f"recovered;\n  it is reported rather than guessed. Raise "
-                  f"retention to shrink this line.")
-        print("\n  Derived from Batch start/stop times x "
-              f"${FARGATE_SPOT_RATE}/vCPU-h. Cost Explorer is blocked on this "
-              "account,\n  so none of this is reconciled against a bill.")
+            print(f"\n  ${spend['log expired']:,.2f} "
+                  f"({100 * spend['log expired'] / total:.0f}%) is from jobs "
+                  f"older than the log group's\n  retention window. Whether "
+                  f"they completed anything cannot be recovered;\n  it is "
+                  f"reported rather than guessed. Raise retention to shrink it.")
+        print(f"\n  ${rate:.5f}/vCPU-h all-in.\n  {basis}.")
         if by_campaign:
             print("\n  by campaign:")
             for camp, c in sorted(by_campaign.items(),

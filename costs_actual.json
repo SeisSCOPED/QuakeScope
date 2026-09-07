@@ -1,23 +1,71 @@
 {
-  "_comment": "ACTUAL cost, as billed. Everything the dashboard computes itself is an ESTIMATE: vCPU-hours from Batch job start and stop times times the published Fargate Spot list rate. This file is where a real, billed figure goes, and it is edited by a person because no automation on this account can fetch one.",
-
-  "_why_a_file_and_not_an_api": "This AWS account (073795725844) is denied every cost API by an explicit Deny in service control policy p-q1ngvul9 on organisation o-z3xgjt2s3d - Cost Explorer, Budgets, Cost and Usage Reports and the Free Tier API alike. The organisation's management account is 897729121516 (aws-master+ucsd3@strategic-blue.com): this is a CloudBank-funded account billed through Strategic Blue. The denial is deliberate, not a misconfiguration to work around - CloudBank bills at its own negotiated rate, so AWS-side figures would not be what the grant is charged anyway.",
-
+  "_comment": "ACTUAL cost, as billed. Everything the dashboard computes itself is an ESTIMATE derived from Batch job start/stop times. This file holds real, invoiced figures, and it is edited by a person because no automation on this account can fetch one.",
+  "_why_a_file_and_not_an_api": "This AWS account (073795725844) is denied every cost API by an explicit Deny in service control policy p-q1ngvul9 on organisation o-z3xgjt2s3d - Cost Explorer, Budgets, Cost and Usage Reports and the Free Tier API alike. The organisation's management account is 897729121516 (aws-master+ucsd3@strategic-blue.com): this is a CloudBank-funded account billed through Strategic Blue. The denial is deliberate, not a misconfiguration to work around - CloudBank bills at its own rate, so AWS-side figures would not be what the grant is charged anyway.",
   "_where_to_get_the_number": [
-    "The CloudBank portal (https://www.cloudbank.org) - sign in and open the account's spend report.",
+    "The CloudBank portal (https://www.cloudbank.org) - sign in and export the daily breakdown.",
     "The monthly CloudBank/Strategic Blue invoice email.",
     "Ask the UW research computing contact who administers the CloudBank allocation."
   ],
-
-  "_how_to_record_one": "Add an entry to `entries` with the billing period, the amount in USD, and where it came from. The dashboard reads this file on every rebuild: as soon as an entry has a non-null amount it shows the recorded actual alongside the estimate. Leave `amount` null for a period whose invoice has not arrived - a null is not rendered.",
-
   "currency": "USD",
+  "account": "073795725844",
+  "_daily_note": "Daily billed totals for the whole ACCOUNT, from the CloudBank breakdown export of 2026-09-07. The account is shared - a t2.large has run continuously since 2025 and a g6e.8xlarge GPU instance ran 2026-09-05..07 - so an account total is not a campaign total. See baseline_per_day and the exclusions below.",
+  "daily": {
+    "2026-08-08": 13.6253059038,
+    "2026-08-09": 13.7595987661,
+    "2026-08-10": 24.1064435345,
+    "2026-08-11": 13.6304050785,
+    "2026-08-12": 13.6325141617,
+    "2026-08-13": 14.6084392328,
+    "2026-08-14": 13.6249846083,
+    "2026-08-15": 13.6242735804,
+    "2026-08-16": 13.6239362764,
+    "2026-08-17": 14.7927617869,
+    "2026-08-18": 14.4744295055,
+    "2026-08-19": 13.8055224794,
+    "2026-08-20": 13.8350360132,
+    "2026-08-21": 13.6301060271,
+    "2026-08-22": 13.6250655344,
+    "2026-08-23": 13.7437976016,
+    "2026-08-24": 13.7175663988,
+    "2026-08-25": 14.8009626402,
+    "2026-08-26": 14.4813041841,
+    "2026-08-27": 13.6238868752,
+    "2026-08-28": 13.6247149713,
+    "2026-08-29": 13.6474977692,
+    "2026-08-30": 13.9811975934,
+    "2026-08-31": 622.5850106397,
+    "2026-09-01": 20.6964467241,
+    "2026-09-02": 17.178186941,
+    "2026-09-03": 255.2275627233,
+    "2026-09-04": 2047.2635450831,
+    "2026-09-05": 79.4581953037,
+    "2026-09-06": 81.7776903191
+  },
+  "_baseline_note": "Median billed day over 2026-08-08..08-30, before the campaign started. This is standing account cost - the always-on t2.large, stored snapshots, existing S3 - and is not attributable to QuakeScope.",
+  "baseline_per_day": 13.7175663988,
+  "campaign_window": {
+    "start": "2026-08-31",
+    "end": "2026-09-06"
+  },
+  "_exclusions_note": "Billed in the campaign window but demonstrably not the campaign. Measured from CloudWatch: the g6e.8xlarge ran 9.8 h on 09-05 and 1.8 h on 09-06 at the $4.5296/h on-demand rate, and it is not on either Batch queue.",
+  "exclusions": [
+    {
+      "item": "g6e.8xlarge EC2 (i-00a58e47e255b3618)",
+      "amount": 52.46,
+      "days": [
+        "2026-09-05",
+        "2026-09-06"
+      ],
+      "evidence": "AWS/EC2 CPUUtilization datapoints; not a Batch job"
+    }
+  ],
   "entries": [
     {
-      "period": "2026-09",
-      "amount": null,
-      "source": null,
-      "note": "QuakeScope 2026 re-run. Invoice not yet received. Estimate for the campaign to date is in s3://quakescope-picks-2026/spend.json."
+      "period": "2026-08-31/2026-09-06",
+      "amount": 2975.7,
+      "source": "CloudBank daily breakdown export, 2026-09-07",
+      "note": "Account billed over the campaign window ($3,124.19), less the standing baseline ($96.02) and the g6e.8xlarge GPU instance ($52.46), which is in this shared account but not on either Batch queue. Gross over baseline was $3,028.16.",
+      "gross_over_baseline": 3028.16
     }
   ]
 }

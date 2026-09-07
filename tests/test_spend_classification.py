@@ -60,3 +60,28 @@ def test_reclaim_is_recognised_from_either_field():
     assert is_reclaim({"container": {"reason": "Host EC2 terminated"}})
     assert not is_reclaim(PLAIN)
     assert not is_reclaim({})
+
+
+def test_the_rate_is_calibrated_not_guessed():
+    """The all-in rate must come from a bill, not a constant.
+
+    The first estimate priced vCPU-hours at a guessed $0.0148 and reported
+    $1,111 against a validated $2,976 - 2.7x low, because it also missed a
+    1,500-task array job and never priced memory at all. The rate now divides a
+    billed figure by the vCPU-hours measured over the same days, so it cannot
+    drift from the invoice without someone editing the invoice.
+    """
+    import json
+    act = json.load(open("costs_actual.json"))
+    w = act["campaign_window"]
+    days = [d for d in act["daily"] if w["start"] <= d <= w["end"]]
+    assert days, "the window must select some billed days"
+    billed = sum(act["daily"][d] for d in days)
+    net = (billed - act["baseline_per_day"] * len(days)
+           - sum(e["amount"] for e in act["exclusions"]))
+    # The recorded entry is what the dashboard shows beside the estimate, so it
+    # must equal what the window arithmetic produces - not the gross.
+    entry = act["entries"][0]["amount"]
+    assert abs(net - entry) < 0.01, f"entry {entry} != derived {net:.2f}"
+    # And it must be net of the exclusions, not the gross over baseline.
+    assert entry < act["entries"][0]["gross_over_baseline"]
