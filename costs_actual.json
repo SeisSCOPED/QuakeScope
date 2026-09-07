@@ -62,10 +62,19 @@
   "entries": [
     {
       "period": "2026-08-31/2026-09-06",
-      "amount": 2975.7,
+      "amount": 2456.29,
       "source": "CloudBank daily breakdown export, 2026-09-07",
-      "note": "Account billed over the campaign window ($3,124.19), less the standing baseline ($96.02) and the g6e.8xlarge GPU instance ($52.46), which is in this shared account but not on either Batch queue. Gross over baseline was $3,028.16.",
+      "note": "Account billed over the campaign window ($3,124.19), less standing baseline ($96.02), less the g6e.8xlarge GPU that is not ours ($52.46), less the unattributed 2026-08-31 residual ($519.41). Gross over baseline was $3,028.16.",
       "gross_over_baseline": 3028.16
+    }
+  ],
+  "_calibration_note": "Only days with real load calibrate the rate. 2026-08-31 is excluded: it bills $608.87 over baseline against 2,836 vCPU-hours of our compute, which is 432% of Fargate on-demand LIST price and therefore cannot be our compute at any Spot rate. Every measurable service was checked for it - no NAT gateway exists, no EC2 ran that day but the always-on t2.large (including instances since terminated, checked via CloudWatch rather than describe-instances), DocumentDB was one idle t4g.medium, log ingestion was $0.79, S3 storage was under a gigabyte. Nothing found. Being the last day of the month it most likely carries August's monthly-posted charges, but one month of data cannot prove that, so it is recorded as unattributed rather than assigned to the campaign. Including it inflated the rate by 21% and made Fargate Spot look far more expensive than it is.",
+  "calibration_min_vcpu_hours_per_day": 1000,
+  "unattributed": [
+    {
+      "day": "2026-08-31",
+      "amount": 519.41,
+      "why": "billed over baseline, less what our 2,836 vCPU-h are worth at the September rate ($89.46). Not attributed to any service."
     }
   ]
 }

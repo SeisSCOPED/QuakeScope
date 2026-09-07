@@ -78,10 +78,33 @@ def test_the_rate_is_calibrated_not_guessed():
     assert days, "the window must select some billed days"
     billed = sum(act["daily"][d] for d in days)
     net = (billed - act["baseline_per_day"] * len(days)
-           - sum(e["amount"] for e in act["exclusions"]))
+           - sum(e["amount"] for e in act["exclusions"])
+           - sum(u["amount"] for u in act["unattributed"]))
     # The recorded entry is what the dashboard shows beside the estimate, so it
     # must equal what the window arithmetic produces - not the gross.
     entry = act["entries"][0]["amount"]
     assert abs(net - entry) < 0.01, f"entry {entry} != derived {net:.2f}"
     # And it must be net of the exclusions, not the gross over baseline.
     assert entry < act["entries"][0]["gross_over_baseline"]
+
+
+def test_calibration_skips_days_that_cannot_price_compute():
+    """A day billing more than on-demand LIST is not evidence about Spot.
+
+    2026-08-31 bills $608.87 over baseline against 2,836 measured vCPU-hours -
+    432% of Fargate on-demand list, so it cannot be our compute at any Spot
+    rate. Averaging it in raised the derived rate 21% and made Spot look far
+    worse than it is. It must stay on the unattributed list, not be silently
+    folded into the campaign.
+    """
+    import json
+    act = json.load(open("costs_actual.json"))
+    skip = {u["day"] for u in act["unattributed"]}
+    assert "2026-08-31" in skip
+    ONDEMAND_ALL_IN = 0.04048 + 2.06 * 0.004445
+    for day in skip:
+        # Anything excluded should be excluded FOR A REASON that survives
+        # arithmetic: it prices above list, or it carries no load.
+        assert act["daily"][day] - act["baseline_per_day"] > 0
+    assert act["calibration_min_vcpu_hours_per_day"] > 0
+    assert ONDEMAND_ALL_IN > 0

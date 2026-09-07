@@ -260,17 +260,29 @@ def main(argv=None):
     try:
         act = json.load(open("costs_actual.json"))
         w = act["campaign_window"]
-        days = [d for d in act["daily"] if w["start"] <= d <= w["end"]]
-        billed = sum(act["daily"][d] for d in days)
-        net = (billed - act["baseline_per_day"] * len(days)
-               - sum(e["amount"] for e in act.get("exclusions", [])))
-        used = sum(v for d, v in per_day_vh.items() if w["start"] <= d <= w["end"])
+        # Calibrate on days that can actually price compute: inside the
+        # window, carrying real load, and not on the unattributed list. A day
+        # billing 432% of on-demand LIST against our measured hours is not
+        # telling us about Spot - it is telling us something else was billed
+        # that day - and averaging it in raised the rate 21%.
+        floor = act.get("calibration_min_vcpu_hours_per_day", 0)
+        skip = {u["day"] for u in act.get("unattributed", [])}
+        per_day_excl = collections.Counter()
+        for e in act.get("exclusions", []):
+            for dd in e.get("days", []):
+                per_day_excl[dd] += e["amount"] / max(len(e.get("days", [])), 1)
+        days = [d for d in sorted(act["daily"])
+                if w["start"] <= d <= w["end"] and d not in skip
+                and per_day_vh.get(d, 0.0) >= floor]
+        net = sum(act["daily"][d] - act["baseline_per_day"] - per_day_excl[d]
+                  for d in days)
+        used = sum(per_day_vh.get(d, 0.0) for d in days)
         if used > 0 and net > 0:
             rate = net / used
-            basis = (f"calibrated: ${net:,.2f} billed over {len(days)} days "
-                     f"({w['start']}..{w['end']}, less standing baseline and "
-                     f"{len(act.get('exclusions', []))} non-campaign item(s)) "
-                     f"/ {used:,.0f} vCPU-h measured over the same days")
+            basis = (f"calibrated: ${net:,.2f} billed over {len(days)} day(s) "
+                     f"carrying real load ({', '.join(days)}; baseline and "
+                     f"non-campaign items removed) / {used:,.0f} vCPU-h "
+                     f"measured on those days")
     except Exception as exc:
         print(f"no calibration from costs_actual.json ({exc})", file=sys.stderr)
     if rate is None:
