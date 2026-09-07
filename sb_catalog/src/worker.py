@@ -287,6 +287,9 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
     )
     t0 = time.time()
     bridge.run_picking()
+    # Station-days obspy could not process. The shard still completed and its
+    # good data is written; these are the ones a person has to look at.
+    state.note_review(shard["shard_id"], getattr(bridge, "signal_faults", []))
     return {
         "stations": len(shard["stations"]),
         "start": shard["start"],

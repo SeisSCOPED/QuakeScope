@@ -1066,8 +1066,22 @@ def render(g, examples):
                 _review[_c] = _sum
         except Exception:
             pass
-    _needs = {c: v["metadata"]["count"] for c, v in _review.items()
-              if v.get("metadata", {}).get("count")}
+    # A shard blocked on metadata, plus a shard that finished but skipped
+    # station-days obspy refused. Different mechanisms, same question: is there
+    # something here a person has to look at.
+    _needs = {}
+    for _c, _v in _review.items():
+        _n = _v.get("metadata", {}).get("count", 0)
+        if _n:
+            _needs[_c] = _needs.get(_c, 0) + _n
+    for _c in {c["name"] for c in g["camps"]} | set(_cfg):
+        try:
+            from sb_catalog.src.s3_state import S3CampaignState
+            _r = len(S3CampaignState(f"s3://{BUCKET}/{_c}").review_ids())
+            if _r:
+                _needs[_c] = _needs.get(_c, 0) + _r
+        except Exception:
+            pass
 
     # What we may actually read, per campaign, from the access surveys. This is
     # the question the page exists to answer: where is there data for us.
@@ -1128,9 +1142,10 @@ def render(g, examples):
         f'<tbody>{"".join(_rows)}</tbody></table>'
         + (f'<p class="needs"><b>{sum(_needs.values()):,} shard(s) need a '
            f'human</b> &mdash; {", ".join(f"{c}: {n:,}" for c, n in sorted(_needs.items()))}. '
-           f'Their plan and station table disagree, or FDSN rejects the '
-           f'inventory request. Unlike an embargo these do not clear '
-           f'themselves.</p>' if _needs else '')
+           f'Their plan and station table disagree, FDSN rejects the '
+           f'inventory request, or a station-day could not be processed. '
+           f'Unlike an embargo these do not clear themselves.</p>'
+           if _needs else '')
         + '</div>')
 
     tile_html = "".join(

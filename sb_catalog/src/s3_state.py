@@ -353,6 +353,32 @@ class S3CampaignState:
                                       "scope": rec.get("scope", {})})
         return out
 
+    def note_review(self, shard_id: str, items: list) -> None:
+        """Record station-days a completed shard could not process.
+
+        Distinct from `block`: the shard FINISHED and its good station-days are
+        in the catalogue. These are the ones obspy refused - a channel sampled
+        at 6 Hz beside one at 100, a response corner above Nyquist, a zero in a
+        gain. Nobody can fix them by waiting, and they are invisible in a pick
+        count, so they are written down where a person will see them.
+        """
+        if not items:
+            return
+        self._put_json(self._key("review", f"{shard_id}.json"), {
+            "shard_id": shard_id,
+            "kind": "signal",
+            "count": len(items),
+            "items": items[:200],
+            "noted": _utcnow(),
+        })
+        logger.warning(f"{shard_id}: {len(items)} station-day(s) skipped, "
+                       f"recorded for review")
+
+    def review_ids(self) -> set[str]:
+        n = len(self._key("review")) + 1
+        return {k[n:-len(".json")] for k in self._list("review/")
+                if k.endswith(".json")}
+
     def is_blocked(self, shard_id: str) -> bool:
         return self._exists(self._key("blocked", f"{shard_id}.json"))
 

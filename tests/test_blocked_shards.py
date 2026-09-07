@@ -167,6 +167,42 @@ def test_metadata_faults_are_flagged_apart_from_embargo():
     assert json.loads(st.s3.obj["camp/blocked/s1.json"])["kind"] == "embargo"
 
 
+def test_a_signal_fault_is_recorded_without_losing_the_shard():
+    """The third way a shard got stuck, found on the 2026-09-07 western run.
+
+    obspy raises from the signal path on data that is merely odd - a 6 Hz
+    channel beside a 100 Hz one, a response corner above Nyquist, a zero in a
+    gain. Those escaped the per-station-day loop and failed the whole shard,
+    which was then released and re-claimed and failed again: six workers spent
+    a night on 36 shards and completed none, while roughly 800 good
+    station-days per shard went unpicked because of one trace.
+
+    So the station-day is skipped and written down, and the shard still
+    finishes. Recorded rather than blocked, because the shard DID complete -
+    `review/` is a list for a person, not a queue state.
+    """
+    st = _state()
+    st.note_review("s1", [
+        {"station": "CI.ABC.", "channel": "HH", "day": "2024.268",
+         "error": "ValueError: Sampling rate differs: 6.0 vs 100.0"},
+        {"station": "CI.DEF.", "channel": "BH", "day": "2024.269",
+         "error": "ValueError: Selected corner frequency is above Nyquist."},
+    ])
+    assert st.review_ids() == {"s1"}
+    rec = json.loads(st.s3.obj["camp/review/s1.json"])
+    assert rec["kind"] == "signal" and rec["count"] == 2
+    assert "Nyquist" in rec["items"][1]["error"]
+
+    # A shard with nothing to report writes nothing at all.
+    st.note_review("s2", [])
+    assert st.review_ids() == {"s1"}
+
+    # And review is NOT blocked: the shard completed, so it must not be
+    # excluded from the queue the way an embargoed one is.
+    assert st.blocked_ids() == set()
+    assert st.claim("s1") is True
+
+
 def test_the_block_record_says_what_has_to_open():
     """A bare 'blocked' is useless six months later."""
     st = _state()

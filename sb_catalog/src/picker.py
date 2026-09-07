@@ -433,6 +433,9 @@ class S3MongoSBBridge:
         """
         Perform the picking
         """
+        # Per RUN, not per class: a class attribute would be shared by every
+        # bridge in the process and carry one shard's faults into the next.
+        self.signal_faults = []
         asyncio.run(self._run_picking_async())
 
     async def _run_picking_async(self) -> None:
@@ -531,56 +534,90 @@ class S3MongoSBBridge:
                     [sbu.PickList(), [], [], [], station, day, channel]
                 )
             else:
-                # do picking
-                def _classify():
-                    with stage("model.classify"):
-                        return self.model.classify(stream)
-
-                stream_annotations = await asyncio.to_thread(_classify)
-                n_picks = len(stream_annotations.picks)
-
-                # Wood-Anderson, deconvolved on a short window around each pick
-                # above the confidence gate. Timed against PICK COUNT, not
-                # station-days: this pass now scales with qualifying picks, and
-                # pick counts vary ~4x between an ordinary day and a mainshock
-                # day, so per-station-day timing would hide how it scales.
-                def _amps():
-                    with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
-                        return self.amp_extor.extract_amplitudes(
-                            stream, stream_annotations.picks, self.s3.inventory
-                        )
-
-                stream_amplitudes = await asyncio.to_thread(_amps)
-
-                # Gain-corrected peak ground velocity for every pick. Replaces
-                # the raw-counts pass: same cost class, but the number is
-                # physical and comparable between instruments.
-                def _vel_amps():
-                    with stage("amp.velocity", unit=n_picks, unit_name="pick"):
-                        return self.amp_extor.extract_velocity_amplitudes(
-                            stream, stream_annotations.picks, self.s3.inventory
-                        )
-
-                stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
-
-                # classifier
-                if self.classifier and (channel in ["BH", "HH"]):
-                    stream_classifier = await asyncio.to_thread(
-                        self.classifier.classify, stream
+                # ONE BAD TRACE MUST NOT COST THE SHARD. obspy raises from the
+                # signal path on data that is merely odd - a 6 Hz channel next
+                # to a 100 Hz one ("Sampling rate differs"), a response whose
+                # corner sits above Nyquist, a zero somewhere in a gain - and
+                # those escaped to fail the whole shard. The shard was then
+                # released, re-claimed, and failed again: western sat at 36
+                # shards with six workers overnight and completed none of them,
+                # while ~800 good station-days per shard went unpicked because
+                # of one trace.
+                #
+                # A station-day that cannot be processed is skipped and
+                # recorded. It is not an access problem and not a plan problem,
+                # so nobody can fix it by waiting; `worker` writes the list to
+                # `review/` for a person to look at.
+                try:
+                    await self._process_station_day(
+                        stream, station, day, channel, picks_queue)
+                except (ValueError, ArithmeticError, IndexError, KeyError) as exc:
+                    self.signal_faults.append({
+                        "station": station, "channel": channel,
+                        "day": day.strftime("%Y.%j"),
+                        "error": f"{type(exc).__name__}: {exc}"[:200],
+                    })
+                    logger.warning(
+                        f"Signal fault on {station}.{channel} "
+                        f"{day.strftime('%Y.%j')}: {type(exc).__name__}: {exc}. "
+                        f"Skipping this station-day; the shard continues."
                     )
-                else:
-                    stream_classifier = []
-                await picks_queue.put(
-                    [
-                        stream_annotations.picks,
-                        stream_amplitudes,
-                        stream_raw_amplitudes,
-                        stream_classifier,
-                        station,
-                        day,
-                        channel,
-                    ]
+                    await picks_queue.put(
+                        [sbu.PickList(), [], [], [], station, day, channel])
+
+    async def _process_station_day(self, stream, station, day, channel,
+                                   picks_queue) -> None:
+        """Pick and measure one station-day-channel."""
+        # do picking
+        def _classify():
+            with stage("model.classify"):
+                return self.model.classify(stream)
+
+        stream_annotations = await asyncio.to_thread(_classify)
+        n_picks = len(stream_annotations.picks)
+
+        # Wood-Anderson, deconvolved on a short window around each pick
+        # above the confidence gate. Timed against PICK COUNT, not
+        # station-days: this pass now scales with qualifying picks, and
+        # pick counts vary ~4x between an ordinary day and a mainshock
+        # day, so per-station-day timing would hide how it scales.
+        def _amps():
+            with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
+                return self.amp_extor.extract_amplitudes(
+                    stream, stream_annotations.picks, self.s3.inventory
                 )
+
+        stream_amplitudes = await asyncio.to_thread(_amps)
+
+        # Gain-corrected peak ground velocity for every pick. Replaces
+        # the raw-counts pass: same cost class, but the number is
+        # physical and comparable between instruments.
+        def _vel_amps():
+            with stage("amp.velocity", unit=n_picks, unit_name="pick"):
+                return self.amp_extor.extract_velocity_amplitudes(
+                    stream, stream_annotations.picks, self.s3.inventory
+                )
+
+        stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
+
+        # classifier
+        if self.classifier and (channel in ["BH", "HH"]):
+            stream_classifier = await asyncio.to_thread(
+                self.classifier.classify, stream
+            )
+        else:
+            stream_classifier = []
+        await picks_queue.put(
+            [
+                stream_annotations.picks,
+                stream_amplitudes,
+                stream_raw_amplitudes,
+                stream_classifier,
+                station,
+                day,
+                channel,
+            ]
+        )
 
     async def _write_picks_to_db(self, picks_queue: asyncio.Queue[list | None]) -> None:
         """
