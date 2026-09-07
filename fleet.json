@@ -63,6 +63,13 @@
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
+    },
+    "western-early": {
+      "target": 0,
+      "job_definition": "quakescope_2026_western:24",
+      "weight": "original",
+      "procs": 4,
+      "threads": 2
     }
   }
 }

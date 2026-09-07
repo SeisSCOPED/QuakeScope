@@ -1718,7 +1718,7 @@ def main():
     # finds would bury the live campaign among them. Pass --campaigns to look at
     # a historical one - western-a still holds 106M picks.
     ap.add_argument("--campaigns",
-                    default="global,obs,western,obs-early,obs-2026,western-2026,global-2026")
+                    default="global,obs,western,obs-early,western-early,obs-2026,western-2026,global-2026")
     a = ap.parse_args()
     # The hourly job shares S3 with the fleet. At 1,500 workers the dashboard
     # is the small, interruptible client in that contention, so it backs off
