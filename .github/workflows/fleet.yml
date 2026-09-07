@@ -315,6 +315,35 @@ jobs:
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
                   f.write(md + "\n")
 
+          PACE = 0.25
+
+          def survey_size():
+              """How long the sweep will take, from the campaign's own shards.
+
+              The sweep is one paced credential request per (network, year), so
+              its length is set by how many distinct pairs the campaign has: 43
+              for western-2026, 3,763 for global. A hardcoded "about two
+              minutes" is right for one of those and wrong by twenty times for
+              the other - and the person reading it is deciding how long to
+              wait before pressing Run again.
+              """
+              try:
+                  body = s3.get_object(Bucket=BUCKET,
+                                       Key=f"{camp}/shards.jsonl")["Body"].read()
+                  pairs = set()
+                  for line in body.splitlines():
+                      if not line.strip():
+                          continue
+                      sh = json.loads(line)
+                      net = sh.get("network") or (
+                          sh.get("stations") or [""])[0].split(".")[0]
+                      pairs.add((net, str(sh.get("year")
+                                          or (sh.get("start") or "")[:4])))
+                  return len(pairs), max(1, round(len(pairs) * PACE / 60))
+              except Exception as exc:
+                  print(f"::warning::could not size the survey ({exc})")
+                  return None, None
+
           def submit_survey(why):
               b = boto3.client("batch", region_name="us-east-2")
               r = b.submit_job(
@@ -325,21 +354,27 @@ jobs:
                       "netyear-sweep",
                       "--campaign", f"s3://{BUCKET}/{camp}",
                       "--out", f"s3://{BUCKET}/{key}",
-                      "--pace", "0.25"]})
+                      "--pace", str(PACE)]})
               # SUCCEED. This step did something useful and deliberate; a red
               # run tells the person holding the phone that it broke.
               print(f"::notice::{why} Started an access survey instead "
                     f"(job {r['jobId'][:8]}). Nothing was launched.")
+              pairs, mins = survey_size()
+              howlong = (f"about **{mins} minute{'' if mins == 1 else 's'}** "
+                         f"— it has {pairs:,} network-years to ask about"
+                         if mins else "**a few minutes**")
+              wait = f"~{mins} minute{'' if mins == 1 else 's'}" if mins \
+                  else "a few minutes"
               say(f"## ⏳ Checking access to {camp} first\n\n"
                   f"{why}\n\n"
-                  f"An access survey is running now — about **2 minutes**. It "
-                  f"asks EarthScope which of this campaign's network-years we "
-                  f"may actually read, so workers are not started on data that "
-                  f"is embargoed.\n\n"
+                  f"An access survey is running now, {howlong}. It asks "
+                  f"EarthScope which of this campaign's network-years we may "
+                  f"actually read, so workers are not started on data that is "
+                  f"embargoed.\n\n"
                   f"### What to do\n"
-                  f"**Wait ~2 minutes, then run this workflow again** with the "
+                  f"**Wait {wait}, then run this workflow again** with the "
                   f"same settings. It will use the survey and launch.\n\n"
-                  f"_Nothing was started, and nothing is costing money._")
+                  f"_One worker is surveying; nothing else was started._")
               with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                   f.write("launch=no\n")
 
