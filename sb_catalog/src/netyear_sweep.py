@@ -91,26 +91,72 @@ def main(argv=None) -> int:
                 f"{len(restricted)} on the restricted tier")
 
     missing, ok, errors, denied = [], [], [], []
-    for i, (net, year) in enumerate(restricted, 1):
-        try:
-            helper.get_es_credential(net, year)
-            ok.append((net, year))
-        except EarthScopeNetworkYearNotFound:
-            missing.append((net, year))
-            logger.info(f"  MISSING {net} {year}")
-        except EarthScopeNoAccess:
-            # 403 is a different problem from 404 and needs a different
-            # response: the data exists, we are not allowed it. Worth a request
-            # to EarthScope rather than a correction to the plan.
-            denied.append((net, year))
-            logger.warning(f"  DENIED  {net} {year} - 403, no access")
-        except Exception as exc:
-            errors.append((net, year, f"{type(exc).__name__}: {exc}"[:120]))
-            logger.warning(f"  ERROR   {net} {year}: {type(exc).__name__}")
-        if i % 50 == 0:
-            logger.info(f"  ... {i}/{len(restricted)}")
-        if args.pace and i < len(restricted):
-            time.sleep(args.pace)
+    inferred = 0
+
+    # ONE EXCHANGE PER NETWORK WHERE THE SCOPE CARRIES NO YEAR.
+    #
+    # A permanent network's credential is scoped {"network": "FDSN:XX"} with no
+    # year in it, so asking about 2011 and asking about 2019 send the IDENTICAL
+    # request and can only get the identical answer. Sweeping year by year
+    # therefore re-exchanged one scope a dozen times, and the local throttle -
+    # correctly - refused it: 2,172 of global's 3,757 network-years came back
+    # EarthScopeExchangeThrottled and were never asked about at all, which the
+    # summary then counted as "not readable". A survey that cannot see half its
+    # own plan is worse than no survey, because it is believed.
+    #
+    # So probe a network's first year, then look at the scope that was actually
+    # used. No year in it means the answer was about the network: apply it to
+    # the network's remaining years and move on. Only year-scoped codes - the
+    # temporary ones, which is what the year is for - are asked per year.
+    by_net = collections.defaultdict(list)
+    for n, y in restricted:
+        by_net[n].append(y)
+
+    done = 0
+    for net, years in sorted(by_net.items()):
+        years = sorted(set(years))
+        for j, year in enumerate(years):
+            verdict = None
+            try:
+                helper.get_es_credential(net, year)
+                verdict = "ok"
+                ok.append((net, year))
+            except EarthScopeNetworkYearNotFound:
+                verdict = "missing"
+                missing.append((net, year))
+                logger.info(f"  MISSING {net} {year}")
+            except EarthScopeNoAccess:
+                # 403 is a different problem from 404 and needs a different
+                # response: the data exists, we are not allowed it. Worth a
+                # request to EarthScope rather than a plan correction.
+                verdict = "denied"
+                denied.append((net, year))
+                logger.warning(f"  DENIED  {net} {year} - 403, no access")
+            except Exception as exc:
+                errors.append((net, year, f"{type(exc).__name__}: {exc}"[:120]))
+                logger.warning(f"  ERROR   {net} {year}: {type(exc).__name__}")
+            done += 1
+
+            # Was that answer about the network, or about this year of it?
+            # Read the scope actually used - escalate_scope_mode can have
+            # changed it during the call, so this cannot be decided in advance.
+            rest = years[j + 1:]
+            if verdict and rest and "year" not in helper.es_scope(net, year):
+                bucket = {"ok": ok, "missing": missing, "denied": denied}[verdict]
+                bucket.extend((net, y) for y in rest)
+                inferred += len(rest)
+                logger.info(f"  {net}: network-scoped, so {verdict} applies to "
+                            f"{len(rest)} further year(s) without re-asking")
+                done += len(rest)
+                break
+
+            if done % 50 == 0:
+                logger.info(f"  ... {done}/{len(restricted)}")
+            if args.pace and done < len(restricted):
+                time.sleep(args.pace)
+    if inferred:
+        logger.info(f"{inferred} network-years answered from a network-scoped "
+                    f"credential rather than a separate exchange")
 
     by_net = collections.Counter(n for n, _ in missing)
     print(f"\n=== planned network-years that EarthScope does not have ===")
@@ -133,7 +179,11 @@ def main(argv=None) -> int:
         payload = {"checked": len(restricted), "present": len(ok),
                    "missing": [[n, y] for n, y in missing],
                    "denied": [[n, y] for n, y in denied],
-                   "errors": errors}
+                   "errors": errors,
+                   # What the sweep actually resolved, so a reader can tell a
+                   # low readable fraction from an incomplete survey.
+                   "resolved": len(ok) + len(missing) + len(denied),
+                   "inferred_from_network_scope": inferred}
         with s3fs.S3FileSystem().open(args.out, "w") as f:
             json.dump(payload, f, indent=1)
         print(f"\nwrote {args.out}")

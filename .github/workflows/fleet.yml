@@ -396,11 +396,34 @@ jobs:
           a = json.load(obj["Body"])
           present = a.get("present", 0)
           denied, missing = len(a.get("denied", [])), len(a.get("missing", []))
-          checked = a.get("checked") or (present + denied + missing) or 1
-          frac = present / checked
+          errors = len(a.get("errors", []))
+          # DIVIDE BY WHAT WAS ANSWERED, not by what was asked. The sweep used
+          # to re-exchange one network-scoped credential once per year, and the
+          # local throttle refused most of them: global came back 1,209 present
+          # of 3,757 "checked" and this gate read it as 32% readable when 76%
+          # of the network-years actually answered were readable. An unanswered
+          # question is not a no.
+          resolved = a.get("resolved") or (present + denied + missing)
+          checked = a.get("checked") or resolved or 1
+          frac = present / (resolved or 1)
           print(f"::notice::{camp}: survey {age:.1f} day(s) old — {present} of "
-                f"{checked} network-years readable ({frac:.0%}), {denied} "
-                f"embargoed or denied, {missing} not in the archive.")
+                f"{resolved} answered network-years readable ({frac:.0%}), "
+                f"{denied} embargoed or denied, {missing} not in the archive"
+                + (f"; {errors} never answered" if errors else "") + ".")
+          # A survey that could not answer most of its own plan is not evidence
+          # either way, and launching on it re-learns the answer one shard at a
+          # time - the waste the survey exists to prevent.
+          if resolved < 0.5 * checked:
+              print(f"::error::{camp}'s survey only answered {resolved} of "
+                    f"{checked} network-years ({errors} errored). That is not "
+                    f"enough to launch on. Re-run the survey — if the errors "
+                    f"are EarthScopeExchangeThrottled, the sweep is asking one "
+                    f"scope repeatedly and needs the per-network fix.")
+              say(f"## 🛑 {camp}'s survey is incomplete\n\n"
+                  f"Only **{resolved} of {checked}** network-years were "
+                  f"answered; {errors} errored. Re-run the survey before "
+                  f"launching.\n\n_Nothing was started._")
+              sys.exit(1)
 
           if frac < floor:
               print(f"::error::Only {frac:.0%} of {camp}'s planned network-years "
