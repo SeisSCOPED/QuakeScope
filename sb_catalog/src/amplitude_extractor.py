@@ -157,6 +157,39 @@ class AmplitudeExtractor:
                       default=0.0)
         return float(fraction * longest)
 
+    @staticmethod
+    def _fit_to_nyquist(stream, pre_filt=None, highpass=None):
+        """Clamp filter corners below the Nyquist of the SLOWEST trace present.
+
+        The corners here were chosen for 100 Hz data, which is what the picker
+        sees - `downsample_to_target` brings anything faster down to it. But
+        response removal runs on the trace as recorded, and a stream can hold a
+        channel far below that: NN and SN station-days on 2026-09-07 carried a
+        6 Hz record beside 100 Hz ones. obspy then raises
+
+            ValueError: Selected corner frequency is above Nyquist.
+
+        which cost the station-day. Scaling the corners keeps the measurement
+        on the band the data can actually support instead of discarding it.
+        Returns (pre_filt, highpass), either possibly adjusted, or None for a
+        stream with nothing usable.
+        """
+        rates = [tr.stats.sampling_rate for tr in stream
+                 if tr.stats.sampling_rate and tr.stats.npts]
+        if not rates:
+            return pre_filt, highpass
+        nyq = min(rates) / 2.0
+        # Stay clear of the corner itself; a filter AT Nyquist is unstable.
+        ceiling = nyq * 0.9
+        if pre_filt is not None and pre_filt[3] > ceiling:
+            lo1, lo2 = pre_filt[0], pre_filt[1]
+            hi2 = ceiling
+            hi1 = max(lo2 * 1.5, hi2 * 0.9)
+            pre_filt = [lo1, lo2, hi1, hi2] if hi1 < hi2 else None
+        if highpass is not None and highpass >= ceiling:
+            highpass = None          # nothing sensible left to high-pass
+        return pre_filt, highpass
+
     def extract_amplitudes(
         self, stream: obspy.Stream, picks: sbu.PickList, inventory: obspy.Inventory
     ) -> list[float]:
@@ -212,11 +245,17 @@ class AmplitudeExtractor:
                 # below rejects any pick whose measurement window reaches into
                 # it rather than measuring a suppressed peak.
                 fraction = 0.15
+                args = dict(self.response_removal_args)
+                pf, _ = self._fit_to_nyquist(window, args.get("pre_filt"))
+                if args.get("pre_filt") is not None:
+                    if pf is None:
+                        continue            # no band left below Nyquist
+                    args["pre_filt"] = pf
                 try:
                     window.remove_response(
                         sub_inv,
                         taper_fraction=fraction,
-                        **self.response_removal_args,
+                        **args,
                     )
                 except Exception:           # no response information
                     continue
@@ -259,8 +298,9 @@ class AmplitudeExtractor:
             prepared.detrend("linear")
             fraction = self._taper_fraction(prepared)
             prepared.taper(max_percentage=fraction, type="cosine")
-            prepared.filter("highpass", freq=self.vel_highpass,
-                            corners=4, zerophase=True)
+            _, hp = self._fit_to_nyquist(prepared, highpass=self.vel_highpass)
+            if hp is not None:
+                prepared.filter("highpass", freq=hp, corners=4, zerophase=True)
             # Per-trace sensitivity: components of one station can differ, and a
             # station's response changes across epochs.
             kept = obspy.Stream()
@@ -312,9 +352,10 @@ class AmplitudeExtractor:
             if self.raw_highpass is not None:
                 fraction = self._taper_fraction(prepared)
                 prepared.taper(max_percentage=fraction, type="cosine")
-                prepared.filter(
-                    "highpass", freq=self.raw_highpass, corners=4, zerophase=True
-                )
+                _, hp = self._fit_to_nyquist(prepared, highpass=self.raw_highpass)
+                if hp is not None:
+                    prepared.filter("highpass", freq=hp, corners=4,
+                                    zerophase=True)
                 taper_len = self._taper_length(prepared, fraction)
             arrays = self._as_arrays(prepared, taper_len)
 
