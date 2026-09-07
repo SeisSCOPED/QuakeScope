@@ -3,63 +3,63 @@
   "campaigns": {
     "western": {
       "target": 10,
-      "job_definition": "quakescope_2026_western:23",
+      "job_definition": "quakescope_2026_western:24",
       "weight": "original",
       "procs": 4,
       "threads": 2
     },
     "global": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:9",
+      "job_definition": "quakescope_2026_global:10",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
     },
     "obs": {
-      "target": 50,
-      "job_definition": "quakescope_2026_obs:20",
+      "target": 0,
+      "job_definition": "quakescope_2026_obs:21",
       "weight": "obs",
       "procs": 4,
       "threads": 2
     },
     "dryrun3": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:9",
+      "job_definition": "quakescope_2026_global:10",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
     },
     "dryrun4": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:9",
+      "job_definition": "quakescope_2026_global:10",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
     },
     "obs-early": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:20",
+      "job_definition": "quakescope_2026_obs:21",
       "weight": "obs",
       "procs": 4,
       "threads": 2
     },
     "obs-2026": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:20",
+      "job_definition": "quakescope_2026_obs:21",
       "weight": "obs",
       "procs": 4,
       "threads": 2
     },
     "western-2026": {
       "target": 0,
-      "job_definition": "quakescope_2026_western:23",
+      "job_definition": "quakescope_2026_western:24",
       "weight": "original",
       "procs": 4,
       "threads": 2
     },
     "global-2026": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:9",
+      "job_definition": "quakescope_2026_global:10",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2
