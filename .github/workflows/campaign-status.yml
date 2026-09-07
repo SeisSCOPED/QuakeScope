@@ -31,6 +31,10 @@ on:
     # published page went stale. Both the row count and the breakdowns are now
     # accumulated per object, so a warm run reads only what is new.
     - cron: "23 * * * *"
+    # The spend scan, once a day, on its own minute. Sharing the hourly minute
+    # would fire both crons at 05:23 and queue two runs against the same
+    # concurrency group for no gain.
+    - cron: "47 5 * * *"
   workflow_dispatch:
 
 permissions:
@@ -44,7 +48,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # WHAT IT HAS COST, refreshed once a day and written to S3 as an artefact the
+  # dashboard reads. Its own job, not a step in `status`, because it takes a
+  # few minutes and must never delay or fail the hourly page rebuild - and its
+  # own schedule, because the answer moves slowly and the scan is the same
+  # work whether it runs once an hour or once a day.
+  #
+  # No button of its own. Adding one to the phone's Actions list would cost
+  # more attention than the number is worth day to day, and workflow_dispatch
+  # here is enough when it is wanted sooner.
+  spend:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '47 5 * * *'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet boto3
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_WATCH_ROLE_ARN }}
+          aws-region: us-east-2
+      # A failure here leaves the previous artefact in place and the dashboard
+      # renders it with its true age. Stale is honest; absent is honest. What
+      # would not be honest is a page that stops mentioning cost.
+      - name: Recompute the spend breakdown
+        continue-on-error: true
+        run: |
+          python scripts/campaign_spend.py \
+            --out s3://quakescope-picks-2026/spend.json --markdown \
+            >> "$GITHUB_STEP_SUMMARY"
+
   status:
+    # Not on the daily spend cron - that one exists to refresh the artefact,
+    # and the hourly rebuild has already run six minutes' worth of times today.
+    if: github.event.schedule != '47 5 * * *'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

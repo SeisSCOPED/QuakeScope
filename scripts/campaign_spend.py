@@ -12,13 +12,25 @@ spent a night on 36 shards and completed none. Both show up in a total as
 CATEGORIES, by job name prefix and outcome:
 
     productive   a campaign job that completed at least one shard
-    spinning     a campaign job that completed NOTHING - the failure modes we
-                 spent two days fixing: embargoed shards requeued, our own
-                 throttle, a station table that disagreed with the plan, one
-                 bad trace killing a shard
+    spot reclaim ran, completed nothing, and Spot took the task back. Not
+                 waste: it is the price of the 70% discount, and a reclaimed
+                 worker's part-done shard is checkpointed under progress/
+    spinning     ran, completed nothing, and was NOT reclaimed - the failure
+                 modes we spent two days fixing: embargoed shards requeued,
+                 our own throttle, a station table that disagreed with the
+                 plan, one bad trace killing a shard
+    log expired  the job ran before the log group's retention window, so
+                 whether it completed anything is UNKNOWABLE. Reported as its
+                 own line rather than guessed into one of the above
     dry run      dryrun* prefixes: deliberate tests, not science
     survey       netyear sweeps, which ask EarthScope what we may read
-    other        anything else of ours on the queue
+
+WHY "log expired" EXISTS. Batch cannot tell you whether a SUCCEEDED job
+completed a shard, so this reads the job's log for "Completed ". The log group
+keeps 5 days. An earlier version of this script fell back to the Batch status
+when the log was gone, which counted every Spot-reclaimed job as spinning and
+every old empty job as productive - wrong in both directions, and silently.
+A category we cannot determine is named, not imputed.
 
 WHAT THIS IS NOT. It is derived from Batch start and stop times times a
 published Spot rate, not from a bill: Cost Explorer is blocked on this account
@@ -36,18 +48,58 @@ import sys
 
 REGION = "us-east-2"
 QUEUE = "niyiyu_earthscope_missing_station"
+LOG_GROUP = "/aws/batch/job"
 FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2 published rate
 DESCRIBE_CHUNK = 100
+# CloudWatch deletes on its own schedule, not on the stroke of the retention
+# hour, so the last few hours of the window are unreliable. Treat a job as
+# knowable only if it ran wholly inside the window less this margin.
+RETENTION_MARGIN_H = 6
+
+ORDER = ["productive", "spot reclaim", "spinning", "log expired",
+         "dry run", "survey"]
 
 
-def classify(name, completed):
+def completed_streams(logs, start_ms, end_ms):
+    """Log streams that printed "Completed " - ONE paged query, not one per job.
+
+    Asking per job is 3,572 filter_log_events calls and takes the better part
+    of an hour. Asking the group once and keeping the distinct stream names is
+    72 pages and 158 seconds, and answers the same question.
+    """
+    seen, tok = set(), None
+    while True:
+        kw = dict(logGroupName=LOG_GROUP, startTime=start_ms, endTime=end_ms,
+                  filterPattern='"Completed "', limit=10000)
+        if tok:
+            kw["nextToken"] = tok
+        r = logs.filter_log_events(**kw)
+        for e in r.get("events", []):
+            seen.add(e["logStreamName"])
+        tok = r.get("nextToken")
+        if not tok:
+            return seen
+
+
+def is_reclaim(job):
+    """Did Spot take this task back, as opposed to it failing on its own?"""
+    text = " ".join(str(x) for x in (
+        job.get("statusReason"),
+        (job.get("container") or {}).get("reason"))).lower()
+    return ("spot" in text or "reclaim" in text
+            or "host ec2" in text or "terminated" in text)
+
+
+def classify(name, completed, knowable, job):
     if name.startswith("survey"):
         return "survey"
     if name.startswith("dryrun"):
         return "dry run"
     if completed:
-        return "productive"
-    return "spinning"
+        return "productive"          # a completion is proof regardless of age
+    if not knowable:
+        return "log expired"
+    return "spot reclaim" if is_reclaim(job) else "spinning"
 
 
 def main(argv=None):
@@ -92,6 +144,21 @@ def main(argv=None):
                 break
 
     now = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+
+    # How far back the log group can still answer for.
+    try:
+        grp = logs.describe_log_groups(
+            logGroupNamePrefix=LOG_GROUP)["logGroups"][0]
+        retain_days = grp.get("retentionInDays")
+    except Exception:
+        retain_days = None
+    horizon = (now - (retain_days * 86400 - RETENTION_MARGIN_H * 3600) * 1000
+               if retain_days else 0.0)
+    print(f"reading {LOG_GROUP} (retention "
+          f"{retain_days or 'unlimited'} days)...", file=sys.stderr)
+    done_streams = completed_streams(logs, int(max(horizon, since)), int(now))
+    print(f"{len(done_streams):,} log streams completed at least one shard",
+          file=sys.stderr)
     spend = collections.Counter()
     hours = collections.Counter()
     jobs = collections.Counter()
@@ -107,22 +174,18 @@ def main(argv=None):
             vcpu = int(([x["value"] for x in rr if x["type"] == "VCPU"] or [8])[0])
             vh = vcpu * (stop - start) / 3600000.0
 
-            # "Completed something" is read from the job's own log, because a
+            # "Completed something" comes from the job's own log, because a
             # SUCCEEDED job that completed no shard is exactly the case worth
             # separating - and Batch cannot tell you that.
             name = d["jobName"]
-            completed = False
-            stream = ((d.get("container") or {}).get("logStreamName"))
-            if stream and not name.startswith(("survey", "dryrun")):
-                try:
-                    ev = logs.filter_log_events(
-                        logGroupName="/aws/batch/job", logStreamNames=[stream],
-                        filterPattern='"Completed "', limit=1).get("events", [])
-                    completed = bool(ev)
-                except Exception:
-                    completed = d.get("status") == "SUCCEEDED"
+            stream = (d.get("container") or {}).get("logStreamName")
+            completed = bool(stream) and stream in done_streams
+            # Knowable only if the WHOLE run sits inside the retention window.
+            # A job that straddles the edge has some of its output deleted, so
+            # the absence of a "Completed " line proves nothing about it.
+            knowable = start >= horizon
 
-            kind = classify(name, completed)
+            kind = classify(name, completed, knowable, d)
             spend[kind] += vh * FARGATE_SPOT_RATE
             hours[kind] += vh
             jobs[kind] += 1
@@ -130,7 +193,7 @@ def main(argv=None):
             by_campaign[camp][kind] += vh * FARGATE_SPOT_RATE
 
     total = sum(spend.values())
-    order = ["productive", "spinning", "dry run", "survey", "other"]
+    order = ORDER
     rows = [(k, jobs[k], hours[k], spend[k]) for k in order if jobs[k]]
 
     if a.out:
@@ -178,8 +241,16 @@ def main(argv=None):
               f"{'$' + format(total, ',.2f'):>11}")
         waste = spend["spinning"]
         if waste:
-            print(f"\n  ${waste:,.2f} went to jobs that completed no shard "
-                  f"({100 * waste / total:.0f}% of the total).")
+            print(f"\n  ${waste:,.2f} went to workers that ran, completed no "
+                  f"shard, and were not\n  reclaimed by Spot "
+                  f"({100 * waste / total:.0f}% of the total). That is the "
+                  f"avoidable part.")
+        if spend["log expired"]:
+            print(f"\n  ${spend['log expired']:,.2f} ({100 * spend['log expired'] / total:.0f}%) "
+                  f"is from jobs older than the log group's\n  retention "
+                  f"window. Whether they completed anything cannot be "
+                  f"recovered;\n  it is reported rather than guessed. Raise "
+                  f"retention to shrink this line.")
         print("\n  Derived from Batch start/stop times x "
               f"${FARGATE_SPOT_RATE}/vCPU-h. Cost Explorer is blocked on this "
               "account,\n  so none of this is reconciled against a bill.")
