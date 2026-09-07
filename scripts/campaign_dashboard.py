@@ -578,7 +578,20 @@ def gather(s3, b, campaigns):
                 if s0:
                     end = s1 or now().timestamp() * 1000
                     vcpu_hours += v * (end - s0) / 3_600_000
-    return dict(per_station=per_station, per_day=per_day,
+    # WHAT IT HAS COST, split into work that produced picks and work that did
+    # not. Read from an artefact rather than recomputed: the split needs one
+    # log read per job to tell "exited cleanly" from "completed a shard", which
+    # Batch itself cannot answer, and that scan takes the better part of an
+    # hour. scripts/campaign_spend.py writes it; this page renders whatever is
+    # there and says how old it is. Absent is absent - no placeholder.
+    spend_doc = None
+    try:
+        spend_doc = json.load(s3.get_object(Bucket=BUCKET,
+                                            Key="spend.json")["Body"])
+    except Exception:
+        pass
+
+    return dict(spend_doc=spend_doc, per_station=per_station, per_day=per_day,
                 per_station_month=per_station_month, camps=camp_rows,
                 sampled=sampled, unreadable=unreadable,
                 picks=total_picks, bytes=total_bytes, files=total_files,
@@ -1202,6 +1215,67 @@ def render(g, examples):
         f'<td class="num">${tot_vh * FARGATE_SPOT_RATE * HIT_RATE:,.0f}</td>'
         f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
 
+    # The cost split. "spinning" is the number worth watching: a worker that
+    # ran and completed no shard. On 2026-09-05 a 57-worker fleet spent an hour
+    # re-failing embargoed shards; that hour is in here, and a single total
+    # would hide it.
+    sd = g.get("spend_doc")
+    if not sd:
+        spend_block = ('<p class="cap">No spend breakdown has been written yet. '
+                       '<code>scripts/campaign_spend.py --out '
+                       's3://' + BUCKET + '/spend.json</code> produces it.</p>')
+    else:
+        _tot = sd["total"]["spend"] or 1
+        _blurb = {
+            "productive": "workers that completed at least one shard",
+            "spinning": "workers that ran and completed nothing",
+            "dry run": "deliberate tests of the fleet, not science",
+            "survey": "asking EarthScope what we may read, before launching",
+            "other": "everything else of ours on the queue",
+        }
+        _cr = []
+        for k, v in sd["categories"].items():
+            _cr.append(
+                f'<tr><td>{k}<div class="cap">{_blurb.get(k, "")}</div></td>'
+                f'<td class="num">{v["jobs"]:,}</td>'
+                f'<td class="num">{v["vcpu_hours"]:,.0f}</td>'
+                f'<td class="num">${v["spend"]:,.2f}</td>'
+                f'<td class="num">{100 * v["spend"] / _tot:.1f}%</td></tr>')
+        _cr.append(
+            f'<tr class="tot"><td>total</td>'
+            f'<td class="num">{sd["total"]["jobs"]:,}</td>'
+            f'<td class="num">{sd["total"]["vcpu_hours"]:,.0f}</td>'
+            f'<td class="num">${sd["total"]["spend"]:,.2f}</td>'
+            f'<td class="num"></td></tr>')
+        _camp = "".join(
+            f'<tr><td>{c}</td><td class="num">${sum(d.values()):,.2f}</td>'
+            f'<td class="cap">'
+            + ", ".join(f"{k} ${v:,.2f}" for k, v in
+                        sorted(d.items(), key=lambda kv: -kv[1]))
+            + "</td></tr>"
+            for c, d in sorted(sd.get("by_campaign", {}).items(),
+                               key=lambda kv: -sum(kv[1].values()))
+            if sum(d.values()) >= 0.01)
+        try:
+            _age = (now() - datetime.datetime.fromisoformat(
+                sd["generated"])).total_seconds() / 3600
+            _agetxt = (f"{_age:.0f} h old" if _age >= 1
+                       else f"{_age * 60:.0f} min old")
+        except Exception:
+            _agetxt = "age unknown"
+        spend_block = f"""
+<p class="cap">Every worker that ran, split by whether it finished any shard.
+Derived, not billed: vCPU-hours from Batch start and stop times times
+<code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h. Cost Explorer is blocked on
+this account by an organisation policy, so there is no bill to check it
+against. Written {sd["generated"]}, {_agetxt}.</p>
+<table><thead><tr><th>category</th><th class="num">jobs</th>
+<th class="num">vCPU-h</th><th class="num">spend</th><th class="num">share</th>
+</tr></thead><tbody>{"".join(_cr)}</tbody></table>
+<p class="cap">By campaign:</p>
+<table><thead><tr><th>campaign</th><th class="num">spend</th><th>split</th>
+</tr></thead><tbody>{_camp}</tbody></table>"""
+
     bad_note = ""
     if g.get("unreadable"):
         bits = "; ".join(f"{c} ({e})" for c, e in g["unreadable"])
@@ -1497,6 +1571,9 @@ complete.</p>
 <table><thead><tr><th>campaign</th><th>queue</th><th class="num">done</th>
 <th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
 <tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
+
+<h2>What it has cost</h2>
+{spend_block}
 
 <h2>Where the catalogue lives</h2>
 <p class="cap"><strong>Public-read, no account needed.</strong> The picks are
