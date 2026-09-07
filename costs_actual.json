@@ -1,0 +1,23 @@
+{
+  "_comment": "ACTUAL cost, as billed. Everything the dashboard computes itself is an ESTIMATE: vCPU-hours from Batch job start and stop times times the published Fargate Spot list rate. This file is where a real, billed figure goes, and it is edited by a person because no automation on this account can fetch one.",
+
+  "_why_a_file_and_not_an_api": "This AWS account (073795725844) is denied every cost API by an explicit Deny in service control policy p-q1ngvul9 on organisation o-z3xgjt2s3d - Cost Explorer, Budgets, Cost and Usage Reports and the Free Tier API alike. The organisation's management account is 897729121516 (aws-master+ucsd3@strategic-blue.com): this is a CloudBank-funded account billed through Strategic Blue. The denial is deliberate, not a misconfiguration to work around - CloudBank bills at its own negotiated rate, so AWS-side figures would not be what the grant is charged anyway.",
+
+  "_where_to_get_the_number": [
+    "The CloudBank portal (https://www.cloudbank.org) - sign in and open the account's spend report.",
+    "The monthly CloudBank/Strategic Blue invoice email.",
+    "Ask the UW research computing contact who administers the CloudBank allocation."
+  ],
+
+  "_how_to_record_one": "Add an entry to `entries` with the billing period, the amount in USD, and where it came from. The dashboard reads this file on every rebuild: as soon as an entry has a non-null amount it shows the recorded actual alongside the estimate. Leave `amount` null for a period whose invoice has not arrived - a null is not rendered.",
+
+  "currency": "USD",
+  "entries": [
+    {
+      "period": "2026-09",
+      "amount": null,
+      "source": null,
+      "note": "QuakeScope 2026 re-run. Invoice not yet received. Estimate for the campaign to date is in s3://quakescope-picks-2026/spend.json."
+    }
+  ]
+}

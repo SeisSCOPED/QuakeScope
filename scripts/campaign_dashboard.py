@@ -15,9 +15,12 @@ MEASURED (counted from an API response):
   vCPU-hours consumed           Batch startedAt/stoppedAt x job vCPU
 
 DERIVED (stated as such on the page, with the rate shown):
-  spend = vCPU-hours x FARGATE_SPOT_RATE. Cost Explorer is blocked on this
-  account by an organisation SCP, so no billed figure is available to check it
-  against; it is an estimate and the page says so.
+  spend = vCPU-hours x FARGATE_SPOT_RATE. Every AWS cost API - Cost Explorer,
+  Budgets, Cost and Usage Reports, Free Tier - is denied on this account by an
+  explicit Deny in service control policy p-q1ngvul9 on organisation
+  o-z3xgjt2s3d, whose management account is CloudBank via Strategic Blue. So no
+  billed figure is available from AWS at all; it is an estimate, the page says
+  so in the heading, and a real invoiced figure goes in costs_actual.json.
 
 Nothing else is inferred. A quantity that cannot be read is omitted rather than
 filled in.
@@ -1219,6 +1222,25 @@ def render(g, examples):
     # ran and completed no shard. On 2026-09-05 a 57-worker fleet spent an hour
     # re-failing embargoed shards; that hour is in here, and a single total
     # would hide it.
+    # ACTUAL cost, if a human has recorded one. This account is denied every
+    # AWS cost API by SCP, so an actual figure can only come from outside AWS -
+    # the CloudBank portal or its invoices - and only a person can fetch it.
+    # A committed file is the right shape for that: it carries provenance, it
+    # is reviewable, and it cannot be mistaken for something measured here.
+    try:
+        _act = _json.load(open("costs_actual.json"))
+        _act = [e for e in _act.get("entries", []) if e.get("amount") is not None]
+    except Exception:
+        _act = []
+    if _act:
+        _sum = sum(e["amount"] for e in _act)
+        _per = ", ".join(f'{e["period"]} ${e["amount"]:,.2f}' for e in _act)
+        _actual_line = (f'<strong>Recorded actual: ${_sum:,.2f}</strong> '
+                        f'({_per}), from <code>costs_actual.json</code>.')
+    else:
+        _actual_line = ('No actual figure has been recorded yet; see '
+                        '<code>costs_actual.json</code> for where it goes.')
+
     sd = g.get("spend_doc")
     if not sd:
         spend_block = ('<p class="cap">No spend breakdown has been written yet. '
@@ -1264,11 +1286,22 @@ def render(g, examples):
         except Exception:
             _agetxt = "age unknown"
         spend_block = f"""
+<p class="warn"><strong>Every figure in this section is an estimate, not a
+bill.</strong> It is vCPU-hours, counted from Batch job start and stop times,
+multiplied by the published Fargate Spot list rate of
+<code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h. Nothing here has been
+reconciled against what was actually charged, and the real figure can differ
+in both directions: the list rate ignores the discount this account bills at,
+and vCPU-hours ignore storage, data transfer and requests entirely.</p>
+<p class="cap">This account cannot read its own cost data. Cost Explorer,
+Budgets, Cost and Usage Reports and the Free Tier API are all denied by an
+explicit <code>Deny</code> in service control policy
+<code>p-q1ngvul9</code> on organisation <code>o-z3xgjt2s3d</code>, whose
+management account is CloudBank via Strategic Blue. That is by design for a
+CloudBank-funded account: the authoritative cost lives in the CloudBank
+portal and its invoices, not in AWS. {_actual_line}</p>
 <p class="cap">Every worker that ran, split by whether it finished any shard.
-Derived, not billed: vCPU-hours from Batch start and stop times times
-<code>${sd["rate_per_vcpu_hour"]}</code>/vCPU-h. Cost Explorer is blocked on
-this account by an organisation policy, so there is no bill to check it
-against. Written {sd["generated"]}, {_agetxt}.</p>
+Written {sd["generated"]}, {_agetxt}.</p>
 <table><thead><tr><th>category</th><th class="num">jobs</th>
 <th class="num">vCPU-h</th><th class="num">spend</th><th class="num">share</th>
 </tr></thead><tbody>{"".join(_cr)}</tbody></table>
@@ -1334,11 +1367,13 @@ against. Written {sd["generated"]}, {_agetxt}.</p>
 --text-primary:#0b0b0b;--text-secondary:#52514e;--muted:#78766f;
 --series-1:#2a78d6;--grid:#e5e3de;--good:#0ca30c;--warning:#fab219;
 --sea:#f0f4f8;--coast:#9aa5ae;--border-line:#c3cad1;
+--warn-bg:#fdf6e3;--warn-line:#e0b34a;--warn-ink:#7a5410;
 --wave:#6b6a65;--phase-p:#2a78d6;--phase-s:#eb6834}}
 @media(prefers-color-scheme:dark){{:root:where(:not([data-theme=light])){{
 color-scheme:dark;--surface-1:#1a1a19;--surface-2:#232322;--text-primary:#fff;
 --text-secondary:#c3c2b7;--muted:#96948b;--series-1:#3987e5;--grid:#343431;
 --sea:#20242a;--coast:#5d6771;--border-line:#454e57;
+--warn-bg:#2c2718;--warn-line:#8a6d24;--warn-ink:#e8c775;
 --wave:#9d9b92;--phase-p:#3987e5;--phase-s:#d95926}}}}
 *{{box-sizing:border-box}}
 body{{margin:0;background:var(--surface-1);color:var(--text-primary);
@@ -1348,6 +1383,15 @@ h1{{font-size:21px;margin:0 0 2px}}
 .sub{{color:var(--text-secondary);margin:0 0 26px;font-size:13px}}
 h2{{font-size:15px;margin:34px 0 4px}}
 .cap{{color:var(--text-secondary);font-size:12.5px;margin:0 0 12px}}
+/* A figure that is derived must not be readable as a figure that was billed.
+   The badge rides in the heading so it cannot be scrolled away from the
+   number it qualifies. */
+.est{{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+color:var(--warn-ink);background:var(--warn-bg);border:1px solid var(--warn-line);
+border-radius:5px;padding:2px 7px;margin-left:8px;vertical-align:2px}}
+.warn{{background:var(--warn-bg);border-left:3px solid var(--warn-line);
+border-radius:0 8px 8px 0;padding:11px 14px;margin:0 0 12px;
+font-size:12.5px;color:var(--text-primary)}}
 .tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}}
 .opsnote{{background:var(--surface-2);border-radius:11px;padding:15px 18px;
 margin:16px 0 4px;border-left:3px solid var(--series-1)}}
@@ -1355,7 +1399,7 @@ margin:16px 0 4px;border-left:3px solid var(--series-1)}}
 .opsnote p{{margin:0 0 9px;font-size:13.5px;line-height:1.55;
 color:var(--text-secondary);max-width:78ch}}
 .opsnote p:last-child{{margin-bottom:0}}
-.opsnote b{{color:var(--text)}}
+.opsnote b{{color:var(--text-primary)}}
 .opsnote .needs{{margin-top:10px;padding:9px 11px;border-radius:7px;
 background:var(--surface);border-left:3px solid var(--series-2)}}
 .tile{{background:var(--surface-2);border-radius:9px;padding:13px 14px}}
@@ -1572,7 +1616,7 @@ complete.</p>
 <th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
 <tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
 
-<h2>What it has cost</h2>
+<h2>What it has cost <span class="est">estimated</span></h2>
 {spend_block}
 
 <h2>Where the catalogue lives</h2>
@@ -1645,8 +1689,11 @@ durably accounted for.
 Every figure above except spend is counted from an S3 or Batch API response.
 <strong>Spend is derived</strong>: vCPU-hours from Batch job start and stop times,
 multiplied by <code>${FARGATE_SPOT_RATE}</code> per vCPU-hour. It is not a billed
-figure — Cost Explorer is blocked on this account by an organisation policy, so
-nothing here has been checked against AWS billing.
+figure — Cost Explorer, Budgets and Cost and Usage Reports are all denied on this
+account by an explicit <code>Deny</code> in service control policy
+<code>p-q1ngvul9</code>, this being a CloudBank-funded account billed through
+Strategic Blue. The authoritative cost is CloudBank's, not AWS's, and it is
+recorded by hand in <code>costs_actual.json</code> when an invoice arrives.
 Data volume <em>ingested</em> from the archives is not shown because it is not
 measured anywhere; the catalogue size above is what was written, not what was read.
 </footer>
