@@ -74,6 +74,69 @@ def rss_mb() -> float:
         return 0.0
 
 
+def peak_rss_mb() -> float:
+    """The HIGH-WATER mark, which is the number that gets a container killed.
+
+    rss_mb() above is sampled right after reclaim_memory(), so it reports the
+    floor. That made the 2026-09-03 kills invisible: the last reclaim before an
+    obs worker died logged 775 MB against a 16,384 MB limit, and the four
+    worker processes summed to 3.8 GB - a quarter of the container. Individual
+    reclaims in that same run gave back 1.9 GB, so what the OOM killer saw was
+    a multiple of what we were writing down. A floor cannot warn you about a
+    ceiling.
+
+    VmHWM is the kernel's own high-water mark, free to read. Returns 0.0 where
+    /proc is not available.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, IndexError, ValueError):
+        pass
+    return 0.0
+
+
+def reset_peak_rss() -> None:
+    """Start a fresh high-water measurement.
+
+    Without this VmHWM is peak-since-process-start, which after the first big
+    shard is a constant and says nothing about the shard in front of you.
+    Writing 5 to clear_refs resets it, so each shard reports its OWN peak.
+    Silently does nothing where the kernel does not support it - the peak then
+    reads as a running maximum, which is still better than the floor.
+    """
+    try:
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
+    except OSError:
+        pass
+
+
+def memory_limit_mb() -> float:
+    """What the container is actually allowed, read from the cgroup.
+
+    Reported next to the peak because a peak without its limit is not a
+    headroom. cgroup v2 first, then v1; 0.0 if neither answers.
+    """
+    for path in ("/sys/fs/cgroup/memory.max",
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = open(path).read().strip()
+        except OSError:
+            continue
+        if raw and raw != "max":
+            try:
+                v = int(raw) / 1024**2
+            except ValueError:
+                continue
+            # v1 reports a sentinel near 2^63 when unlimited.
+            if 0 < v < 1024**3:
+                return v
+    return 0.0
+
+
 def reclaim_memory() -> None:
     """Give freed memory back to the OS between shards.
 
@@ -377,6 +440,7 @@ def loop(args, proc_index: int = 0) -> None:
         order = order[off:] + order[:off]
 
     n_done = n_failed = n_blocked = n_review = 0
+    t_start = time.time()
     try:
         for idx in order:
             shard = shards[idx]
@@ -450,11 +514,30 @@ def loop(args, proc_index: int = 0) -> None:
             n_done += 1
             # Between shards is the one moment nothing large is live.
             before = rss_mb()
+            peak = peak_rss_mb()
             reclaim_memory()
             after = rss_mb()
+            limit = memory_limit_mb()
+            # PEAK, not floor. This process's share of the limit is what it can
+            # be killed for, and with --procs N the peaks can coincide.
+            head = (f", peak {peak:.0f} MB of {limit:.0f} "
+                    f"({100 * peak / limit:.0f}%)" if peak and limit
+                    else (f", peak {peak:.0f} MB" if peak else ""))
             logger.info(f"Completed {sid} in {manifest['seconds']}s "
                         f"({manifest['picks_record']} station-day-channels) "
-                        f"| RSS {after:.0f} MB (freed {before - after:.0f})")
+                        f"| RSS {after:.0f} MB (freed {before - after:.0f})"
+                        f"{head}")
+            # Warn while there is still headroom to act on. procs share the
+            # container, so one process past a quarter of it is already close
+            # when four of them peak together - which is how 2026-09-03 died.
+            if peak and limit and peak > 0.25 * limit:
+                logger.warning(
+                    f"Memory headroom is thin: this process peaked at "
+                    f"{peak:.0f} MB, {100 * peak / limit:.0f}% of the "
+                    f"container's {limit:.0f} MB, and it shares that with the "
+                    f"other --procs workers. 126 jobs were OOM-killed on "
+                    f"2026-09-03 with the floor still reading under 1 GB.")
+            reset_peak_rss()      # so the next shard reports its own peak
             if args.profile:
                 # Printed per shard, not per campaign: the stage mix depends on
                 # pick count, which varies fourfold between an ordinary day and
@@ -464,6 +547,20 @@ def loop(args, proc_index: int = 0) -> None:
             if args.max_shards and n_done >= args.max_shards:
                 logger.info(f"Reached --max-shards {args.max_shards}")
                 break
+            # AGE, not size. Nothing here is too big for the container; the
+            # floor under it rises. Both mitigations already shipped - reclaim
+            # between shards and MALLOC_ARENA_MAX in the image - were present
+            # in the builds that died, so this bounds exposure rather than
+            # claiming a cure: leave before the ratchet reaches the ceiling.
+            if args.max_hours:
+                ran = (time.time() - t_start) / 3600.0
+                if ran >= args.max_hours:
+                    logger.info(
+                        f"Reached --max-hours {args.max_hours:g} after "
+                        f"{ran:.2f} h and {n_done} shards. Exiting cleanly so "
+                        f"a fresh process takes the next shard; the queue is "
+                        f"durable and nothing is lost.")
+                    break
     except Preempted:
         if holding["shard"]:
             logger.warning(
@@ -544,6 +641,16 @@ def main(argv=None):
                     help="A claim older than this with no manifest is reclaimable. "
                          "Set above the longest expected shard runtime.")
     ap.add_argument("--max-shards", default=0, type=int, help="Stop after N (0 = drain)")
+    ap.add_argument("--max-hours", default=0.0, type=float,
+                    help="Finish the current shard and exit cleanly after this "
+                         "many hours (0 = no bound). RSS ratchets upward across "
+                         "shards, so a long-lived worker is the one that gets "
+                         "OOM-killed: 21%% of jobs that ran past 8 hours died "
+                         "that way on 2026-09-03, against none that finished "
+                         "sooner. Exiting first costs one resubmit - the queue "
+                         "is durable and the scheduled top-up replaces the "
+                         "worker within 15 minutes - and it turns a kill that "
+                         "loses the shard into a handover that does not.")
     ap.add_argument("--max-failures", default=0, type=int, help="Stop after N failures")
     ap.add_argument("--flush-threshold", default=250_000, type=int,
                     help="Rows buffered per (network, year, month) partition "
