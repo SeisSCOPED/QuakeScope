@@ -317,9 +317,30 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         )
     db = S3StateAdapter(state, stations, done=done)
 
+    n_ckpt = [0]
+
     def _checkpoint(records: list[dict]) -> None:
         # Called only after the Parquet flush covering these records returned.
         state.write_progress(shard["shard_id"], records)
+        # MEMORY, MEASURED INSIDE THE SHARD. The between-shards reading cannot
+        # see these deaths: the 2026-09-03 OOM jobs had completed a median of
+        # 54 shards and then spent a median 4.68 h - against ~11 min for a
+        # typical shard - inside the one that killed them. Whatever goes wrong
+        # goes wrong within a shard, so this is the only place a reading can
+        # catch it while there is still headroom to act on.
+        n_ckpt[0] += 1
+        peak, limit = peak_rss_mb(), memory_limit_mb()
+        if peak and limit and peak > 0.25 * limit:
+            logger.warning(
+                f"{shard['shard_id']} checkpoint {n_ckpt[0]}: this process has "
+                f"peaked at {peak:.0f} MB, {100 * peak / limit:.0f}% of the "
+                f"container's {limit:.0f} MB, and shares it with the other "
+                f"--procs workers. Progress is written, so a kill here loses "
+                f"only what follows this line.")
+        elif peak and limit:
+            logger.info(f"{shard['shard_id']} checkpoint {n_ckpt[0]}: peak "
+                        f"{peak:.0f} MB of {limit:.0f} "
+                        f"({100 * peak / limit:.0f}%)")
     # S3DataSource wants dates, not the "%Y.%j" strings the queue carries, and
     # treats `end` as exclusive - the planner writes it that way.
     s3 = S3DataSource(
@@ -643,14 +664,18 @@ def main(argv=None):
     ap.add_argument("--max-shards", default=0, type=int, help="Stop after N (0 = drain)")
     ap.add_argument("--max-hours", default=0.0, type=float,
                     help="Finish the current shard and exit cleanly after this "
-                         "many hours (0 = no bound). RSS ratchets upward across "
-                         "shards, so a long-lived worker is the one that gets "
-                         "OOM-killed: 21%% of jobs that ran past 8 hours died "
-                         "that way on 2026-09-03, against none that finished "
-                         "sooner. Exiting first costs one resubmit - the queue "
-                         "is durable and the scheduled top-up replaces the "
-                         "worker within 15 minutes - and it turns a kill that "
-                         "loses the shard into a handover that does not.")
+                         "many hours (0 = no bound). 21%% of jobs that ran "
+                         "past 8 hours were OOM-killed on 2026-09-03 against "
+                         "none that finished sooner, and exiting first costs "
+                         "one resubmit: the queue is durable and the top-up "
+                         "replaces the worker within 15 minutes.\n\n"
+                         "CHECKED BETWEEN SHARDS ONLY, so it bounds a "
+                         "worker's LIFETIME and not a single shard. It would "
+                         "not have saved the 2026-09-03 jobs: they died a "
+                         "median 4.68 h into one shard, having completed a "
+                         "median 54 before it. Use it to cap exposure, not as "
+                         "a guard against the shard in front of you - the "
+                         "checkpoint memory line is what watches that.")
     ap.add_argument("--max-failures", default=0, type=int, help="Stop after N failures")
     ap.add_argument("--flush-threshold", default=250_000, type=int,
                     help="Rows buffered per (network, year, month) partition "
