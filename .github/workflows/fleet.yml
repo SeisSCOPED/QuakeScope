@@ -564,6 +564,14 @@ jobs:
                   "--procs", str(c["procs"]), "--threads", str(c["threads"]),
                   "--target", str(c["target"]),
                   "--name-prefix", name,
+                  # Per-campaign, from fleet.json, and absent unless set there.
+                  # max_hours especially: the worker parses it inside the
+                  # image, so setting it before the image accepts the flag
+                  # would argparse-exit every worker at once.
+                  *(["--max-hours", str(c["max_hours"])]
+                    if c.get("max_hours") else []),
+                  *(["--checkpoint-every", str(c["checkpoint_every"])]
+                    if c.get("checkpoint_every") else []),
                   "--max-submissions", str(c["target"]),   # per run, not per life
                   "--once",
               ])

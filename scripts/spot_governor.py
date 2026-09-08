@@ -121,9 +121,17 @@ def reclaim_rate(batch, queue: str, hours: float = 6.0) -> tuple[int, int]:
 
 def submit(batch, args, n: int) -> list[str]:
     cmd = ["work", "--campaign", args.campaign, "--weight", args.weight,
-           "--procs", str(args.procs), "--checkpoint-every", "40",
+           "--procs", str(args.procs),
+           "--checkpoint-every", str(args.checkpoint_every),
            "--flush-threshold", "250000",
            "--lease-hours", str(args.lease_hours)]
+    # OPT-IN, and omitted entirely at 0. The worker parses this command inside
+    # the image, so passing a flag an older image does not know makes argparse
+    # exit(2) on every worker at once - a fleet-wide kill from a one-word
+    # change. Leaving it out unless asked means the default is always safe
+    # against whatever is deployed.
+    if args.max_hours:
+        cmd += ["--max-hours", str(args.max_hours)]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")]
@@ -152,6 +160,15 @@ def main(argv=None) -> int:
     ap.add_argument("--procs", type=int, default=4)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--lease-hours", type=float, default=1.0)
+    ap.add_argument("--checkpoint-every", type=int, default=40,
+                    help="Station-days between mid-shard checkpoints. Lower "
+                         "loses less when a worker is killed, at the cost of "
+                         "more S3 writes.")
+    ap.add_argument("--max-hours", type=float, default=0.0,
+                    help="Passed to the worker so it finishes its shard and "
+                         "exits after this long (0 = do not pass it at all). "
+                         "Only set this once the deployed image accepts the "
+                         "flag - see submit().")
     ap.add_argument("--poll-seconds", type=int, default=180)
     ap.add_argument("--max-submissions", type=int, default=500,
                     help="hard cap over this governor's lifetime")

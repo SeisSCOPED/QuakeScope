@@ -113,3 +113,47 @@ def test_max_hours_is_a_real_option_with_a_safe_default():
     guard = src[src.index("if args.max_hours:"):]
     assert "break" in guard.split("\n\n")[0]
     assert "Exiting cleanly" in guard[:900]
+
+
+def test_max_hours_is_never_passed_unless_asked():
+    """A flag an older image does not know kills the whole fleet at once.
+
+    The worker parses this command inside the container. argparse exits 2 on an
+    unrecognised flag, so adding --max-hours to the governor's command before
+    the deployed image accepts it would take down every worker the next top-up
+    submitted - a fleet-wide outage from a one-word change. It must be absent
+    from the command line entirely at the default, not passed as 0.
+    """
+    import argparse
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "scripts"))
+    import spot_governor
+
+    def cmd_for(**kw):
+        a = argparse.Namespace(campaign="s3://b/c", weight="w", procs=4,
+                               checkpoint_every=40, lease_hours=1.0,
+                               max_hours=0.0, threads=2, queue="q",
+                               job_definition="jd", name_prefix="p")
+        for k, v in kw.items():
+            setattr(a, k, v)
+        seen = {}
+
+        class FakeBatch:
+            def submit_job(self, **kwargs):
+                seen.update(kwargs)
+                return {"jobId": "x"}
+        spot_governor.submit(FakeBatch(), a, 1)
+        return seen["containerOverrides"]["command"]
+
+    assert "--max-hours" not in cmd_for()
+    assert "--max-hours" not in cmd_for(max_hours=0)
+    on = cmd_for(max_hours=6)
+    assert "--max-hours" in on and on[on.index("--max-hours") + 1] == "6"
+
+    # checkpoint-every is always passed, and follows the argument rather than
+    # the hardcoded 40 it used to be.
+    c = cmd_for(checkpoint_every=20)
+    assert c[c.index("--checkpoint-every") + 1] == "20"
