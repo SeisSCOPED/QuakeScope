@@ -188,6 +188,44 @@ jobs:
                     "remove the tag from QUARANTINE to get past this.")
               sys.exit(1)
 
+          # A FLAG THE IMAGE DOES NOT KNOW IS A FLEET-WIDE KILL. The worker
+          # parses the governor's command inside the container and argparse
+          # exits 2 on an unrecognised option, so a campaign carrying
+          # max_hours whose job definition still points at an older build
+          # would take down every worker the next top-up submitted - all at
+          # once, and looking exactly like a crash loop.
+          #
+          # Checked against the image the job definition ACTUALLY names, live,
+          # for the same reason the quarantine is: fleet.json describing what
+          # should run is not evidence of what would.
+          import urllib.request
+          bad = []
+          for name, c in d.items():
+              if not c.get("max_hours"):
+                  continue
+              jd = c["job_definition"]
+              jdef = b.describe_job_definitions(
+                  jobDefinitions=[jd])["jobDefinitions"][0]
+              tag = jdef["containerProperties"]["image"].rsplit(":", 1)[-1]
+              try:
+                  url = ("https://raw.githubusercontent.com/"
+                         f"{os.environ.get('GITHUB_REPOSITORY', '')}/{tag}"
+                         "/sb_catalog/src/worker.py")
+                  body = urllib.request.urlopen(url, timeout=20).read().decode()
+              except Exception as exc:
+                  print(f"::warning::could not read worker.py at {tag} "
+                        f"({exc}); not acting on it")
+                  continue
+              if '"--max-hours"' not in body:
+                  bad.append((name, jd, tag))
+          for name, jd, tag in bad:
+              print(f"::error::{name} sets max_hours but {jd} runs image {tag}, "
+                    f"which does not accept --max-hours. Every worker would "
+                    f"exit 2 immediately. Point it at a build that has the "
+                    f"flag, or drop max_hours from fleet.json.")
+          if bad:
+              sys.exit(1)
+
           print("::notice::no quarantined image would run")
           PY
 
