@@ -40,12 +40,15 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 
 import boto3
 
 REGION = "us-east-2"
 REGISTRY_IMAGE = "ghcr.io/seisscoped/quakescope"
+# Seconds. A registry that does not answer must fail the run, not hang it.
+HTTP_TIMEOUT = 30
 FLEET = os.path.join(os.path.dirname(__file__), "..", "fleet.json")
 
 # Read-only keys describe_job_definitions returns that register_job_definition
@@ -63,7 +66,8 @@ def ghcr_status(tag: str) -> int:
     """HTTP status of the manifest for REGISTRY_IMAGE:tag - 200 if it exists."""
     repo = REGISTRY_IMAGE.split("/", 1)[1]
     with urllib.request.urlopen(
-            f"https://ghcr.io/token?scope=repository:{repo}:pull") as r:
+            f"https://ghcr.io/token?scope=repository:{repo}:pull",
+            timeout=HTTP_TIMEOUT) as r:
         token = json.load(r)["token"]
     req = urllib.request.Request(
         f"https://ghcr.io/v2/{repo}/manifests/{tag}", method="HEAD",
@@ -74,7 +78,7 @@ def ghcr_status(tag: str) -> int:
                      "application/vnd.docker.distribution.manifest.v2+json",
                      "application/vnd.oci.image.manifest.v1+json"])})
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -89,6 +93,13 @@ def latest(batch, family: str) -> dict:
 
 
 def clone(d: dict, image: str) -> dict:
+    if "containerProperties" not in d:
+        # Every campaign definition is type "container"; a multi-node or EKS
+        # definition keeps its image elsewhere (nodeProperties, eksProperties)
+        # and this script does not know how to repoint one.
+        sys.exit(f"{d.get('jobDefinitionName')}:{d.get('revision')} has no "
+                 f"containerProperties (type {d.get('type')!r}); this script "
+                 f"only repoints container job definitions")
     body = {k: d[k] for k in PASS_THROUGH if k in d}
     body["containerProperties"] = dict(body["containerProperties"], image=image)
     return body
