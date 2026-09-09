@@ -237,3 +237,11 @@ def test_day_boundaries_are_integer_milliseconds():
     _, _, per_day, _, _ = job_usage(j, now=2 * day + 0.4)
     assert set(per_day) == {"1970-01-01", "1970-01-02"}
     assert abs(sum(per_day.values()) - 8 * (H + 1) / H) < 1e-9
+
+
+def test_a_zero_stop_is_a_stop_not_a_running_attempt():
+    # stoppedAt of 0 is a value. Read by truthiness it becomes "still
+    # running" and the attempt is billed up to now.
+    j = _job([(0, 0)])
+    vh, _, _, _, _ = job_usage(j, now=10 * H)
+    assert vh == 0

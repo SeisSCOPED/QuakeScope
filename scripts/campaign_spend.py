@@ -132,11 +132,17 @@ def job_usage(d, now):
     vcpu = int(([x["value"] for x in rr if x["type"] == "VCPU"] or [8])[0])
     mem = int(([x["value"] for x in rr if x["type"] == "MEMORY"]
                or [16384])[0]) / 1024.0
-    spans = [(a["startedAt"], a.get("stoppedAt") or now)
+    # `is not None`, not truthiness, on both ends: a timestamp of 0 is a
+    # value, and reading it as "still running" would bill the attempt up to
+    # now.
+    def _stop(rec):
+        return now if rec.get("stoppedAt") is None else rec["stoppedAt"]
+
+    spans = [(a["startedAt"], _stop(a))
              for a in d.get("attempts") or [] if a.get("startedAt") is not None]
     if not spans and d.get("startedAt") is not None:
         # Running, first attempt not yet on the record.
-        spans = [(d["startedAt"], d.get("stoppedAt") or now)]
+        spans = [(d["startedAt"], _stop(d))]
     streams = {(a.get("container") or {}).get("logStreamName")
                for a in d.get("attempts") or []}
     streams.add((d.get("container") or {}).get("logStreamName"))
