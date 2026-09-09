@@ -158,3 +158,71 @@ def test_the_cost_prose_follows_the_artefact():
     # split measured, and the heading must not imply it does.
     for h in (on, off):
         assert "estimated" in h
+
+
+# ---------------------------------------------------------------------------
+# Attempts, not jobs.
+#
+# Batch overwrites a job's startedAt/stoppedAt on every retry, so a job that
+# Spot reclaimed three times reports the span of its fourth attempt and nothing
+# else. global-477782054: four attempts, 17.16 h run, job-level span 1.04 h.
+# Summing job spans undercounted the three calibration days by 1.47x (74,030
+# against 108,664 vCPU-h) and inflated the derived rate by the same factor -
+# $0.0313 instead of $0.0213 - and that figure was published as "calibrated".
+
+from campaign_spend import job_usage  # noqa: E402
+
+H = 3600000  # ms
+
+
+def _job(attempts, job_span=None, vcpu=8, mem=16384):
+    d = {"jobName": "global-1", "attempts": [], "container": {
+        "resourceRequirements": [{"type": "VCPU", "value": str(vcpu)},
+                                 {"type": "MEMORY", "value": str(mem)}],
+        "logStreamName": "last"}}
+    for i, (start, stop) in enumerate(attempts):
+        d["attempts"].append({"startedAt": start, "stoppedAt": stop,
+                              "container": {"logStreamName": f"att{i}"}})
+    if job_span:
+        d["startedAt"], d["stoppedAt"] = job_span
+    return d
+
+
+def test_every_attempt_is_counted_not_the_last_one():
+    # Three attempts of 5 h; the job record shows only the third.
+    j = _job([(0, 5 * H), (6 * H, 11 * H), (12 * H, 17 * H)], job_span=(12 * H, 17 * H))
+    vh, gh, per_day, streams, first = job_usage(j, now=20 * H)
+    assert vh == 8 * 15, "15 hours ran and were billed; the job span says 5"
+    assert gh == 16 * 15
+    assert first == 0, "the run began with the first attempt, not the last"
+
+
+def test_the_day_split_follows_attempts():
+    # One attempt on day 0 and one on day 1: neither may land on the other's
+    # day, because the calibration compares each day to its invoice line.
+    day = 24 * H
+    j = _job([(2 * H, 4 * H), (day + 2 * H, day + 4 * H)])
+    _, _, per_day, _, _ = job_usage(j, now=2 * day)
+    assert len(per_day) == 2 and all(abs(v - 16) < 1e-9 for v in per_day.values())
+
+
+def test_an_earlier_attempt_that_completed_makes_the_job_productive():
+    # Only the last attempt's stream is on the job record; the completion was
+    # in the first. classify() must be able to see it.
+    j = _job([(0, 5 * H), (6 * H, 7 * H)])
+    _, _, _, streams, _ = job_usage(j, now=8 * H)
+    assert {"att0", "att1", "last"} <= streams
+    from campaign_spend import classify
+    assert classify("global-1", bool(streams & {"att0"}), True, j) == "productive"
+
+
+def test_a_running_job_with_no_attempt_record_still_counts():
+    d = {"jobName": "western-1", "startedAt": 0, "container": {
+        "resourceRequirements": [{"type": "VCPU", "value": "8"}]}}
+    vh, _, _, _, first = job_usage(d, now=2 * H)
+    assert vh == 16 and first == 0
+
+
+def test_a_job_that_never_ran_consumed_nothing():
+    vh, gh, per_day, streams, first = job_usage({"jobName": "x"}, now=H)
+    assert vh == 0 and gh == 0 and not per_day and first is None

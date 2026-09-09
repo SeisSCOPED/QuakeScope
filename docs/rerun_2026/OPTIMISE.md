@@ -29,7 +29,9 @@ processes hold half the Parquet write buffers of eight — the memory ceiling
 flagged in [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) §4. Same
 throughput, less risk.
 
-Campaign estimate moves **~$16,400 to ~$11,000**.
+Campaign estimate moves **~$16,400 to ~$11,000**. (2026-09-09: re-priced at the
+billed $0.0213/vCPU-h and with western measured, the campaign is about
+$15,500; see the top of [24_cost_model.md](24_cost_model.md).)
 
 Safe to use as of 2026-09-01: the preemption bug that made `--procs > 1`
 dangerous is fixed and verified — item 0c.
@@ -1392,7 +1394,10 @@ instead, where the token already is. The Open Data rate is not a substitute —
 those eight networks are the permanent ones, which is why they sit at ~82%.
 
 Campaign total: **~$10,800 at a 35% restricted rate, ~$16,700 if restricted
-behaves like Open Data, ~$19,700 at 85%.**
+behaves like Open Data, ~$19,700 at 85%.** (2026-09-09: at the billed rate and
+with hit rates measured on 36% of global's station-days, global is $9,800 to
+$14,100 and the campaign about $15,500; the number that now moves it most is
+NP, a quarter of global and unmeasured. See [24_cost_model.md](24_cost_model.md).)
 
 The original statement of the item, kept because the reasoning below is what the
 survey was built to test:
