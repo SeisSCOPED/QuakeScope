@@ -3,9 +3,11 @@
 # For GPU: replace torch with torch on CUDA 11.8 channel
 
 # Core ML/Deep Learning
-torch==2.1.0
-torchvision==0.16.0
-torchaudio==2.1.0
+# 2.1.0 carried eleven open advisories, one of them CVE-2025-32434 (code
+# execution from a crafted checkpoint even with weights_only=True, fixed in
+# 2.6.0). Nothing in the tutorials imports torchvision or torchaudio, and
+# seisbench needs torch alone, so they are not pinned here any more.
+torch==2.14.0
 
 # Seismic and Scientific Computing
 obspy>=1.4.0
