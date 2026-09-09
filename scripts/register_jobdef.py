@@ -85,8 +85,17 @@ def ghcr_status(tag: str) -> int:
 
 
 def latest(batch, family: str) -> dict:
-    revs = batch.describe_job_definitions(
-        jobDefinitionName=family, status="ACTIVE")["jobDefinitions"]
+    """The highest ACTIVE revision of a family, read across every page.
+
+    describe_job_definitions pages at 100. A family with more ACTIVE revisions
+    than that would have its newest ones on a later page, and taking the max
+    of the first page alone would clone a stale revision as if it were
+    current - the drift this script exists to prevent.
+    """
+    revs = []
+    for page in batch.get_paginator("describe_job_definitions").paginate(
+            jobDefinitionName=family, status="ACTIVE"):
+        revs += page["jobDefinitions"]
     if not revs:
         sys.exit(f"no ACTIVE revision of {family}")
     return max(revs, key=lambda d: d["revision"])
