@@ -1205,7 +1205,11 @@ def render(g, examples):
         if not sd:
             continue
         vh = sd * VCPU_H_PER_STATION_DAY
-        cost = vh * FARGATE_SPOT_RATE
+        # _rate is the invoice-derived rate when spend.json carries one, else
+        # the list constant - the same resolution the headline tile uses.
+        # This table multiplied by the constant for two days after the tile
+        # was fixed, so it quoted the plan 1.4x low against the spend beside it.
+        cost = vh * _rate
         cost_exp = cost * HIT_RATE          # what we actually expect to pay
         hours = vh / QUOTA_VCPU
         blocked = BLOCKED.get(c["name"])
@@ -1227,8 +1231,8 @@ def render(g, examples):
     plan_total = (
         f'<tr class="tot"><td>runnable total</td><td class="num">{tot_sd:,}</td>'
         f'<td class="num"></td><td class="num">{tot_vh:,.0f}</td>'
-        f'<td class="num">${tot_vh * FARGATE_SPOT_RATE:,.0f}</td>'
-        f'<td class="num">${tot_vh * FARGATE_SPOT_RATE * HIT_RATE:,.0f}</td>'
+        f'<td class="num">${tot_vh * _rate:,.0f}</td>'
+        f'<td class="num">${tot_vh * _rate * HIT_RATE:,.0f}</td>'
         f'<td class="num">{tot_vh / QUOTA_VCPU:,.1f} h</td></tr>')
 
     # The cost split. "spinning" is the number worth watching: a worker that
@@ -1607,7 +1611,7 @@ upstream, on the data the model saw.</p>
 <p class="cap">What is still to run, costed from one measured rate:
 <b>{VCPU_H_PER_STATION_DAY:.4f} vCPU-hours per station-day</b> (707 vCPU-hours
 over 10,440 station-days on the live SCEDC campaign, times 0.354 for the
-short-window amplitude rework). Time assumes the full
+short-window amplitude rework), priced as {_rate_note}. Time assumes the full
 {QUOTA_VCPU:,}-vCPU Fargate Spot quota with nothing else running. These are
 projections, not observations - the tiles above are what actually happened.</p>
 <p class="cap"><strong>Two figures, and the difference is the hit rate.</strong>
@@ -1617,8 +1621,10 @@ hit rates run 21.7% to 67.6%. The <b>upper bound</b> column assumes every
 planned day has data; the <b>expected</b> column applies a {HIT_RATE:.0%} hit
 rate. The authoritative model,
 <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/24_cost_model.md">24_cost_model.md</a>,
-puts the campaign at <b>$10,828-$19,702</b> and says which end depends on that
-one unmeasured number.</p>
+re-priced 2026-09-09 at the billed rate with western, obs and obs-early
+measured outright, puts global at <b>$9,800-$14,100</b> and the whole campaign
+at about <b>$15,500</b>; the number that moves it most is the hit rate of NP,
+a quarter of global and unmeasured.</p>
 <p class="cap">Nothing is blocked. The EarthScope restricted access point was
 never stalling: the credential request was unscoped, so it could LIST but not
 GET, and every read returned AccessDenied instantly. Scoping it to

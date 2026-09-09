@@ -76,5 +76,6 @@
       "amount": 519.41,
       "why": "billed over baseline, less what our 2,836 vCPU-h are worth at the September rate ($89.46). Not attributed to any service."
     }
-  ]
+  ],
+  "_attempts_note_2026_09_09": "The rate derived from this file is vCPU-hours summed over every Batch ATTEMPT, not over job-level startedAt/stoppedAt, which Batch overwrites on each retry and which describe only the last attempt. campaign_spend.py used job-level spans until 2026-09-09 and published $0.03130/vCPU-h as calibrated; the attempt-level figure on the same three days is $0.02132 (108,658 vCPU-h against 74,030). The 2026-08-31 unattributed residual below was computed with job-level hours (2,836 vCPU-h); those jobs have since left Batch's 7-day history, so it cannot be recomputed. At the corrected rate and any plausible attempt count the residual moves by under $30, and 08-31 is excluded from calibration regardless."
 }

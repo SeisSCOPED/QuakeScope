@@ -32,10 +32,21 @@ when the log was gone, which counted every Spot-reclaimed job as spinning and
 every old empty job as productive - wrong in both directions, and silently.
 A category we cannot determine is named, not imputed.
 
-WHAT THIS IS NOT. It is derived from Batch start and stop times times a
-published Spot rate, not from a bill: Cost Explorer is blocked on this account
-by an organisation policy, so nothing here has been reconciled against what AWS
-actually charged. Treat it as the shape of the spend, not the amount.
+WHAT THIS IS. vCPU-hours counted from Batch ATTEMPT start and stop times -
+every attempt, because every attempt is billed - priced at a rate derived from
+a CloudBank bill over days whose usage was measured the same way
+(costs_actual.json). Cost Explorer is blocked on this account by an
+organisation policy, so that file, edited by a person, is the only place a
+real figure can come from; without one the script falls back to a fraction of
+list price and says so in the artefact.
+
+ATTEMPTS, NOT JOBS. A job's own startedAt/stoppedAt describe its LAST attempt
+only - Batch overwrites them each time a reclaimed task is retried.
+global-477782054 ran four attempts for 17.16 h; its job-level span was 1.04 h.
+The first version of this script summed job spans, undercounted the three
+calibration days by 1.47x (74,030 against 108,664 vCPU-h), and so overstated
+the derived rate by the same factor: $0.0313 instead of $0.0213 per vCPU-hour,
+published as "calibrated" for two days. See job_usage().
 """
 
 from __future__ import annotations
@@ -96,6 +107,69 @@ def is_reclaim(job):
         (job.get("container") or {}).get("reason"))).lower()
     return ("spot" in text or "reclaim" in text
             or "host ec2" in text or "terminated" in text)
+
+
+def job_usage(d, now):
+    """What one job consumed, over EVERY attempt it ran.
+
+    Returns (vcpu_hours, gb_hours, {day: vcpu_hours}, log_streams, first_start)
+    where first_start is the earliest attempt's start in ms, or None if nothing
+    ever ran.
+
+    Batch's job-level startedAt/stoppedAt are overwritten on each retry, so a
+    job reclaimed by Spot three times reports the span of its fourth attempt
+    and nothing else. Summing those undercounted the calibration days by 1.47x
+    and inflated the derived rate by the same factor. Every attempt is a task
+    that ran and was billed, so every attempt is summed here; the day split
+    follows attempts too, so a job retried across midnight lands on the days
+    it actually ran.
+
+    log_streams is the union over attempts, not the last one: a job that
+    completed shards in its first attempt and was then reclaimed should count
+    as productive, and only the last attempt's stream is on the job record.
+    """
+    rr = (d.get("container") or {}).get("resourceRequirements") or []
+    vcpu = int(([x["value"] for x in rr if x["type"] == "VCPU"] or [8])[0])
+    mem = int(([x["value"] for x in rr if x["type"] == "MEMORY"]
+               or [16384])[0]) / 1024.0
+    # `is not None`, not truthiness, on both ends: a timestamp of 0 is a
+    # value, and reading it as "still running" would bill the attempt up to
+    # now.
+    def _stop(rec):
+        return now if rec.get("stoppedAt") is None else rec["stoppedAt"]
+
+    spans = [(a["startedAt"], _stop(a))
+             for a in d.get("attempts") or [] if a.get("startedAt") is not None]
+    if not spans and d.get("startedAt") is not None:
+        # Running, first attempt not yet on the record.
+        spans = [(d["startedAt"], _stop(d))]
+    streams = {(a.get("container") or {}).get("logStreamName")
+               for a in d.get("attempts") or []}
+    streams.add((d.get("container") or {}).get("logStreamName"))
+    streams.discard(None)
+    vh = gh = 0.0
+    per_day = collections.Counter()
+    for start, stop in spans:
+        vh += vcpu * (stop - start) / 3600000.0
+        gh += mem * (stop - start) / 3600000.0
+        # Spread across the calendar days the attempt actually spanned, so a
+        # job can be compared against a billed DAY. Charging a 20-hour attempt
+        # wholly to its start day misaligns it from the invoice.
+        # Integer milliseconds throughout, like Batch's own timestamps: a
+        # float midnight could round to the wrong side of a day boundary, and
+        # the whole point of this split is to line up with a billed DAY.
+        t = int(start)
+        stop = int(stop)
+        while t < stop:
+            day = datetime.datetime.fromtimestamp(
+                t / 1000, datetime.timezone.utc).date()
+            nxt = min(stop, int(datetime.datetime.combine(
+                day + datetime.timedelta(days=1), datetime.time.min,
+                datetime.timezone.utc).timestamp() * 1000))
+            per_day[str(day)] += vcpu * (nxt - t) / 3600000.0
+            t = nxt
+    first = min(s for s, _ in spans) if spans else None
+    return vh, gh, per_day, streams, first
 
 
 def classify(name, completed, knowable, job):
@@ -177,7 +251,7 @@ def main(argv=None):
         print(f"{len(arrays)} array parent(s) expanded to {len(ids):,} jobs",
               file=sys.stderr)
 
-    now = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
 
     # How far back the log group can still answer for.
     try:
@@ -202,36 +276,19 @@ def main(argv=None):
 
     for i in range(0, len(ids), DESCRIBE_CHUNK):
         for d in b.describe_jobs(jobs=ids[i:i + DESCRIBE_CHUNK])["jobs"]:
-            start = d.get("startedAt")
-            if not start or start < since:
+            vh, gh, days, streams, start = job_usage(d, now)
+            if start is None or start < since:
                 continue
-            stop = d.get("stoppedAt") or now
-            rr = (d.get("container") or {}).get("resourceRequirements") or []
-            vcpu = int(([x["value"] for x in rr if x["type"] == "VCPU"] or [8])[0])
-            mem = int(([x["value"] for x in rr if x["type"] == "MEMORY"]
-                       or [16384])[0]) / 1024.0
-            vh = vcpu * (stop - start) / 3600000.0
-            gh = mem * (stop - start) / 3600000.0
+            for day, v in days.items():
+                per_day_vh[day] += v
 
-            # Spread across the calendar days the job actually spanned, so a
-            # job can be compared against a billed DAY. Charging a 20-hour job
-            # wholly to its start day misaligns it from the invoice.
-            t = start
-            while t < stop:
-                day = datetime.datetime.fromtimestamp(
-                    t / 1000, datetime.timezone.utc).date()
-                nxt = min(stop, datetime.datetime.combine(
-                    day + datetime.timedelta(days=1), datetime.time.min,
-                    datetime.timezone.utc).timestamp() * 1000)
-                per_day_vh[str(day)] += vcpu * (nxt - t) / 3600000.0
-                t = nxt
-
-            # "Completed something" comes from the job's own log, because a
+            # "Completed something" comes from the job's own logs - every
+            # attempt's, since a job that finished shards and was then
+            # reclaimed keeps only its last stream on the record - because a
             # SUCCEEDED job that completed no shard is exactly the case worth
-            # separating - and Batch cannot tell you that.
+            # separating, and Batch cannot tell you that.
             name = d["jobName"]
-            stream = (d.get("container") or {}).get("logStreamName")
-            completed = bool(stream) and stream in done_streams
+            completed = bool(streams & done_streams)
             # Knowable only if the WHOLE run sits inside the retention window.
             # A job that straddles the edge has some of its output deleted, so
             # the absence of a "Completed " line proves nothing about it.

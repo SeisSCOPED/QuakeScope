@@ -240,10 +240,18 @@ compute — they are not additive shares.
 > economics to all five campaigns, and 90% of the campaign is neither: EarthScope
 > reads 1.88× cheaper per unit of work, and 31% of planned station-days use a
 > weight costing 0.35× the inference. Rebuilt per campaign from node wall clock,
-> the central estimate is **~$10,500 at a 40% hit rate, in a range of
-> $5,100–$24,600** — see [24_cost_model.md](24_cost_model.md). It lands near
-> ~$11,000 only because two large errors cancel; do not read that as
-> confirmation.
+> the central estimate was **~$10,500 at a 40% hit rate, in a range of
+> $5,100–$24,600** — see [24_cost_model.md](24_cost_model.md). It landed near
+> ~$11,000 only because two large errors cancelled.
+>
+> **Re-priced 2026-09-09.** A CloudBank bill gives **$0.0213/vCPU-h all-in**
+> (1.44x the assumed $0.0148), and western, obs and obs-early ran to completion:
+> western cost **$1,852** against $2,066 predicted, on 1.61x fewer vCPU-hours.
+> Global, projected from hit rates measured on 36% of its station-days, is
+> **$9,800 to $14,100**; the whole campaign is **about $15,500, in $13,000 to
+> $18,000**, of which $2,442 is spent. The one unmeasured number that moves it
+> most is NP's hit rate. Details in the section at the top of
+> [24_cost_model.md](24_cost_model.md).
 
 **Two other measurements from 2026-09-01 revise this table.** EarthScope reads at
 **90.3 MB/s**, 7.8x the same-day SCEDC control, so the `s3.get` line above is a
