@@ -15,8 +15,8 @@ name: "⏹ STOP — terminate running workers"
 # money for as long as nobody notices. The asymmetry decides the design.
 #
 # ORDER MATTERS. Targets are set to 0 and committed BEFORE anything is
-# terminated. The scheduled top-up runs every 15 minutes and would happily
-# replace workers killed while its target still said 50.
+# terminated. The scheduled top-up runs hourly and would happily replace
+# workers killed while its target still said 50.
 
 run-name: "STOP ${{ inputs.campaign }} · by ${{ github.actor }}"
 

@@ -54,6 +54,26 @@ SPOT_REASON = "Your Spot Task was interrupted."
 BATCH_MAX_ATTEMPTS = 10
 
 
+def finished(prog: dict) -> bool:
+    """Is there nothing left in the queue that a worker could do?
+
+    `complete` alone is the wrong test. A blocked shard - an embargoed
+    network-year, a station absent from the table - is not complete and will
+    not be until somebody unblocks it, so a campaign whose tail is blocked
+    reads as unfinished forever. On 2026-09-08/09 western (41 blocked) and
+    western-2026 (13 blocked) sat like that through 12 scheduled top-ups:
+    each saw deficit == target, submitted 10 and 20 workers, and those found
+    nothing to claim. Blocked counts as done here. `unblock` puts the shards
+    back and this returns False again, so nothing is lost by it.
+
+    Unreadable progress (total 0) is not "finished": absence of evidence must
+    not stop a fleet.
+    """
+    total = prog.get("total", 0)
+    return bool(total) and (prog.get("complete", 0)
+                            + prog.get("blocked", 0)) >= total
+
+
 def alive_count(batch, queue: str, prefix: str) -> dict:
     """Workers THIS campaign has in the pool right now, by status.
 
@@ -184,15 +204,22 @@ def main(argv=None) -> int:
 
     while True:
         try:
-            prog = state.progress()   # {total, complete, in_flight, remaining}
-            done, total = prog["complete"], prog["total"]
+            # {total, complete, in_flight, blocked, remaining}
+            prog = state.progress()
         except Exception as exc:
             logger.warning(f"Could not read campaign progress: {exc}")
-            done, total = 0, 0
+            prog = {}
+        done, total = prog.get("complete", 0), prog.get("total", 0)
+        blocked = prog.get("blocked", 0)
 
-        if total and done >= total:
-            logger.info(f"Campaign complete ({done}/{total}). Governor exiting; "
-                        f"running workers will drain and stop on their own.")
+        if finished(prog):
+            logger.info(f"Campaign complete ({done}/{total}, {blocked} blocked). "
+                        f"Governor exiting; running workers will drain and "
+                        f"stop on their own."
+                        + (f" The {blocked} blocked shards are embargoed or "
+                           f"need a person - blocked_summary() says which; "
+                           f"unblock() returns them and the governor resumes."
+                           if blocked else ""))
             return 0
 
         alive = alive_count(batch, args.queue, args.name_prefix)
@@ -201,7 +228,8 @@ def main(argv=None) -> int:
         spot, att = reclaim_rate(batch, args.queue)
 
         logger.info(
-            f"{args.name_prefix}: shards {done}/{total} | alive {n_alive} "
+            f"{args.name_prefix}: shards {done}/{total} "
+            f"(+{blocked} blocked) | alive {n_alive} "
             f"(run {alive.get('RUNNING',0)} runnable {alive.get('RUNNABLE',0)}) "
             f"| target {args.target} deficit {deficit} | "
             f"spot reclaims {spot}/{att} attempts in 6h "

@@ -18,8 +18,8 @@ on:
   workflow_dispatch:
   schedule:
     # Every six hours. The thing that actually stops a runaway is the rate
-    # breaker inside the Fleet workflow, which runs every 15 minutes; this is a
-    # slower, wider sweep that catches drift - a policy loosened, versioning
+    # breaker inside the Fleet workflow, which runs hourly; this is a slower,
+    # wider sweep that catches drift - a policy loosened, versioning
     # turned off, a campaign repointed at the quarantined build.
     - cron: "17 */6 * * *"
 

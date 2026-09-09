@@ -27,6 +27,30 @@ from .profiling import stage
 from .s3_helper import S3DataSource
 from .utils import parse_year_day
 
+# Exceptions the signal path raises on data that is merely odd. Caught per
+# station-day in _pick_data so that one bad trace costs one station-day and
+# not the shard around it. TypeError is in the tuple for obspy's sake and is
+# admitted by is_signal_fault on its wording, not on its type alone.
+SIGNAL_FAULTS = (ValueError, ArithmeticError, IndexError, KeyError, TypeError)
+
+
+def is_signal_fault(exc: BaseException) -> bool:
+    """Is this exception a property of the data, so the station-day is skipped?
+
+    obspy's `Trace.__add__` raises TypeError for every way two traces of one
+    channel can refuse to merge - "Sampling rate differs", "Data type
+    differs", "Trace ID differs", "Calibration factor differs" - and SeisBench
+    merges before it annotates, so a 5 Hz trace beside a 100 Hz one surfaces
+    as a TypeError from inside the model. That is data, not code.
+
+    A TypeError without obspy's " differs" wording stays loud. "unsupported
+    operand type" from our own code must fail the shard and be seen, not be
+    filed in review/ as a signal fault on a thousand station-days.
+    """
+    if isinstance(exc, TypeError):
+        return " differs" in str(exc)
+    return isinstance(exc, SIGNAL_FAULTS)
+
 logger = logging.getLogger("picker")
 
 
@@ -548,10 +572,22 @@ class S3MongoSBBridge:
                 # recorded. It is not an access problem and not a plan problem,
                 # so nobody can fix it by waiting; `worker` writes the list to
                 # `review/` for a person to look at.
+                #
+                # The first version of this guard named ValueError and missed
+                # the case its own comment describes: obspy reports a stream
+                # it cannot merge as TypeError, from Trace.__add__, and it did
+                # so from inside SeisBench's merge on the last 16 western and
+                # 5 western-2026 shards. Every worker sent to them on
+                # 2026-09-08/09 failed all of them and exited, and the
+                # scheduled top-up sent the next batch to do the same: 155
+                # workers in 30 hours for zero shards. is_signal_fault says
+                # which TypeErrors are data and which are ours.
                 try:
                     await self._process_station_day(
                         stream, station, day, channel, picks_queue)
-                except (ValueError, ArithmeticError, IndexError, KeyError) as exc:
+                except SIGNAL_FAULTS as exc:
+                    if not is_signal_fault(exc):
+                        raise
                     self.signal_faults.append({
                         "station": station, "channel": channel,
                         "day": day.strftime("%Y.%j"),

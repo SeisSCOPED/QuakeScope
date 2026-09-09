@@ -668,7 +668,7 @@ def main(argv=None):
                          "past 8 hours were OOM-killed on 2026-09-03 against "
                          "none that finished sooner, and exiting first costs "
                          "one resubmit: the queue is durable and the top-up "
-                         "replaces the worker within 15 minutes.\n\n"
+                         "replaces the worker on its next scheduled run.\n\n"
                          "CHECKED BETWEEN SHARDS ONLY, so it bounds a "
                          "worker's LIFETIME and not a single shard. It would "
                          "not have saved the 2026-09-03 jobs: they died a "

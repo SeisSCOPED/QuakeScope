@@ -52,3 +52,45 @@ def test_prefix_is_required():
     import inspect
     p = inspect.signature(alive_count).parameters["prefix"]
     assert p.default is inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# When is a campaign finished?
+#
+# On 2026-09-08/09 western and western-2026 were complete except for embargoed
+# LH shards, which are blocked - not complete, not claimable. The governor's
+# only exit was `complete >= total`, so both read as unfinished, and every
+# scheduled top-up submitted the full target into a queue with nothing to
+# claim: 155 workers in 30 hours for zero shards.
+
+from spot_governor import finished
+
+
+def test_all_complete_is_finished():
+    assert finished({"total": 4, "complete": 4, "blocked": 0, "remaining": 0})
+
+
+def test_blocked_tail_counts_as_finished():
+    """The 2026-09-08 shape: everything either done or embargoed."""
+    assert finished({"total": 72505, "complete": 72464, "blocked": 41,
+                     "in_flight": 0, "remaining": 0})
+
+
+def test_leftover_shards_are_not_finished():
+    """The 2026-09-09 shape: 16 shards neither done nor blocked. Still work."""
+    assert not finished({"total": 72505, "complete": 72448, "blocked": 41,
+                         "in_flight": 0, "remaining": 16})
+
+
+def test_unreadable_progress_is_not_finished():
+    # A failed S3 read reports total 0; that must not stop a fleet.
+    assert not finished({})
+    assert not finished({"total": 0, "complete": 0, "blocked": 0})
+
+
+def test_unblocking_reopens_the_campaign():
+    # Blocked is reversible, so finished must be too: once the embargo lifts
+    # and the shards are unblocked, the governor has to resume.
+    before = {"total": 10, "complete": 8, "blocked": 2}
+    after = {"total": 10, "complete": 8, "blocked": 0}
+    assert finished(before) and not finished(after)

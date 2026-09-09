@@ -14,8 +14,8 @@ UNKNOWN, not FAIL: absence of evidence must not read as evidence of safety, and
 must not read as an emergency either.
 
 WHAT IT DOES NOT DO. It is a snapshot, not a monitor. The thing that actually
-stops a runaway is the rate breaker inside the Fleet workflow, which runs every
-15 minutes whether anyone is looking. This is for answering the question
+stops a runaway is the rate breaker inside the Fleet workflow, which runs on
+its schedule whether anyone is looking. This is for answering the question
 deliberately - before starting a campaign, after changing something, or when
 somebody asks.
 """
