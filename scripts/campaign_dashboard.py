@@ -1622,9 +1622,9 @@ planned day has data; the <b>expected</b> column applies a {HIT_RATE:.0%} hit
 rate. The authoritative model,
 <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/24_cost_model.md">24_cost_model.md</a>,
 re-priced 2026-09-09 at the billed rate with western, obs and obs-early
-measured outright, puts global at <b>$9,800-$14,100</b> and the whole campaign
-at about <b>$15,500</b>; the number that moves it most is the hit rate of NP,
-a quarter of global and unmeasured.</p>
+measured outright, puts global at <b>$9,450-$13,700</b> and the whole campaign
+at about <b>$15,000</b>. Hit rates are measured for 61% of global's readable
+station-days, NP included at 0.5%; the rest sits on tier defaults.</p>
 <p class="cap">Nothing is blocked. The EarthScope restricted access point was
 never stalling: the credential request was unscoped, so it could LIST but not
 GET, and every read returned AccessDenied instantly. Scoping it to

@@ -101,40 +101,48 @@ about 1.2x overhead; the three that ran through the incidents carried 1.7 to
 ### Global, projected from measured hit rates
 
 Global and western share their station-days for CI, NC, UW, UU, BK, NN, PB, TA,
-US, GS and IM: western is a geographic re-pick of the same data with different
-weights. So western's per-network hit rates are a measurement of 31% of
-global's planned station-days, and the 7,344 completed global shards measure
-another 5%. Where neither applies, the tier survey rate stands (SCEDC 36%,
-NCEDC 45%, Open Data 68%), the global sample's 41% is used for restricted
-network-years, and GeoNet is taken at 80%. NP, the strong-motion network, is
-**20.4M planned station-days, a quarter of global, and unmeasured**; it is
-triggered data and assumed 5% here.
+US, GS, IM and NP: western is a geographic re-pick of the same data with
+different weights. So western's per-network hit rates are a measurement of
+56% of global's planned station-days, and the 7,344 completed global shards
+measure another 5%; 61% of the readable queue is measured. Where neither
+applies, the tier survey rate stands (SCEDC 36%, NCEDC 45%, Open Data 68%),
+the global sample's 41% is used for restricted network-years, and GeoNet is
+taken at 80%.
+
+**NP, the strong-motion network, is 20.4M planned station-days, a quarter of
+global, and measured at 0.5%.** Western planned 14.1M NP station-days, 69% of
+global's, and processed 63,935 of them; the rate is flat between 0.2% and 0.7%
+in every year from 2010 to 2025, so it is triggered data throughout and a
+quarter of the queue costs almost nothing to walk. (A first draft of this
+section called NP unmeasured and assumed 5%; the measurement was in western's
+records all along.)
 
 | tier | planned sd | in network-years EarthScope lacks | projected processed | effective hit | share measured |
 |---|--:|--:|--:|--:|--:|
-| EarthScope restricted | 55,958,302 | 2,512,399 | 14,196,300 | 26.6% | 57% |
+| EarthScope restricted | 55,958,302 | 2,512,399 | 13,269,726 | 24.8% | 57% |
 | EarthScope Open Data | 11,750,743 | 0 | 7,074,323 | 60.2% | 65% |
 | NCEDC | 6,297,425 | 0 | 2,665,715 | 42.3% | 100% |
 | GeoNet | 4,526,684 | 0 | 3,621,347 | 80.0% | 0% |
 | SCEDC | 4,300,919 | 0 | 1,491,367 | 34.7% | 100% |
-| **global + global-2026** | **82,834,073** | **2,512,399** | **29,049,052** | **36.2%** | |
+| **global + global-2026** | **82,834,073** | **2,512,399** | **28,122,479** | **35.0%** | 61% |
 
 At $0.00049 per processed station-day as global has run so far, and $0.00034
 if it runs as cleanly as obs-early and western-2026 did:
 
-| NP hit rate | processed sd | clean (1.2x) | as run (1.74x) |
-|--:|--:|--:|--:|
-| 0% | 28.0M | $9,400 | $13,600 |
-| **5%** | **29.0M** | **$9,800** | **$14,100** |
-| 40% | 36.2M | $12,200 | $17,600 |
+| unmeasured restricted tier at | processed sd | clean (1.2x) | as run (1.74x) | at 300 workers |
+|--:|--:|--:|--:|--:|
+| 25% | 24.5M | $8,200 | $11,900 | |
+| **41%, the global sample's rate** | **28.1M** | **$9,450** | **$13,700** | **8 to 11 days** |
+| 60% | 32.5M | $10,900 | $15,800 | |
 
 Of that, $307 is spent. The old table's `scedc + ncedc + earthscope` at the
 billed rate would be $12,550 at a 35% restricted hit rate and $24,000 at 68%;
 the measured hit rates on the biggest networks run below the survey (UW 45%
-and TA 44% against Open Data's 68%; US 28%; GS 17%), which is why the
-projection lands lower. The one number still worth measuring is NP, and after
-it the 23M restricted station-days that nothing has sampled: moving their 41%
-to 25% or 60% moves the total by about $1,500 either way.
+and TA 44% against Open Data's 68%; US 28%; GS 17%; NP 0.5%), which is why
+the projection lands lower. What is left unmeasured is 31.5M readable
+station-days on a tier default, the largest being NZ (4.5M, GeoNet, taken at
+80%), NM (2.0M), IU (1.9M), N4 (1.7M), AU (1.2M) and CN (1.1M). The 23M of
+those on the restricted tier are the sensitivity in the table.
 
 ### The whole campaign
 
@@ -143,15 +151,16 @@ to 25% or 60% moves the total by about $1,500 either way.
 | western + western-2026 | $1,925 | ~$10 | measured; 21 shards left |
 | western-early (28.3M sd, pre-2010) | 0 | $1,000 to $1,600 | western's cost per planned sd; hit rate before 2010 unmeasured |
 | obs + obs-early + obs-2026 | $208 | ~$1 | measured; obs-2026 is 15,500 sd |
-| global + global-2026 | $307 | $9,500 to $13,800 | above, NP at 5% |
+| global + global-2026 | $307 | $9,150 to $13,400 | above, NP measured |
 | dry runs, surveys, tests | $2 | | |
-| **total** | **$2,442** | **$10,500 to $15,400** | **$13,000 to $18,000 all-in** |
+| **total** | **$2,442** | **$10,200 to $15,000** | **$12,700 to $17,500 all-in** |
 
 The central figure this document used to carry, $10,500 with a $5,100 to
-$24,600 range, becomes **about $15,500, in $13,000 to $18,000**. It moved up
+$24,600 range, becomes **about $15,000, in $12,700 to $17,500**. It moved up
 because the billed rate is 1.44x the assumed one and western's actual cost was
 within 10% of its estimate; it did not move up further because global's
-measured hit rates are lower than the survey's and NP is assumed nearly empty.
+measured hit rates are lower than the survey's and NP, a quarter of the queue,
+is measured nearly empty.
 The dashboard's plan panel prices at this rate from the same change.
 
 ---

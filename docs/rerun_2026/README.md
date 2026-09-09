@@ -247,11 +247,12 @@ compute — they are not additive shares.
 > **Re-priced 2026-09-09.** A CloudBank bill gives **$0.0213/vCPU-h all-in**
 > (1.44x the assumed $0.0148), and western, obs and obs-early ran to completion:
 > western cost **$1,852** against $2,066 predicted, on 1.61x fewer vCPU-hours.
-> Global, projected from hit rates measured on 36% of its station-days, is
-> **$9,800 to $14,100**; the whole campaign is **about $15,500, in $13,000 to
-> $18,000**, of which $2,442 is spent. The one unmeasured number that moves it
-> most is NP's hit rate. Details in the section at the top of
-> [24_cost_model.md](24_cost_model.md).
+> Global, projected from hit rates measured on 61% of its readable
+> station-days, is **$9,450 to $13,700**; the whole campaign is **about
+> $15,000, in $12,700 to $17,500**, of which $2,442 is spent. NP, a quarter of
+> global, is measured at 0.5% in western's own records; what remains on a tier
+> default is 31.5M station-days led by NZ, NM, IU and N4. Details in the
+> section at the top of [24_cost_model.md](24_cost_model.md).
 
 **Two other measurements from 2026-09-01 revise this table.** EarthScope reads at
 **90.3 MB/s**, 7.8x the same-day SCEDC control, so the `s3.get` line above is a
