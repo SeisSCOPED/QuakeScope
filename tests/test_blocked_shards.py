@@ -184,7 +184,7 @@ def test_a_signal_fault_is_recorded_without_losing_the_shard():
     st = _state()
     st.note_review("s1", [
         {"station": "CI.ABC.", "channel": "HH", "day": "2024.268",
-         "error": "ValueError: Sampling rate differs: 6.0 vs 100.0"},
+         "error": "TypeError: Sampling rate differs: 6.0 vs 100.0"},
         {"station": "CI.DEF.", "channel": "BH", "day": "2024.269",
          "error": "ValueError: Selected corner frequency is above Nyquist."},
     ])

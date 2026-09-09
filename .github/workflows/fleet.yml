@@ -11,11 +11,16 @@ name: "▶ Run or stop a campaign (Fleet)"
 # one more thing to keep alive, it fails silently when it dies, and you cannot
 # scale it from a phone.
 #
-# The trade is cadence. GitHub's scheduler delays cron under load - we have seen
-# an hourly job land 40 minutes late - so the fleet sags between runs rather
-# than sitting exactly on target. That is throughput variance, not failure: the
-# queue is durable and every top-up brings it back. A fleet that oscillates
-# between 60 and 100 workers finishes; a fleet nobody notices has died does not.
+# The trade is cadence, and it is worse than the schedule says. This ran as
+# "*/15" from 2026-09-03 to 09-09 and GitHub delivered 3-9 runs a day, at gaps
+# of two to five hours, at the same wall-clock moments as the hourly crons in
+# this repository. The scheduler throttles a repository's schedules as a group,
+# so a shorter interval bought nothing but a noisier Actions tab; hourly is
+# what it always was in practice, and now it is what it says. The fleet sags
+# between runs rather than sitting exactly on target. That is throughput
+# variance, not failure: the queue is durable and every top-up brings it back.
+# A fleet that oscillates between 60 and 100 workers finishes; a fleet nobody
+# notices has died does not.
 #
 # TO CHANGE THE FLEET, from a phone or anywhere:
 #   Actions -> Fleet -> Run workflow -> pick campaign + target -> Run
@@ -34,7 +39,7 @@ run-name: >-
 
 on:
   schedule:
-    - cron: "*/15 * * * *"     # top up; offset from the other jobs by minute
+    - cron: "37 * * * *"       # hourly top-up; :37 keeps clear of aws-watch (:07), preflight (:17), dashboard (:23)
   workflow_dispatch:
     inputs:
       campaign:
@@ -236,11 +241,13 @@ jobs:
       #
       # A CloudWatch metric filter with an alarm is the textbook control and
       # needs permissions this account may not have. This workflow already runs
-      # every 15 minutes with credentials and already knows how to set targets
-      # to zero, so the check lives here instead. It is weaker than an alarm -
-      # 15-minute granularity, and it stops the fleet rather than paging a
-      # human - but the incident ran for four hours, so 15 minutes would have
-      # caught it early.
+      # on a schedule with credentials and already knows how to set targets to
+      # zero, so the check lives here instead. It is weaker than an alarm - it
+      # fires when GitHub runs the schedule, which was every two to five hours
+      # in practice over 2026-09-03/09 whatever the cron said, and it stops the
+      # fleet rather than paging a human. The incident ran for four hours, so
+      # this bounds a repeat rather than catching it early; the alarm is still
+      # the right control if the permissions ever allow it.
       #
       # THRESHOLD. The incident sustained 2,193 requests/min and peaked at
       # 5,104. Ordinary traffic is far below: a whole fleet restarting

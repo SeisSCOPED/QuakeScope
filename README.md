@@ -55,8 +55,9 @@ their queue empties or they hit the 24-hour job timeout. On 2026-09-05 that was
 57 workers still burning for 50 minutes after every target read 0.
 
 **One thing to remember.** The scheduled top-up holds a campaign at its
-committed target every 15 minutes, so a campaign left at 50 stays at 50 until
-somebody sets it to 0 or presses STOP.
+committed target on every run (hourly on paper; GitHub actually delivered it
+every two to five hours through 2026-09-09), so a campaign left at 50 stays at
+50 until somebody sets it to 0 or presses STOP.
 
 **To check everything is healthy without launching anything:**
 Actions → "✅ Preflight" → Run workflow. It answers "safe to run a campaign" or
