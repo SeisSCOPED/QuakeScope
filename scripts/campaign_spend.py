@@ -149,13 +149,17 @@ def job_usage(d, now):
         # Spread across the calendar days the attempt actually spanned, so a
         # job can be compared against a billed DAY. Charging a 20-hour attempt
         # wholly to its start day misaligns it from the invoice.
-        t = start
+        # Integer milliseconds throughout, like Batch's own timestamps: a
+        # float midnight could round to the wrong side of a day boundary, and
+        # the whole point of this split is to line up with a billed DAY.
+        t = int(start)
+        stop = int(stop)
         while t < stop:
             day = datetime.datetime.fromtimestamp(
                 t / 1000, datetime.timezone.utc).date()
-            nxt = min(stop, datetime.datetime.combine(
+            nxt = min(stop, int(datetime.datetime.combine(
                 day + datetime.timedelta(days=1), datetime.time.min,
-                datetime.timezone.utc).timestamp() * 1000)
+                datetime.timezone.utc).timestamp() * 1000))
             per_day[str(day)] += vcpu * (nxt - t) / 3600000.0
             t = nxt
     first = min(s for s, _ in spans) if spans else None
@@ -241,7 +245,7 @@ def main(argv=None):
         print(f"{len(arrays)} array parent(s) expanded to {len(ids):,} jobs",
               file=sys.stderr)
 
-    now = datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
 
     # How far back the log group can still answer for.
     try:

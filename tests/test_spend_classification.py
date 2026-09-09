@@ -226,3 +226,14 @@ def test_a_running_job_with_no_attempt_record_still_counts():
 def test_a_job_that_never_ran_consumed_nothing():
     vh, gh, per_day, streams, first = job_usage({"jobName": "x"}, now=H)
     assert vh == 0 and gh == 0 and not per_day and first is None
+
+
+def test_day_boundaries_are_integer_milliseconds():
+    # An attempt that starts a fraction of a millisecond before midnight and a
+    # float `now` must still bucket cleanly and terminate: every boundary is
+    # cast to int, like Batch's own timestamps.
+    day = 24 * H
+    j = _job([(day - 1, day + H)])
+    _, _, per_day, _, _ = job_usage(j, now=2 * day + 0.4)
+    assert set(per_day) == {"1970-01-01", "1970-01-02"}
+    assert abs(sum(per_day.values()) - 8 * (H + 1) / H) < 1e-9
