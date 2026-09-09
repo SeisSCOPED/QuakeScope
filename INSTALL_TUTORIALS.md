@@ -39,6 +39,12 @@ jupyter notebook
 
 ## Alternative: pip + venv
 
+Linux, Windows and Apple Silicon. Not Intel macOS: PyTorch stopped publishing
+Intel Mac wheels at 2.2.x, and every 2.2.x release carries CVE-2025-32434, so
+`requirements_tutorials.txt` pins a torch that does not exist for that platform
+rather than one that is unsafe. On an Intel Mac use the `tutorials` pixi
+environment above, and know that it resolves torch 2.2.2 there.
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate

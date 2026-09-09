@@ -7,6 +7,11 @@
 # execution from a crafted checkpoint even with weights_only=True, fixed in
 # 2.6.0). Nothing in the tutorials imports torchvision or torchaudio, and
 # seisbench needs torch alone, so they are not pinned here any more.
+#
+# Linux, Windows and Apple Silicon only. PyTorch stopped publishing Intel
+# macOS wheels at 2.2.x, and every 2.2.x release carries the advisory
+# above, so there is no version that both installs there and is safe.
+# This line fails on an Intel Mac on purpose rather than falling back.
 torch==2.14.0
 
 # Seismic and Scientific Computing
