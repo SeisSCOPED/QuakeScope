@@ -69,7 +69,7 @@
       "max_hours": 8
     },
     "western-early": {
-      "target": 0,
+      "target": 100,
       "job_definition": "quakescope_2026_western:25",
       "weight": "original",
       "procs": 4,
