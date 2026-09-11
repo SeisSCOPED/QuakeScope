@@ -26,7 +26,10 @@ from obspy import UTCDateTime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sb_catalog.src.picker import fragmentation_note, merge_record_runs
+import pytest
+
+from sb_catalog.src.picker import (fragmentation_note, merge_record_runs,
+                                   prepare_channel_stream)
 
 WINDOW = 3001 / 100.0          # PhaseNet: 3001 samples at 100 Hz
 DAY = 8_640_000                # samples in a day at 100 Hz
@@ -104,3 +107,46 @@ def test_the_merge_changes_no_sample():
     bounds = [(max(0, i * step - ov), min(DAY, (i + 1) * step)) for i in range(138)]
     merged = merge_record_runs(_segments(bounds))
     assert np.array_equal(merged[0].data, np.arange(DAY, dtype=np.int32))
+
+
+# ---------------------------------------------------------------------------
+# The merge runs in the loading loop, BEFORE the per-station-day guard, and
+# obspy's _cleanup raises the same TypeError SeisBench's merge raised on the
+# western tail when a one-sample trace sits at a different rate. A fault
+# there must cost one station-day, not the shard.
+
+def test_an_unmergeable_station_day_is_a_skip_with_a_reason_not_a_crash():
+    st = _segments([(0, DAY - 100)])
+    odd = obspy.Trace(np.array([1], dtype=np.int32))       # one sample, 5 Hz
+    odd.stats.sampling_rate = 5.0
+    # Exactly adjacent to the end of the day trace: that is the layout obspy
+    # tries to join, and the join is where Trace.__add__ raises. A trace in
+    # the middle of another is left alone and never reaches that code.
+    odd.stats.starttime = st[0].stats.endtime + 0.01
+    odd.stats.network, odd.stats.station, odd.stats.channel = "CI", "TEST", "HHZ"
+    st += odd
+    with pytest.raises(TypeError, match="Sampling rate differs"):
+        merge_record_runs(st.copy())                       # the raw fault
+    out, note = prepare_channel_stream(st, WINDOW)
+    assert len(out) == 0
+    assert note.startswith("unmergeable: TypeError: Sampling rate differs")
+
+
+def test_a_code_bug_in_the_merge_still_fails_loudly(monkeypatch):
+    import sb_catalog.src.picker as picker
+    def broken(stream):
+        raise TypeError("'NoneType' object is not subscriptable")
+    monkeypatch.setattr(picker, "merge_record_runs", broken)
+    with pytest.raises(TypeError):
+        picker.prepare_channel_stream(_segments([(0, DAY)]), WINDOW)
+
+
+def test_prepare_returns_the_merged_stream_when_it_can_be_picked():
+    edges = np.linspace(0, DAY, 51).astype(int)
+    out, note = prepare_channel_stream(_segments(list(zip(edges[:-1], edges[1:]))), WINDOW)
+    assert note is None and len(out) == 1 and out[0].stats.npts == DAY
+
+
+def test_prepare_returns_an_empty_stream_and_the_reason_when_it_cannot():
+    out, note = prepare_channel_stream(_segments([(i * 400, i * 400 + 200) for i in range(50)]), WINDOW)
+    assert len(out) == 0 and note.startswith("fragmented:")

@@ -79,6 +79,31 @@ def fragmentation_note(stream: obspy.Stream, window_seconds: float) -> Optional[
     return None
 
 
+def prepare_channel_stream(stream: obspy.Stream, window_seconds: float
+                           ) -> tuple[obspy.Stream, Optional[str]]:
+    """Merge, then decide. Returns (stream to pick, reason it cannot be) with
+    exactly one of the two meaningful: an empty stream and a reason, or the
+    merged stream and None.
+
+    The merge itself can raise the fault the per-station-day guard exists
+    for - obspy's `_cleanup` refuses a one-sample trace at a different rate
+    with the same TypeError SeisBench's own merge raised on the western tail
+    - and it runs BEFORE that guard, in the loading loop. A fault here must
+    cost this station-day and nothing else, so it is caught the same way,
+    with `is_signal_fault` deciding what is data and what is ours.
+    """
+    try:
+        merged = merge_record_runs(stream)
+    except SIGNAL_FAULTS as exc:
+        if not is_signal_fault(exc):
+            raise
+        return obspy.Stream(), f"unmergeable: {type(exc).__name__}: {exc}"[:200]
+    note = fragmentation_note(merged, window_seconds)
+    if note:
+        return obspy.Stream(), note
+    return merged, None
+
+
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -557,38 +582,39 @@ class S3MongoSBBridge:
             if len(stream) > 0:
                 window_seconds = self.model.in_samples / self.model.sampling_rate
                 for channel in list(set([t.stats.channel[:2] for t in stream])):
-                    stream_c = merge_record_runs(stream.select(channel=f"{channel}?"))
+                    stream_c, note = prepare_channel_stream(
+                        stream.select(channel=f"{channel}?"), window_seconds)
 
                     # put stream with one channel type
                     id = f"{station}.{channel}"
-                    note = fragmentation_note(stream_c, window_seconds)
                     if note:
                         # Skipped AND written down. The old rule skipped at
                         # DEBUG and let the station-day complete with zero
                         # picks, indistinguishable from a quiet day once the
-                        # log expired. This goes to review/ with the shard.
+                        # log expired. This goes to review/ with the shard,
+                        # and the reason travels with the queue item so the
+                        # consumer can say it too.
                         self.signal_faults.append({
                             "station": station, "channel": channel,
-                            "day": day.strftime("%Y.%j"), "error": note[:200],
+                            "day": day.strftime("%Y.%j"), "error": note,
                         })
                         logger.info(
                             f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < {note}"
                         )
-                        stream_c = obspy.Stream()
+                    elif len(stream_c) > 150:
+                        logger.info(
+                            f"Send {id.ljust(14)} {day.strftime('%Y.%j')} "
+                            f"in {len(stream_c)} segments; picking the "
+                            f"ones at least {window_seconds:.0f} s long"
+                        )
                     else:
-                        if len(stream_c) > 150:
-                            logger.info(
-                                f"Send {id.ljust(14)} {day.strftime('%Y.%j')} "
-                                f"in {len(stream_c)} segments; picking the "
-                                f"ones at least {window_seconds:.0f} s long"
-                            )
-                        else:
-                            logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
+                        logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
 
-                    await data_queue.put([stream_c, station, day, channel])
+                    await data_queue.put([stream_c, station, day, channel, note])
             else:
                 # put empty stream
-                await data_queue.put([stream, station, day, None])
+                await data_queue.put([stream, station, day, None,
+                                      "no data from the source"])
 
         # put None marking the end of the data queue
         await data_queue.put(None)
@@ -607,13 +633,17 @@ class S3MongoSBBridge:
                 await picks_queue.put(None)
                 break
 
-            stream, station, day, channel = _st_sta_day_cha
+            stream, station, day, channel, *rest = _st_sta_day_cha
+            note = rest[0] if rest else None
             id = f"{station}.{channel}"
             logger.debug(f"Pick {id.ljust(14)} {day.strftime('%Y.%j')}")
             if len(stream) == 0:
-                logger.info(
-                    f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < nothing to pick "
-                    f"(see the Skip line above for why)"
+                # The loader already said this at INFO with the channel; the
+                # reason rides with the item because the two coroutines'
+                # lines interleave and a "see above" would point anywhere.
+                logger.debug(
+                    f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < "
+                    f"{note or 'empty stream'}"
                 )
                 await picks_queue.put(
                     [sbu.PickList(), [], [], [], station, day, channel]
