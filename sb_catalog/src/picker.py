@@ -34,6 +34,76 @@ from .utils import parse_year_day
 SIGNAL_FAULTS = (ValueError, ArithmeticError, IndexError, KeyError, TypeError)
 
 
+def merge_record_runs(stream: obspy.Stream) -> obspy.Stream:
+    """Join traces that are exactly adjacent or that overlap with identical
+    samples, in place. No sample is changed, interpolated or filled.
+
+    This is obspy's `_cleanup`, the same merge SeisBench applies before it
+    annotates. It is here because the fragmentation check below has to see
+    the stream SeisBench will see, not the raw record layout. CI.SRT
+    2019-06-25 from the SCEDC bucket is 137 traces per component, every
+    boundary an overlap of duplicated records; merged it is one trace of
+    8.67M samples. A rule that counts traces before this step counts the
+    archive's packaging, not the data.
+    """
+    stream._cleanup()
+    return stream
+
+
+def fragmentation_note(stream: obspy.Stream, window_seconds: float) -> Optional[str]:
+    """Why this station-day cannot be picked at all, or None if it can.
+
+    SeisBench cuts each trace into model windows and discards any trace
+    shorter than one window, so the only fragmentation that makes a
+    station-day worthless is when NO trace is that long. Anything else is
+    picked on the segments that are, however many there are.
+
+    This replaces a rule that skipped any channel set with more than 150
+    traces. That rule was written against raw record counts and fired on both
+    kinds of day: CI.SRT above (137 duplicate-overlap traces per component,
+    one trace once merged) and CI.WRC2 2019-07-06, the Ridgecrest mainshock
+    day, which is genuinely gappy in the SCEDC bucket - 2,445 segments per
+    component, median two seconds, but one of them ten hours long. Both were
+    recorded as processed with zero picks. The FDSN copy of the WRC2 day, a
+    different and gap-filled copy of the data, yields 9,310 picks; the bucket
+    copy will now yield whatever its long segments hold.
+    """
+    n = len(stream)
+    if n == 0:
+        return "no data"
+    usable = [tr for tr in stream if tr.stats.npts / tr.stats.sampling_rate >= window_seconds]
+    if not usable:
+        longest = max(tr.stats.npts / tr.stats.sampling_rate for tr in stream)
+        return (f"fragmented: {n} segments after merging, longest {longest:.1f} s, "
+                f"none as long as the model window ({window_seconds:.0f} s)")
+    return None
+
+
+def prepare_channel_stream(stream: obspy.Stream, window_seconds: float
+                           ) -> tuple[obspy.Stream, Optional[str]]:
+    """Merge, then decide. Returns (stream to pick, reason it cannot be) with
+    exactly one of the two meaningful: an empty stream and a reason, or the
+    merged stream and None.
+
+    The merge itself can raise the fault the per-station-day guard exists
+    for - obspy's `_cleanup` refuses a one-sample trace at a different rate
+    with the same TypeError SeisBench's own merge raised on the western tail
+    - and it runs BEFORE that guard, in the loading loop. A fault here must
+    cost this station-day and nothing else, so it is caught the same way,
+    with `is_signal_fault` deciding what is data and what is ours.
+    """
+    try:
+        merged = merge_record_runs(stream)
+    except SIGNAL_FAULTS as exc:
+        if not is_signal_fault(exc):
+            raise
+        return obspy.Stream(), f"unmergeable: {type(exc).__name__}: {exc}"[:200]
+    note = fragmentation_note(merged, window_seconds)
+    if note:
+        return obspy.Stream(), note
+    return merged, None
+
+
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -510,25 +580,41 @@ class S3MongoSBBridge:
         """
         async for stream, station, day in self.s3.load_waveforms():
             if len(stream) > 0:
+                window_seconds = self.model.in_samples / self.model.sampling_rate
                 for channel in list(set([t.stats.channel[:2] for t in stream])):
-                    stream_c = stream.select(channel=f"{channel}?")
+                    stream_c, note = prepare_channel_stream(
+                        stream.select(channel=f"{channel}?"), window_seconds)
 
                     # put stream with one channel type
                     id = f"{station}.{channel}"
-                    if (
-                        len(stream_c) > 150
-                    ):  # maximum number of data gap (3*50 per component)
-                        logger.debug(
-                            f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < too many gaps"
+                    if note:
+                        # Skipped AND written down. The old rule skipped at
+                        # DEBUG and let the station-day complete with zero
+                        # picks, indistinguishable from a quiet day once the
+                        # log expired. This goes to review/ with the shard,
+                        # and the reason travels with the queue item so the
+                        # consumer can say it too.
+                        self.signal_faults.append({
+                            "station": station, "channel": channel,
+                            "day": day.strftime("%Y.%j"), "error": note,
+                        })
+                        logger.info(
+                            f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < {note}"
                         )
-                        stream_c = obspy.Stream()
+                    elif len(stream_c) > 150:
+                        logger.info(
+                            f"Send {id.ljust(14)} {day.strftime('%Y.%j')} "
+                            f"in {len(stream_c)} segments; picking the "
+                            f"ones at least {window_seconds:.0f} s long"
+                        )
                     else:
                         logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
 
-                    await data_queue.put([stream_c, station, day, channel])
+                    await data_queue.put([stream_c, station, day, channel, note])
             else:
                 # put empty stream
-                await data_queue.put([stream, station, day, None])
+                await data_queue.put([stream, station, day, None,
+                                      "no data from the source"])
 
         # put None marking the end of the data queue
         await data_queue.put(None)
@@ -547,12 +633,17 @@ class S3MongoSBBridge:
                 await picks_queue.put(None)
                 break
 
-            stream, station, day, channel = _st_sta_day_cha
+            stream, station, day, channel, *rest = _st_sta_day_cha
+            note = rest[0] if rest else None
             id = f"{station}.{channel}"
             logger.debug(f"Pick {id.ljust(14)} {day.strftime('%Y.%j')}")
             if len(stream) == 0:
-                logger.info(
-                    f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < stream is empty due to exception"
+                # The loader already said this at INFO with the channel; the
+                # reason rides with the item because the two coroutines'
+                # lines interleave and a "see above" would point anywhere.
+                logger.debug(
+                    f"Skip {id.ljust(14)} {day.strftime('%Y.%j')} < "
+                    f"{note or 'empty stream'}"
                 )
                 await picks_queue.put(
                     [sbu.PickList(), [], [], [], station, day, channel]
