@@ -183,3 +183,10 @@ tutorials/western_validation_cache*.parquet
 
 # Derived by tutorials/phasenet_obs_offshore_benchmark.ipynb - re-downloaded on demand
 tutorials/obs_benchmark_cache/
+
+# Derived by tutorials/phasenet_global_sequences.ipynb - harvested picks, re-fetched on demand
+tutorials/global_sequences_cache/
+
+# Derived by tutorials/read_the_catalogue.ipynb and download_the_catalogue.ipynb - mirrored partitions and exports
+tutorials/quakescope_mirror/
+tutorials/export/

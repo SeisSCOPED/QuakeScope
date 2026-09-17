@@ -1,0 +1,16 @@
+experiment,weights,windows,detected,rate,median_dt
+Cascadia (7D),pickblue_phasenet,57,42,0.737,-1.22
+Cascadia (7D),pickblue_eqt,57,45,0.789,-1.26
+Cascadia (7D),obstransformer,57,35,0.614,-1.1
+Cascadia (7D),quakescope2026,57,41,0.719,-0.93
+Cascadia (7D),original,57,37,0.649,-0.93
+AACSE (XO),pickblue_phasenet,36,28,0.778,-1.49
+AACSE (XO),pickblue_eqt,36,26,0.722,-1.59
+AACSE (XO),obstransformer,36,32,0.889,-1.69
+AACSE (XO),quakescope2026,36,28,0.778,-1.43
+AACSE (XO),original,36,24,0.667,-1.32
+Blanco (X9),pickblue_phasenet,45,24,0.533,-3.42
+Blanco (X9),pickblue_eqt,45,24,0.533,-3.39
+Blanco (X9),obstransformer,45,23,0.511,-3.11
+Blanco (X9),quakescope2026,45,24,0.533,-2.83
+Blanco (X9),original,45,22,0.489,-3.31

@@ -1,0 +1,181 @@
+sequence,weights,phase,thr,recall,emitted
+Ridgecrest,quakescope2026,P,0.05,0.7752161383285303,644
+Ridgecrest,quakescope2026,S,0.05,0.7416107382550335,554
+Ridgecrest,quakescope2026,P,0.1,0.7175792507204611,532
+Ridgecrest,quakescope2026,S,0.1,0.6778523489932886,459
+Ridgecrest,quakescope2026,P,0.15,0.69164265129683,467
+Ridgecrest,quakescope2026,S,0.15,0.6510067114093959,404
+Ridgecrest,quakescope2026,P,0.2,0.6685878962536023,424
+Ridgecrest,quakescope2026,S,0.2,0.6140939597315436,363
+Ridgecrest,quakescope2026,P,0.3,0.6051873198847262,352
+Ridgecrest,quakescope2026,S,0.3,0.5167785234899329,291
+Ridgecrest,quakescope2026,P,0.4,0.5129682997118156,281
+Ridgecrest,quakescope2026,S,0.4,0.39932885906040266,219
+Ridgecrest,quakescope2026,P,0.5,0.4495677233429395,230
+Ridgecrest,quakescope2026,S,0.5,0.3422818791946309,162
+Ridgecrest,quakescope2026,P,0.6,0.38328530259365995,181
+Ridgecrest,quakescope2026,S,0.6,0.24496644295302014,110
+Ridgecrest,quakescope2026,P,0.7,0.31412103746397696,138
+Ridgecrest,quakescope2026,S,0.7,0.1644295302013423,68
+Ridgecrest,jma_wc,P,0.05,0.7723342939481268,664
+Ridgecrest,jma_wc,S,0.05,0.7315436241610739,535
+Ridgecrest,jma_wc,P,0.1,0.7118155619596542,524
+Ridgecrest,jma_wc,S,0.1,0.6677852348993288,447
+Ridgecrest,jma_wc,P,0.15,0.6685878962536023,459
+Ridgecrest,jma_wc,S,0.15,0.6174496644295302,391
+Ridgecrest,jma_wc,P,0.2,0.6426512968299711,416
+Ridgecrest,jma_wc,S,0.2,0.5738255033557047,351
+Ridgecrest,jma_wc,P,0.3,0.5821325648414986,338
+Ridgecrest,jma_wc,S,0.3,0.4865771812080537,279
+Ridgecrest,jma_wc,P,0.4,0.49855907780979825,274
+Ridgecrest,jma_wc,S,0.4,0.3859060402684564,205
+Ridgecrest,jma_wc,P,0.5,0.42363112391930835,222
+Ridgecrest,jma_wc,S,0.5,0.31543624161073824,154
+Ridgecrest,jma_wc,P,0.6,0.35446685878962536,166
+Ridgecrest,jma_wc,S,0.6,0.23825503355704697,115
+Ridgecrest,jma_wc,P,0.7,0.2910662824207493,131
+Ridgecrest,jma_wc,S,0.7,0.15100671140939598,61
+Ridgecrest,original,P,0.05,0.7694524495677233,809
+Ridgecrest,original,S,0.05,0.7919463087248322,715
+Ridgecrest,original,P,0.1,0.7492795389048992,686
+Ridgecrest,original,S,0.1,0.7718120805369127,646
+Ridgecrest,original,P,0.15,0.7175792507204611,616
+Ridgecrest,original,S,0.15,0.7516778523489933,604
+Ridgecrest,original,P,0.2,0.6945244956772334,571
+Ridgecrest,original,S,0.2,0.7416107382550335,575
+Ridgecrest,original,P,0.3,0.6484149855907781,490
+Ridgecrest,original,S,0.3,0.7248322147651006,520
+Ridgecrest,original,P,0.4,0.6080691642651297,424
+Ridgecrest,original,S,0.4,0.6610738255033557,448
+Ridgecrest,original,P,0.5,0.553314121037464,355
+Ridgecrest,original,S,0.5,0.610738255033557,398
+Ridgecrest,original,P,0.6,0.5273775216138329,323
+Ridgecrest,original,S,0.6,0.5637583892617449,348
+Ridgecrest,original,P,0.7,0.4783861671469741,280
+Ridgecrest,original,S,0.7,0.5,287
+Ridgecrest,instance,P,0.05,0.3919308357348703,229
+Ridgecrest,instance,S,0.05,0.36577181208053694,193
+Ridgecrest,instance,P,0.1,0.30547550432276654,165
+Ridgecrest,instance,S,0.1,0.2953020134228188,149
+Ridgecrest,instance,P,0.15,0.2680115273775216,138
+Ridgecrest,instance,S,0.15,0.2651006711409396,134
+Ridgecrest,instance,P,0.2,0.24495677233429394,121
+Ridgecrest,instance,S,0.2,0.23154362416107382,119
+Ridgecrest,instance,P,0.3,0.21613832853025935,100
+Ridgecrest,instance,S,0.3,0.18120805369127516,98
+Ridgecrest,instance,P,0.4,0.17002881844380405,74
+Ridgecrest,instance,S,0.4,0.15771812080536912,81
+Ridgecrest,instance,P,0.5,0.1585014409221902,66
+Ridgecrest,instance,S,0.5,0.12751677852348994,64
+Ridgecrest,instance,P,0.6,0.1440922190201729,59
+Ridgecrest,instance,S,0.6,0.10738255033557047,53
+Ridgecrest,instance,P,0.7,0.11815561959654179,47
+Ridgecrest,instance,S,0.7,0.08053691275167785,38
+San Simeon,quakescope2026,P,0.05,0.9032258064516129,1124
+San Simeon,quakescope2026,P,0.1,0.8709677419354839,788
+San Simeon,quakescope2026,P,0.15,0.8709677419354839,621
+San Simeon,quakescope2026,P,0.2,0.8709677419354839,514
+San Simeon,quakescope2026,P,0.3,0.8225806451612904,373
+San Simeon,quakescope2026,P,0.4,0.7580645161290323,298
+San Simeon,quakescope2026,P,0.5,0.7096774193548387,223
+San Simeon,quakescope2026,P,0.6,0.5483870967741935,158
+San Simeon,quakescope2026,P,0.7,0.41935483870967744,124
+San Simeon,jma_wc,P,0.05,0.9193548387096774,1584
+San Simeon,jma_wc,P,0.1,0.8870967741935484,1153
+San Simeon,jma_wc,P,0.15,0.8870967741935484,930
+San Simeon,jma_wc,P,0.2,0.8709677419354839,795
+San Simeon,jma_wc,P,0.3,0.8548387096774194,609
+San Simeon,jma_wc,P,0.4,0.8387096774193549,467
+San Simeon,jma_wc,P,0.5,0.8064516129032258,360
+San Simeon,jma_wc,P,0.6,0.7096774193548387,275
+San Simeon,jma_wc,P,0.7,0.5806451612903226,191
+San Simeon,original,P,0.05,0.9193548387096774,827
+San Simeon,original,P,0.1,0.8709677419354839,620
+San Simeon,original,P,0.15,0.8709677419354839,523
+San Simeon,original,P,0.2,0.8709677419354839,455
+San Simeon,original,P,0.3,0.8548387096774194,384
+San Simeon,original,P,0.4,0.8387096774193549,327
+San Simeon,original,P,0.5,0.7903225806451613,272
+San Simeon,original,P,0.6,0.7903225806451613,234
+San Simeon,original,P,0.7,0.6774193548387096,192
+San Simeon,instance,P,0.05,0.9193548387096774,598
+San Simeon,instance,P,0.1,0.9193548387096774,494
+San Simeon,instance,P,0.15,0.9032258064516129,438
+San Simeon,instance,P,0.2,0.9032258064516129,387
+San Simeon,instance,P,0.3,0.8870967741935484,298
+San Simeon,instance,P,0.4,0.8548387096774194,261
+San Simeon,instance,P,0.5,0.7741935483870968,209
+San Simeon,instance,P,0.6,0.7580645161290323,174
+San Simeon,instance,P,0.7,0.7096774193548387,135
+Mendocino 2024,quakescope2026,P,0.05,0.91,1042
+Mendocino 2024,quakescope2026,S,0.05,0.8584070796460177,958
+Mendocino 2024,quakescope2026,P,0.1,0.9,806
+Mendocino 2024,quakescope2026,S,0.1,0.8141592920353983,757
+Mendocino 2024,quakescope2026,P,0.15,0.89,703
+Mendocino 2024,quakescope2026,S,0.15,0.7610619469026548,618
+Mendocino 2024,quakescope2026,P,0.2,0.88,618
+Mendocino 2024,quakescope2026,S,0.2,0.6991150442477876,513
+Mendocino 2024,quakescope2026,P,0.3,0.83,484
+Mendocino 2024,quakescope2026,S,0.3,0.6194690265486725,367
+Mendocino 2024,quakescope2026,P,0.4,0.76,389
+Mendocino 2024,quakescope2026,S,0.4,0.5132743362831859,243
+Mendocino 2024,quakescope2026,P,0.5,0.635,302
+Mendocino 2024,quakescope2026,S,0.5,0.4424778761061947,176
+Mendocino 2024,quakescope2026,P,0.6,0.45,205
+Mendocino 2024,quakescope2026,S,0.6,0.35398230088495575,109
+Mendocino 2024,quakescope2026,P,0.7,0.34,142
+Mendocino 2024,quakescope2026,S,0.7,0.23008849557522124,62
+Mendocino 2024,jma_wc,P,0.05,0.935,1395
+Mendocino 2024,jma_wc,S,0.05,0.8230088495575221,1156
+Mendocino 2024,jma_wc,P,0.1,0.93,1153
+Mendocino 2024,jma_wc,S,0.1,0.8053097345132744,914
+Mendocino 2024,jma_wc,P,0.15,0.925,996
+Mendocino 2024,jma_wc,S,0.15,0.7964601769911505,753
+Mendocino 2024,jma_wc,P,0.2,0.915,889
+Mendocino 2024,jma_wc,S,0.2,0.7610619469026548,632
+Mendocino 2024,jma_wc,P,0.3,0.9,724
+Mendocino 2024,jma_wc,S,0.3,0.6814159292035398,430
+Mendocino 2024,jma_wc,P,0.4,0.86,590
+Mendocino 2024,jma_wc,S,0.4,0.5398230088495575,278
+Mendocino 2024,jma_wc,P,0.5,0.81,482
+Mendocino 2024,jma_wc,S,0.5,0.4247787610619469,180
+Mendocino 2024,jma_wc,P,0.6,0.685,384
+Mendocino 2024,jma_wc,S,0.6,0.34513274336283184,121
+Mendocino 2024,jma_wc,P,0.7,0.59,298
+Mendocino 2024,jma_wc,S,0.7,0.20353982300884957,51
+Mendocino 2024,original,P,0.05,0.705,850
+Mendocino 2024,original,S,0.05,0.7876106194690266,849
+Mendocino 2024,original,P,0.1,0.7,684
+Mendocino 2024,original,S,0.1,0.7699115044247787,726
+Mendocino 2024,original,P,0.15,0.7,589
+Mendocino 2024,original,S,0.15,0.7699115044247787,655
+Mendocino 2024,original,P,0.2,0.695,528
+Mendocino 2024,original,S,0.2,0.7610619469026548,604
+Mendocino 2024,original,P,0.3,0.68,419
+Mendocino 2024,original,S,0.3,0.7345132743362832,516
+Mendocino 2024,original,P,0.4,0.655,358
+Mendocino 2024,original,S,0.4,0.6991150442477876,436
+Mendocino 2024,original,P,0.5,0.63,320
+Mendocino 2024,original,S,0.5,0.6460176991150443,349
+Mendocino 2024,original,P,0.6,0.57,275
+Mendocino 2024,original,S,0.6,0.5309734513274337,240
+Mendocino 2024,original,P,0.7,0.525,226
+Mendocino 2024,original,S,0.7,0.3893805309734513,141
+Mendocino 2024,instance,P,0.05,0.945,682
+Mendocino 2024,instance,S,0.05,0.7610619469026548,500
+Mendocino 2024,instance,P,0.1,0.91,561
+Mendocino 2024,instance,S,0.1,0.6814159292035398,398
+Mendocino 2024,instance,P,0.15,0.89,498
+Mendocino 2024,instance,S,0.15,0.6548672566371682,329
+Mendocino 2024,instance,P,0.2,0.875,448
+Mendocino 2024,instance,S,0.2,0.6283185840707964,283
+Mendocino 2024,instance,P,0.3,0.84,367
+Mendocino 2024,instance,S,0.3,0.5575221238938053,212
+Mendocino 2024,instance,P,0.4,0.795,316
+Mendocino 2024,instance,S,0.4,0.504424778761062,157
+Mendocino 2024,instance,P,0.5,0.76,277
+Mendocino 2024,instance,S,0.5,0.45132743362831856,118
+Mendocino 2024,instance,P,0.6,0.69,226
+Mendocino 2024,instance,S,0.6,0.39823008849557523,80
+Mendocino 2024,instance,P,0.7,0.6,172
+Mendocino 2024,instance,S,0.7,0.23893805309734514,44

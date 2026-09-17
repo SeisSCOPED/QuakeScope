@@ -1,0 +1,25 @@
+sequence,weights,phase,analyst,matched,recall,MAE,bias,extra
+Kaikoura 2016,quakescope2026,P,357,236,0.661,0.139,0.077,1390
+Kaikoura 2016,quakescope2026,S,458,230,0.502,0.162,0.034,761
+Kaikoura 2016,jma_wc,P,357,251,0.703,0.139,0.062,1564
+Kaikoura 2016,jma_wc,S,458,238,0.52,0.163,-0.026,791
+Kaikoura 2016,original,P,357,235,0.658,0.154,0.1,1410
+Kaikoura 2016,original,S,458,323,0.705,0.177,0.089,1415
+Kaikoura 2016,instance,P,357,230,0.644,0.141,0.044,680
+Kaikoura 2016,instance,S,458,244,0.533,0.166,-0.039,368
+Norcia 2016,quakescope2026,P,701,535,0.763,0.049,0.0,725
+Norcia 2016,quakescope2026,S,656,488,0.744,0.064,0.01,660
+Norcia 2016,jma_wc,P,701,557,0.795,0.048,0.0,786
+Norcia 2016,jma_wc,S,656,510,0.777,0.069,-0.02,684
+Norcia 2016,original,P,701,516,0.736,0.057,0.028,1008
+Norcia 2016,original,S,656,595,0.907,0.085,0.05,1327
+Norcia 2016,instance,P,701,433,0.618,0.056,-0.01,130
+Norcia 2016,instance,S,656,439,0.669,0.076,-0.04,116
+Thessaly 2021,quakescope2026,P,395,284,0.719,0.129,0.021,1355
+Thessaly 2021,quakescope2026,S,331,129,0.39,0.129,0.034,785
+Thessaly 2021,jma_wc,P,395,295,0.747,0.135,0.021,1431
+Thessaly 2021,jma_wc,S,331,133,0.402,0.132,0.024,918
+Thessaly 2021,original,P,395,286,0.724,0.139,0.053,1552
+Thessaly 2021,original,S,331,142,0.429,0.146,0.072,1897
+Thessaly 2021,instance,P,395,286,0.724,0.139,0.009,646
+Thessaly 2021,instance,S,331,130,0.393,0.148,-0.021,392

@@ -1,0 +1,20 @@
+sequence,kind,tid,day,cha,archive_traces,archive_npts,fdsn_traces,repicked,verdict
+Ridgecrest,mainshock,CI.CLC.2C,2019-07-06,HN,0.0,0.0,0,0,no objects in the bucket
+Ridgecrest,mainshock,CI.WRC2.,2019-07-06,HH,5940.0,18639900.0,21,9310,skipped by the >150-trace rule
+Ridgecrest,mainshock,CI.JRC2.2C,2019-07-06,HN,0.0,0.0,0,0,no objects in the bucket
+Ridgecrest,quiet,CI.CLC.2C,2019-06-25,HN,0.0,0.0,0,0,no objects in the bucket
+Ridgecrest,quiet,CI.SRT.,2019-06-25,HH,393.0,26004212.0,3,187,skipped by the >150-trace rule
+Ridgecrest,quiet,CI.JRC2.2C,2019-06-25,HN,0.0,0.0,0,0,no objects in the bucket
+Monte Cristo,quiet,NN.BRS2.,2020-05-09,HH,,,0,0,not checked (EarthScope path)
+Monte Cristo,quiet,NN.LHV.,2020-05-09,HH,,,3,195,not checked (EarthScope path)
+Monte Cristo,quiet,NN.ION4.,2020-05-09,HH,,,0,0,not checked (EarthScope path)
+Mendocino 2024,mainshock,BK.PETL.S0,2024-12-05,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,mainshock,NC.KCT.20,2024-12-05,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,mainshock,BK.WLKR.S0,2024-12-05,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,mainshock,NC.KMPB.20,2024-12-05,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,quiet,BK.PETL.00,2024-11-25,HH,3.0,25920000.0,3,55,readable - absence unexplained
+Mendocino 2024,quiet,BK.PETL.S0,2024-11-25,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,quiet,NC.KCT.20,2024-11-25,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,quiet,BK.WLKR.S0,2024-11-25,HN,0.0,0.0,0,0,no objects in the bucket
+Mendocino 2024,quiet,NC.KMPB.20,2024-11-25,HN,0.0,0.0,0,0,no objects in the bucket
+Monroe WA,quiet,UW.BST20.,2019-06-25,HH,,,0,0,not checked (EarthScope path)

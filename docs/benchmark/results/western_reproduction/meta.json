@@ -1,0 +1,24 @@
+{
+ "notebook": "western_pick_validation.ipynb",
+ "executed": "2026-09-16T19:46:12+00:00",
+ "seisbench": "0.12.3",
+ "campaign": "western",
+ "production": {
+  "model": "PhaseNet",
+  "weight": "original",
+  "p_threshold": "0.2",
+  "s_threshold": "0.2",
+  "components_loaded": "ZNE12",
+  "seisbench_version": "0.12.5",
+  "weight_version": "2"
+ },
+ "totals": {
+  "campaign_picks": 59315,
+  "repicked": 69063,
+  "matched_exact": 59298,
+  "campaign_only": 17,
+  "repick_only": 9765,
+  "station_days_targeted": 52,
+  "station_days_with_picks": 33
+ }
+}

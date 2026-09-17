@@ -24,6 +24,10 @@ pixi run -e tutorials jupyter nbconvert --to html --template lab \
 | [phasenet_obs_offshore_benchmark.html](phasenet_obs_offshore_benchmark.html) | What do the ocean-bottom pickers buy over land models on OBS data, does the hydrophone matter, and do the `obs` campaign's stored picks agree with published analyst picks? | ~10 min cold, ~3 min with the cache |
 | [quakexnet_alaska_test.html](quakexnet_alaska_test.html) | Does the PNW-trained classifier transfer to Alaska, and how much does window placement matter? | ~30 min |
 | [western_pick_validation.html](western_pick_validation.html) | Do the western campaign's stored picks reproduce when re-picked live from FDSN, and what is missing from them? | ~90 min |
+| [phasenet_global_sequences.html](phasenet_global_sequences.html) | Does the fine-tune hold up outside the United States? Kaikōura, Norcia and Thessaly against the operators' analyst picks | ~15 min cold, ~5 min with the cached harvest |
+| [read_the_catalogue.html](read_the_catalogue.html) | First contact with the public catalogue: mirror a month of `western`, plot it, check picks on FDSN waveforms, read at scale | ~5 min, anonymous |
+| [benchmark_summary.html](benchmark_summary.html) | All five benchmarks in one place from their exported tables: recall at a shared threshold and at matched budgets, timing, ocean bottom, reproduction. Re-execute after any benchmark notebook | ~1 min, no inference |
+| [download_the_catalogue.html](download_the_catalogue.html) | A region and a period: select stations, mirror the partitions across the three western eras, query, check coverage from the manifests, export for an associator | ~10 min, anonymous |
 
 ## What these currently show
 
@@ -96,6 +100,18 @@ M 0 and S follows P by half a second, only 20–35% of the UW P picks have a
 campaign counterpart and S is essentially unmatched; recall reaches 0.5 for
 M 0.5–1.5. That is a limit of the weight set on caldera seismicity, not of the
 archive, and the campaign catalogue there should not be read below M 0.
+
+**Outside the United States.** On Kaikōura 2016 (M7.8), Norcia 2016 (M6.5)
+and Thessaly 2021 (M6.3), scored against GeoNet, INGV and NOA analyst picks
+harvested from their FDSN event services, `jma_wc` recovers more than
+`quakescope2026` on every sequence and both phases: 3–4 points of P and 1–3 of
+S at the shared threshold, 1–2 points at matched pick budgets, with timing
+identical to within 6 ms. The western-states result holds abroad, so the
+fine-tune is not the more general weight. `instance` is the most efficient
+weight at any common budget on all three, not only in Italy, but it emits half
+the picks at 0.3 and tops out below the others' ceilings. For the global
+deployment: stay on `jma_wc`, and consider `instance` at a lower threshold
+where the target is the operator's catalogue rather than every arrival.
 
 **The classifier.** QuakeXNet agrees with the Alaska catalog 78% of the time
 when the analysis window matches the training convention, and 16% when it does

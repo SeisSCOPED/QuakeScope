@@ -121,15 +121,34 @@
 <a class="card" href="read_the_catalogue.html">
   <h3>Reading the pick catalogue — start here</h3>
   <p>The picks are public-read Parquet on S3: no account, no credentials, no
-  database. Read them with partition pruning, plot what is in them, then
-  re-query the original waveforms from FDSN with ObsPy and draw the picks on
-  the record. Ends with what changes at 112 billion picks.</p>
+  database. Mirror one month of the finished <code>western</code> campaign,
+  plot what is in it, fetch the original waveforms from FDSN with ObsPy and
+  draw the picks on the record, then the three rules that keep 1.3 billion
+  picks readable.</p>
   <div class="meta">Runs anonymously · <a href="https://colab.research.google.com/github/SeisSCOPED/QuakeScope/blob/main/tutorials/read_the_catalogue.ipynb">open in Colab</a> · ~5 min</div>
+</a>
+
+<a class="card" href="download_the_catalogue.html">
+  <h3>Downloading a region and a period</h3>
+  <p>Choose stations by place and time from the station table, mirror every
+  partition that covers them across the three western eras, query the mirror
+  with DuckDB, check which station-days were actually processed, and export
+  for PyOcto or GaMMA. Worked on the Monte Cristo Range M6.5, May–June 2020.</p>
+  <div class="meta">Runs anonymously · ~10 min · reference: <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/data_access.md">docs/data_access.md</a></div>
 </a>
 
 <a class="card" href="launch_2026.html">
   <h3>2026 launch briefing</h3>
   <div class="meta">Why we are re-running, what the benchmarks and waveforms show, and what it costs</div>
+</a>
+
+<a class="card" href="benchmark_summary.html">
+  <h3>The picker benchmarks, consolidated</h3>
+  <p>Every benchmark below in one place, drawn from the result tables the
+  notebooks export: recall at a shared threshold and at matched pick budgets
+  across seven sequences on two continents, timing, the ocean-bottom studies,
+  and whether the stored catalogue reproduces. The figures for the paper.</p>
+  <div class="meta">Reads <code>docs/benchmark/results/</code> · no inference · ~1 min · protocol and caveats in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/benchmark/README.md">docs/benchmark/README.md</a></div>
 </a>
 
 <a class="card" href="phasenet_sequence_comparison.html">
@@ -138,6 +157,14 @@
   checked on? Ridgecrest, San Simeon, Monte Cristo, Mendocino 2024 and Monroe WA
   — four regions, three archives, catalogs from 2003 to 2024.</p>
   <div class="meta">5 stations per sequence · scored against analyst picks · ~25 min to run</div>
+</a>
+
+<a class="card" href="phasenet_global_sequences.html">
+  <h3>Pickers outside the United States</h3>
+  <p>Kaikōura 2016, Norcia 2016 and Thessaly 2021 against GeoNet, INGV and NOA
+  analyst picks: does the fine-tune travel, and which weight should the global
+  campaign run?</p>
+  <div class="meta">3 sequences · 18 stations · 4 weight sets · ~15 min to run</div>
 </a>
 
 <a class="card" href="western_pick_validation.html">
@@ -331,6 +358,39 @@ keep the ordering of the table above with wider gaps: <code>obstransformer</code
   a second behind P, outside what the <code>obs</code> weights were trained on;
   recall reaches 0.5 for M 0.5–1.5 and the campaign catalogue should not be read
   below M 0.
+</div>
+
+<p><strong>Outside the United States.</strong> Kaikōura 2016 (M7.8), Norcia 2016
+(M6.5) and Thessaly 2021 (M6.3), scored against the operators' own analyst picks.
+<code>jma_wc</code> beats <code>quakescope2026</code> on every sequence and phase
+at the shared threshold and at matched pick budgets, with timing identical to
+within 6 ms, so the fine-tune is not the more general weight. <code>instance</code>
+is the most efficient at any common budget on all three, not only in Italy.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>Recall at a matched pick budget</th><th>quakescope2026</th><th>jma_wc</th><th>instance</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Kaikōura P (1,367 picks)</td><td>0.61</td><td>0.62</td><td class="best">0.72</td></tr>
+    <tr><td>Norcia P (982)</td><td>0.69</td><td>0.71</td><td class="best">0.79</td></tr>
+    <tr><td>Thessaly P (1,439)</td><td>0.68</td><td>0.71</td><td class="best">0.76</td></tr>
+    <tr><td>Kaikōura S (1,034)</td><td>0.52</td><td>0.52</td><td class="best">0.70</td></tr>
+    <tr><td>Norcia S (975)</td><td>0.67</td><td>0.69</td><td class="best">0.86</td></tr>
+    <tr><td>Thessaly S (1,181)</td><td>0.41</td><td>0.41</td><td class="best">0.46</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <strong>For the global deployment: stay on <code>jma_wc</code>.</strong> The
+  fine-tune loses 1–2 points of recall at every budget and gains nothing on
+  timing. <code>instance</code> emits half the picks at 0.3 and tops out below the
+  others' ceilings, so it is the better choice only where the target is the
+  operator's catalogue rather than every arrival, and only at a threshold set for
+  it. Thessaly's S recall is capped near 0.5 for every weight, a property of the
+  reference rather than of any model.
 </div>
 
 <p><strong>The classifier.</strong> QuakeXNet agrees with the Alaska catalog 78% of

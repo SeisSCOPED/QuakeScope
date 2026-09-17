@@ -1,0 +1,50 @@
+{
+ "notebook": "phasenet_obs_offshore_benchmark.ipynb",
+ "executed": "2026-09-16T19:34:01+00:00",
+ "seisbench": "0.12.3",
+ "campaign": "obs",
+ "production": {
+  "model": "PhaseNet",
+  "weight": "obs",
+  "p_threshold": "0.2",
+  "s_threshold": "0.2",
+  "components_loaded": "ZNE12",
+  "seisbench_version": "0.12.5",
+  "weight_version": "1"
+ },
+ "tol_analyst_s": 1.0,
+ "tol_axial_s": 0.5,
+ "report_threshold": 0.3,
+ "experiments": {
+  "Cascadia (7D)": {
+   "network": "7D",
+   "start": "2012-09-01T00:00:00.000000Z",
+   "end": "2013-05-01T00:00:00.000000Z",
+   "stations": [
+    "FS07B",
+    "FS06B",
+    "FS05B"
+   ]
+  },
+  "AACSE (XO)": {
+   "network": "XO",
+   "start": "2018-08-01T00:00:00.000000Z",
+   "end": "2019-06-01T00:00:00.000000Z",
+   "stations": [
+    "LA23",
+    "LA25",
+    "LD36"
+   ]
+  },
+  "Blanco (X9)": {
+   "network": "X9",
+   "start": "2012-10-01T00:00:00.000000Z",
+   "end": "2013-08-01T00:00:00.000000Z",
+   "stations": [
+    "BB060",
+    "BB090",
+    "BB070"
+   ]
+  }
+ }
+}

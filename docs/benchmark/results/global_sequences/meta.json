@@ -1,0 +1,66 @@
+{
+ "notebook": "phasenet_global_sequences.ipynb",
+ "executed": "2026-09-16T19:31:15+00:00",
+ "seisbench": "0.12.3",
+ "weights": [
+  "quakescope2026",
+  "jma_wc",
+  "original",
+  "instance"
+ ],
+ "report_threshold": 0.3,
+ "detect_floor": 0.02,
+ "match_tol_s": 0.5,
+ "window_start_s": 600,
+ "n_stations": 6,
+ "sequences": {
+  "Kaikoura 2016": {
+   "time": "2016-11-13T11:02:56.000000Z",
+   "mag": 7.8,
+   "lat": -42.69,
+   "lon": 173.02,
+   "agency": "GEONET",
+   "window_min": 180,
+   "stations": [
+    "NZ.BSWZ",
+    "NZ.CMWZ",
+    "NZ.KHZ",
+    "NZ.TCW",
+    "NZ.THZ",
+    "NZ.TUWZ"
+   ]
+  },
+  "Norcia 2016": {
+   "time": "2016-10-30T06:40:18.000000Z",
+   "mag": 6.5,
+   "lat": 42.83,
+   "lon": 13.11,
+   "agency": "INGV",
+   "window_min": 120,
+   "stations": [
+    "IV.CAMP",
+    "IV.GUMA",
+    "IV.LNSS",
+    "IV.MC2",
+    "IV.RM33",
+    "XO.AM05"
+   ]
+  },
+  "Thessaly 2021": {
+   "time": "2021-03-03T10:16:08.000000Z",
+   "mag": 6.3,
+   "lat": 39.75,
+   "lon": 22.2,
+   "agency": "NOA",
+   "window_min": 180,
+   "stations": [
+    "HL.KZN",
+    "HL.TETR",
+    "HL.THL",
+    "HT.AGG",
+    "HT.LIT",
+    "HT.TYRN"
+   ]
+  }
+ }
+}

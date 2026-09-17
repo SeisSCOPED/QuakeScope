@@ -41,7 +41,7 @@ Why Fargate and not SkyPilot/EC2 — quota, cold start and measured throughput:
 
 | | | verified |
 |---|---|---|
-| Bucket | `s3://quakescope-picks-2026`, us-east-2 | public access blocked, versioning off |
+| Bucket | `s3://quakescope-picks-2026`, us-east-2 | **public read** on `*/picks/*`, `*/manifests/*`, `*/runs/*`, `*/stations.parquet` and listing (bucket policy read back through boto3 2026-09-16; ACLs still blocked); versioning off. How to read it: [../data_access.md](../data_access.md) |
 | Job queue | `niyiyu_earthscope_missing_station` | ENABLED / VALID |
 | Compute env | `niyiyu_earthscope`, FARGATE_SPOT, maxvCpus 12000 | ENABLED |
 | Job definition | **`quakescope_v3_worker:8`** | image `f0ba9a1`, 8 vCPU / 16 GB, 10 retries, `evaluateOnExit` retries Spot interruptions only, thread environment pinned to 2 |
@@ -287,6 +287,8 @@ Recorded because they are the argument for the smoke-test discipline above.
 | | |
 |---|---|
 | [24_cost_model.md](24_cost_model.md) | **cost, rebuilt per campaign — supersedes every earlier figure** |
+| [28_resumed_shard_overwrite.md](28_resumed_shard_overwrite.md) | a resumed shard overwrites its first checkpoint files and its manifest covers only the last attempt; measured on every finished campaign |
+| [../data_access.md](../data_access.md) | how to read the catalogue: what is public, layout, the three reading rules, coverage |
 | [23_amplitude_review.md](23_amplitude_review.md) | WA taper, `wa_min_conf`, whole-day deconvolution |
 | [11_launch_plan.md](11_launch_plan.md) | the five campaigns, networks, weights |
 | [16_skypilot_vs_fargate.md](16_skypilot_vs_fargate.md) | platform decision, stage measurements, **and how to read either catalog** (§6) |

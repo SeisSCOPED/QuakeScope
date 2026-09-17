@@ -1,0 +1,109 @@
+{
+ "notebook": "phasenet_sequence_comparison.ipynb",
+ "executed": "2026-09-16T19:41:46+00:00",
+ "seisbench": "0.12.3",
+ "weights": [
+  "quakescope2026",
+  "jma_wc",
+  "original",
+  "instance"
+ ],
+ "report_threshold": 0.3,
+ "detect_floor": 0.02,
+ "match_tol_s": 0.5,
+ "window_start_s": 600,
+ "sequences": {
+  "Ridgecrest": {
+   "time": "2019-07-06T03:19:53.000000Z",
+   "mag": 7.1,
+   "lat": 35.77,
+   "lon": -117.599,
+   "window_min": 30,
+   "picks_from": [
+    "SCEDC",
+    "NCEDC"
+   ],
+   "catalog_csv": "comcat_reviewed_ridgecrest.csv",
+   "stations": [
+    "CI.CLC",
+    "CI.TOW2",
+    "CI.SRT",
+    "CI.WRC2",
+    "CI.JRC2"
+   ]
+  },
+  "San Simeon": {
+   "time": "2003-12-22T19:15:56.000000Z",
+   "mag": 6.5,
+   "lat": 35.7,
+   "lon": -121.1,
+   "window_min": 120,
+   "picks_from": [
+    "SCEDC",
+    "NCEDC"
+   ],
+   "catalog_csv": "comcat_reviewed_san_simeon.csv",
+   "stations": [
+    "BK.PKD",
+    "CI.PHL",
+    "CI.SMM",
+    "BK.SAO",
+    "CI.LCP"
+   ]
+  },
+  "Monte Cristo": {
+   "time": "2020-05-15T11:03:27.000000Z",
+   "mag": 6.5,
+   "lat": 38.169,
+   "lon": -117.85,
+   "window_min": 120,
+   "picks_from": [
+    "SCEDC",
+    "NCEDC"
+   ],
+   "catalog_csv": null,
+   "stations": [
+    "NN.BRS2",
+    "NN.LHV",
+    "NN.ION4",
+    "NN.DSP",
+    "NN.Q09A"
+   ]
+  },
+  "Mendocino 2024": {
+   "time": "2024-12-05T18:44:21.000000Z",
+   "mag": 7.0,
+   "lat": 40.374,
+   "lon": -125.022,
+   "window_min": 120,
+   "picks_from": [
+    "SCEDC",
+    "NCEDC"
+   ],
+   "catalog_csv": "comcat_reviewed_mendocino.csv",
+   "stations": [
+    "BK.PETL",
+    "NC.KCT",
+    "BK.WLKR",
+    "NC.KMPB",
+    "BK.RBOW"
+   ]
+  },
+  "Monroe WA": {
+   "time": "2019-07-12T09:51:38.000000Z",
+   "mag": 4.6,
+   "lat": 47.873,
+   "lon": -122.016,
+   "window_min": 30,
+   "picks_from": null,
+   "catalog_csv": null,
+   "stations": [
+    "UW.SP2",
+    "UW.BERY",
+    "UW.RATT",
+    "UW.BST16",
+    "UW.BST20"
+   ]
+  }
+ }
+}

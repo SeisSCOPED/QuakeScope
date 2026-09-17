@@ -7869,12 +7869,11 @@ campaign has picks for at all, and section 10 asks why when the answer is none.<
 <span class="c1"># these change, this notebook changes with them - which is the point.</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">sb_catalog.src.amplitude_extractor</span><span class="w"> </span><span class="kn">import</span> <span class="n">AmplitudeExtractor</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">sb_catalog.src.constants</span><span class="w"> </span><span class="kn">import</span> <span class="n">select_channel</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">sb_catalog.src.picker</span><span class="w"> </span><span class="kn">import</span> <span class="n">S3MongoSBBridge</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sb_catalog.src.picker</span><span class="w"> </span><span class="kn">import</span> <span class="n">S3MongoSBBridge</span><span class="p">,</span> <span class="n">fragmentation_note</span><span class="p">,</span> <span class="n">merge_record_runs</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">sb_catalog.src.s3_helper</span><span class="w"> </span><span class="kn">import</span> <span class="n">CompositeS3ObjectHelper</span><span class="p">,</span> <span class="n">downsample_to_target</span>
 
 <span class="n">BUCKET</span><span class="p">,</span> <span class="n">REGION</span> <span class="o">=</span> <span class="s2">"quakescope-picks-2026"</span><span class="p">,</span> <span class="s2">"us-east-2"</span>
 <span class="n">CAMPAIGN</span> <span class="o">=</span> <span class="s2">"western"</span>
-<span class="n">MAX_TRACES</span> <span class="o">=</span> <span class="mi">150</span>        <span class="c1"># picker._load_data: more than this is "too many gaps"</span>
 
 <span class="c1"># Re-picking a station-day takes a couple of minutes, so results are cached</span>
 <span class="c1"># beside the notebook and only missing station-days are computed. Delete the</span>
@@ -8262,8 +8261,9 @@ Everything after <code>get_waveforms</code> is production code:</p>
 <ul>
 <li><code>downsample_to_target</code> brings anything above 100 Hz down to it, using
 SeisBench's own resampler, exactly as the reader does at read time;</li>
-<li>the <code>&gt; 150 traces</code> rule the picking loop applies to skip a station-day too
-broken by gaps to be worth running;</li>
+<li><code>merge_record_runs</code> and <code>fragmentation_note</code>, the picking loop's own
+handling of a fragmented station-day: merge duplicate and adjacent record
+runs, then skip only if no segment is as long as one model window;</li>
 <li><code>S3MongoSBBridge.create_model</code>, which is what sets <code>P_threshold</code> and
 <code>S_threshold</code> on the model's <code>default_args</code>;</li>
 <li><code>AmplitudeExtractor</code>, on the stream as read, for both the Wood-Anderson and
@@ -8331,10 +8331,10 @@ also stop being a test of whether one loaded model is stable across days.</p>
 <span class="k">def</span><span class="w"> </span><span class="nf">repick</span><span class="p">(</span><span class="n">r</span><span class="p">):</span>
     <span class="n">net</span><span class="p">,</span> <span class="n">sta</span><span class="p">,</span> <span class="n">loc</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="n">tid</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">"."</span><span class="p">)</span>
     <span class="n">cha</span> <span class="o">=</span> <span class="n">r</span><span class="o">.</span><span class="n">prod_cha</span> <span class="ow">or</span> <span class="n">r</span><span class="o">.</span><span class="n">cha</span>        <span class="c1"># the campaign band, or ours where it wrote nothing</span>
-    <span class="n">st</span> <span class="o">=</span> <span class="n">fetch_day</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">service</span><span class="p">,</span> <span class="n">net</span><span class="p">,</span> <span class="n">sta</span><span class="p">,</span> <span class="n">loc</span><span class="p">,</span> <span class="n">cha</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">day</span><span class="p">)</span>
-    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">MAX_TRACES</span><span class="p">:</span>
-        <span class="n">note</span> <span class="o">=</span> <span class="p">(</span><span class="s2">"FDSN returned no data"</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span>
-                <span class="sa">f</span><span class="s2">"skipped: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">)</span><span class="si">}</span><span class="s2"> traces exceeds the production limit of </span><span class="si">{</span><span class="n">MAX_TRACES</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="n">st</span> <span class="o">=</span> <span class="n">merge_record_runs</span><span class="p">(</span><span class="n">fetch_day</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">service</span><span class="p">,</span> <span class="n">net</span><span class="p">,</span> <span class="n">sta</span><span class="p">,</span> <span class="n">loc</span><span class="p">,</span> <span class="n">cha</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">day</span><span class="p">))</span>
+    <span class="n">skip</span> <span class="o">=</span> <span class="n">fragmentation_note</span><span class="p">(</span><span class="n">st</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">in_samples</span> <span class="o">/</span> <span class="n">model</span><span class="o">.</span><span class="n">sampling_rate</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">skip</span><span class="p">:</span>
+        <span class="n">note</span> <span class="o">=</span> <span class="s2">"FDSN returned no data"</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="sa">f</span><span class="s2">"skipped: </span><span class="si">{</span><span class="n">skip</span><span class="si">}</span><span class="s2">"</span>
         <span class="k">return</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(),</span> <span class="nb">dict</span><span class="p">(</span><span class="n">tid</span><span class="o">=</span><span class="n">r</span><span class="o">.</span><span class="n">tid</span><span class="p">,</span> <span class="n">day</span><span class="o">=</span><span class="n">r</span><span class="o">.</span><span class="n">day</span><span class="p">,</span> <span class="n">traces</span><span class="o">=</span><span class="nb">len</span><span class="p">(</span><span class="n">st</span><span class="p">),</span> <span class="n">note</span><span class="o">=</span><span class="n">note</span><span class="p">)</span>
     <span class="n">t</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
     <span class="n">picks</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">classify</span><span class="p">(</span><span class="n">st</span><span class="p">)</span><span class="o">.</span><span class="n">picks</span>
@@ -9142,6 +9142,17 @@ is taken on the stream <strong>as assembled from the archive's own day objects</
 a raw mSEED day object yields one trace per contiguous record run. An FDSN
 service merges before it answers. The two numbers are not comparable, and the
 rule is applied to only one of them.</p>
+<p><strong>Revised 2026-09-10, after reading the two flagged day files.</strong> The rule
+fired on two different things. CI.SRT 2019-06-25 is 137 traces per component
+because its records overlap with duplicated samples; obspy's non-destructive
+merge, which SeisBench applies before annotating anyway, makes it one trace.
+CI.WRC2 2019-07-06 is not a merge artefact: the bucket's day file has 2,445
+genuine telemetry gaps per component and 74% of the day's samples, with one
+ten-hour segment, while SCEDC's FDSN service holds a complete copy (8.64M
+samples in 9 traces). The picker now merges first and skips only a station-day
+with no segment as long as a model window, writing the skip to <code>review/</code>; the
+WRC2 day will pick its long segments, and the 26% of samples the bucket lacks
+is a difference between two copies of the archive that no code repairs.</p>
 <p>This reads the bucket the campaign reads, through the campaign's own path
 helper, and counts. Only SCEDC and NCEDC networks are checked - the EarthScope
 path needs a credential that must not be used from a laptop.</p>
@@ -9156,7 +9167,12 @@ path needs a credential that must not be used from a laptop.</p>
 <div class="jp-InputPrompt jp-InputArea-prompt">In [17]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="n">helper</span> <span class="o">=</span> <span class="n">CompositeS3ObjectHelper</span><span class="p">()</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># The rule the western campaign ran under. Replaced on 2026-09-10 by</span>
+<span class="c1"># picker.fragmentation_note(), which merges first and skips only a station-day</span>
+<span class="c1"># with no segment as long as a model window; the campaign's picks predate that.</span>
+<span class="n">MAX_TRACES</span> <span class="o">=</span> <span class="mi">150</span>
+
+<span class="n">helper</span> <span class="o">=</span> <span class="n">CompositeS3ObjectHelper</span><span class="p">()</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">archive_stream</span><span class="p">(</span><span class="n">tid</span><span class="p">,</span> <span class="n">cha</span><span class="p">,</span> <span class="n">day</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">'''The stream the campaign reader would assemble for this station-day.'''</span>
@@ -9476,6 +9492,72 @@ transient refusal and a genuinely empty prefix look identical after the fact -
 but it can say that the data was there and the picks are not.</p>
 <p>This is the same shape as the trace-count rule above and as the empty
 completions in the <code>obs</code> campaign: work that is skipped is recorded as done.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=eb8ea282">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h3 id="Export-for-the-consolidated-benchmark">Export for the consolidated benchmark<a class="anchor-link" href="#Export-for-the-consolidated-benchmark">¶</a></h3><p>Writes the tables above to <code>docs/benchmark/results/</code> so that <code>tutorials/benchmark_summary.ipynb</code> reads executed output.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell" id="cell-id=23291954">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [20]:</div>
+<div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="cm-editor cm-s-jupyter">
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># Export the result tables for docs/benchmark/. The consolidated benchmark</span>
+<span class="c1"># (tutorials/benchmark_summary.ipynb) reads these files rather than numbers</span>
+<span class="c1"># transcribed from a rendered report, so every figure there traces to an</span>
+<span class="c1"># executed cell here. Defensive on purpose: a missing table is reported, not fatal.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_dt</span><span class="o">,</span><span class="w"> </span><span class="nn">json</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span> <span class="k">as</span> <span class="n">_Path</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seisbench</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_sb</span>
+<span class="n">_OUT</span> <span class="o">=</span> <span class="n">_Path</span><span class="p">(</span><span class="s2">"../docs/benchmark/results/western_reproduction"</span><span class="p">);</span> <span class="n">_OUT</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">_written</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_export</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="n">_OUT</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">index</span><span class="p">,</span> <span class="n">pd</span><span class="o">.</span><span class="n">MultiIndex</span><span class="p">)</span> <span class="ow">or</span> <span class="n">obj</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+         <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="s2">"to_csv"</span><span class="p">)</span> <span class="k">else</span> <span class="p">(</span><span class="n">_OUT</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">.json"</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">_json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="nb">str</span><span class="p">)))</span>
+        <span class="n">_written</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">_exc</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: not exported (</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">_exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">_exc</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+
+<span class="n">_export</span><span class="p">(</span><span class="s2">"per_station_day"</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"gaps"</span><span class="p">,</span> <span class="n">gaps</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"targets"</span><span class="p">,</span> <span class="n">targets</span><span class="p">)</span>
+<span class="n">_meta</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">notebook</span><span class="o">=</span><span class="s2">"western_pick_validation.ipynb"</span><span class="p">,</span>
+             <span class="n">executed</span><span class="o">=</span><span class="n">_dt</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">_dt</span><span class="o">.</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">(</span><span class="n">timespec</span><span class="o">=</span><span class="s2">"seconds"</span><span class="p">),</span>
+             <span class="n">seisbench</span><span class="o">=</span><span class="n">_sb</span><span class="o">.</span><span class="n">__version__</span><span class="p">,</span> <span class="n">campaign</span><span class="o">=</span><span class="n">CAMPAIGN</span><span class="p">,</span> <span class="n">production</span><span class="o">=</span><span class="n">PROD</span><span class="p">,</span>
+             <span class="n">totals</span><span class="o">=</span><span class="nb">dict</span><span class="p">(</span><span class="n">campaign_picks</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">n_prod</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span> <span class="n">repicked</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">n_local</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+                         <span class="n">matched_exact</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">matched</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span> <span class="n">campaign_only</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">prod_only</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+                         <span class="n">repick_only</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">local_only</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span>
+                         <span class="n">station_days_targeted</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">targets</span><span class="p">)),</span> <span class="n">station_days_with_picks</span><span class="o">=</span><span class="nb">int</span><span class="p">((</span><span class="n">targets</span><span class="o">.</span><span class="n">n_prod</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">())))</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"meta"</span><span class="p">,</span> <span class="n">_meta</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"wrote"</span><span class="p">,</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">_written</span><span class="p">),</span> <span class="s2">"to"</span><span class="p">,</span> <span class="n">_OUT</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell-outputWrapper">
+<div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
+</div>
+<div class="jp-OutputArea jp-Cell-outputArea">
+<div class="jp-OutputArea-child">
+<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
+<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
+<pre>wrote per_station_day, gaps, targets, meta to ../docs/benchmark/results/western_reproduction
+</pre>
+</div>
 </div>
 </div>
 </div>
