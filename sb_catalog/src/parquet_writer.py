@@ -34,9 +34,9 @@ enough. Its writer must continue the earlier attempt's file sequence rather
 than restart it - otherwise its first flush lands on ``<job>.parquet`` and
 replaces the first attempt's first checkpoint - and its manifest must describe
 the whole job, not the last attempt. Both were wrong until 2026-09-16 and cost
-about 0.15% of the western campaign's station-days
-(``docs/rerun_2026/28_resumed_shard_overwrite.md``). ``prior_done`` is what
-tells the writer it is resuming.
+about 1.8% of the western campaign's processed station-days, re-picked on
+2026-09-17 (``docs/rerun_2026/28_resumed_shard_overwrite.md``). ``prior_done``
+is what tells the writer it is resuming.
 """
 
 import datetime
@@ -264,6 +264,10 @@ class ParquetPickWriter:
         job's own ``<job>.parquet`` / ``<job>-NNN.parquet`` is ignored.
         """
         stem = self._partition_path(kind, key, "")
+        # s3fs strips the scheme itself (checked against the real bucket), but
+        # strip it here too so the listing cannot silently come back empty on
+        # a filesystem that does not.
+        stem = self.fs._strip_protocol(stem) if hasattr(self.fs, "_strip_protocol") else stem
         try:
             names = self.fs.glob(stem + "*.parquet")
         except FileNotFoundError:
@@ -297,6 +301,18 @@ class ParquetPickWriter:
                     f"Job {self.job_id} resumes {kind} {key} after "
                     f"{len(existing)} earlier file(s); continuing at "
                     f"{self._suffix(self._part_seq[(kind, key)])}"
+                )
+            elif kind == "picks" and key in self._prior_partitions():
+                # Progress says the earlier attempt flushed into this partition,
+                # yet the listing found nothing. Whatever the cause - a listing
+                # that lies, a bucket that lost the objects - starting at 0 is
+                # the one thing that must not happen, so start far above any
+                # sequence a first attempt could have reached and say so.
+                self._part_seq[(kind, key)] = 900
+                logger.error(
+                    f"Job {self.job_id} resumes {kind} {key} but found none of the "
+                    f"earlier attempt's files there; continuing at "
+                    f"{self._suffix(900)} so nothing can be overwritten"
                 )
         seq = self._part_seq[(kind, key)]
         self._part_seq[(kind, key)] = seq + 1
@@ -360,6 +376,14 @@ class ParquetPickWriter:
         """Station-day-channels handled so far, flushed or not."""
         return len(self._records)
 
+    def _prior_partitions(self) -> set[tuple]:
+        """(network, year, month) partitions the earlier attempt's records fall in."""
+        partitions = set()
+        for tid, yr, doy, _cha in self._prior_done:
+            day = datetime.date(int(yr), 1, 1) + datetime.timedelta(days=int(doy) - 1)
+            partitions.add((_network_of(tid), day.year, day.month))
+        return partitions
+
     def _prior_output(self) -> tuple[list[dict], list[dict]]:
         """What an earlier attempt of this job left behind: its files and the
         records they cover, rebuilt from the bucket rather than trusted.
@@ -374,10 +398,7 @@ class ParquetPickWriter:
         """
         if not self._prior_done:
             return [], []
-        partitions = set()
-        for tid, yr, doy, _cha in self._prior_done:
-            day = datetime.date(int(yr), 1, 1) + datetime.timedelta(days=int(doy) - 1)
-            partitions.add((_network_of(tid), day.year, day.month))
+        partitions = self._prior_partitions()
         mine = {f["path"] for f in self._written}
         files, counts, rids = [], {}, {}
         for key in sorted(partitions):
@@ -430,11 +451,12 @@ class ParquetPickWriter:
 
         prior_files, prior_records = self._prior_output()
         prior_picks = sum(f["rows"] for f in prior_files if f["kind"] == "picks")
+        prior_classifies = sum(f["rows"] for f in prior_files if f["kind"] == "classifies")
         summary = {
             "job_id": self.job_id,
             "run_id": self.run_id,
             "n_picks": self.n_picks + prior_picks,
-            "n_classifies": self.n_classifies,
+            "n_classifies": self.n_classifies + prior_classifies,
             "station_days": len(prior_records) + len(self._records),
             "written_at": datetime.datetime.utcnow().isoformat() + "Z",
             "files": prior_files + self._written,
@@ -445,6 +467,7 @@ class ParquetPickWriter:
                 "prior_station_days": len(prior_records),
                 "prior_files": len(prior_files),
                 "prior_picks": prior_picks,
+                "prior_classifies": prior_classifies,
             }
         # One manifest per job, flat rather than partitioned: it describes the
         # whole job, which may span several partitions, and it is what makes a

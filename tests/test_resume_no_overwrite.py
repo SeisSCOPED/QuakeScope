@@ -88,7 +88,7 @@ def test_resumed_writer_continues_sequence_and_merges_manifest():
     assert by_day[("CI.CLC.", 188)]["npks"] == 1
     assert by_day[("CI.CLC.", 189)]["npks"] == 1
     assert by_day[("CI.CLC.", 190)]["npks"] == 1 and by_day[("CI.CLC.", 190)]["rid"] == "r2"
-    assert summary["resumed"] == {"prior_station_days": 3, "prior_files": 2, "prior_picks": 4}
+    assert summary["resumed"] == {"prior_station_days": 3, "prior_files": 2, "prior_picks": 4, "prior_classifies": 0}
     print("PASS  manifest covers both attempts with the first attempt's counts read back")
 
     # Every row the job produced is in exactly one file the manifest lists.
@@ -100,6 +100,13 @@ def test_resumed_writer_continues_sequence_and_merges_manifest():
     prog = json.loads(fake.obj[state._key("progress", f"{shard_id}.json")])
     assert sorted(tuple(e) for e in prog["done"]) == sorted(done | {("CI.CLC.", 2019, 190, "HH")})
     print("PASS  progress carries attempt 1's records after attempt 2's checkpoint")
+
+    # --- progress names a partition the listing cannot see: never start at 0 --
+    w4 = ParquetPickWriter(root=tempfile.mkdtemp(), run_id="r4", job_id=shard_id, prior_done=done)
+    w4.add([_pick(at(9))], [1.0], [2.0], [], "CI.CLC.", day(9), "HH")
+    s4 = w4.close()
+    assert [f["path"].rsplit("/", 1)[1] for f in s4["files"] if f["kind"] == "picks"] == [f"{shard_id}-900.parquet"]
+    print("PASS  with prior records but no visible files the sequence starts at 900, not 0")
 
     # --- a fresh job in an empty partition still starts at zero ---------------
     w3 = ParquetPickWriter(root=tempfile.mkdtemp(), run_id="r3", job_id="fresh-job")
