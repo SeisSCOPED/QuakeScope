@@ -443,18 +443,27 @@ class S3CampaignState:
             return set()
         return {tuple(e) for e in record.get("done", [])}
 
-    def write_progress(self, shard_id: str, records: list[dict]) -> None:
+    def write_progress(self, shard_id: str, records: list[dict],
+                       prior: Optional[Any] = None) -> None:
         """Record durable progress mid-shard.
 
         Only ever called *after* the Parquet flush that covers these records has
         returned. Written the other way round, a resume would skip station-days
         whose picks were never stored - the same ordering trap as `complete`.
+
+        `prior` is what an earlier attempt had already recorded here, as read
+        by `read_progress` when this attempt resumed. It is carried forward so
+        the object always describes the whole shard: a resumed attempt that
+        wrote only its own records would erase the first attempt's, and a
+        third attempt would then redo that work and write its picks twice.
         """
         # Identity only. The full records carry npks/nclfs/rid, which the final
         # manifest needs but a resume does not, and this object is rewritten at
         # every checkpoint - so carrying them would triple an O(n^2) write for
         # no benefit.
-        done = [[r["tid"], r["yr"], r["doy"], r["cha"]] for r in records]
+        done_set = {(r["tid"], int(r["yr"]), int(r["doy"]), r["cha"]) for r in records}
+        done_set |= {(e[0], int(e[1]), int(e[2]), e[3]) for e in (prior or ())}
+        done = [list(e) for e in sorted(done_set)]
         self._put_json(
             self._key("progress", f"{shard_id}.json"),
             {"shard_id": shard_id, "worker": self.worker_id,
