@@ -369,6 +369,7 @@ class S3MongoSBBridge:
         parquet_uri: Optional[str] = None,
         flush_threshold: int = 250_000,
         job_id: Optional[str] = None,
+        prior_done: Optional[Any] = None,
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
     ):
@@ -388,6 +389,10 @@ class S3MongoSBBridge:
         # HOSTNAME, and every shard a node runs writes the SAME key inside a
         # (network, year, month) partition - silently overwriting the last.
         self.job_id = job_id
+        # Station-day-channels an earlier attempt of this job already wrote
+        # (from the shard's progress object). The writer needs them to continue
+        # that attempt's file sequence and to describe the whole job on close.
+        self.prior_done = prior_done
         # Flush and record progress every N station-day-channels, so a Spot
         # preemption costs at most that much rather than the whole shard.
         # 0 disables it, which is the right default for the database path where
@@ -449,7 +454,7 @@ class S3MongoSBBridge:
         if self._parquet is None:
             self._parquet = ParquetPickWriter(
                 root=self.parquet_uri, run_id=str(self.run_id), job_id=self.job_id,
-                flush_threshold=self.flush_threshold
+                flush_threshold=self.flush_threshold, prior_done=self.prior_done,
             )
         return self._parquet
 

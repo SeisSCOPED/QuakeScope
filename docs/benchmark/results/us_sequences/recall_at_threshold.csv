@@ -1,0 +1,33 @@
+sequence,weights,phase,analyst,matched,recall,MAE,extra
+Ridgecrest,quakescope2026,P,347,210,0.605,0.04,142
+Ridgecrest,quakescope2026,S,298,154,0.517,0.053,137
+Ridgecrest,jma_wc,P,347,202,0.582,0.033,136
+Ridgecrest,jma_wc,S,298,145,0.487,0.064,134
+Ridgecrest,original,P,347,225,0.648,0.058,265
+Ridgecrest,original,S,298,216,0.725,0.066,304
+Ridgecrest,instance,P,347,75,0.216,0.048,25
+Ridgecrest,instance,S,298,54,0.181,0.079,44
+San Simeon,quakescope2026,P,62,51,0.823,0.067,322
+San Simeon,quakescope2026,S,16,12,0.75,0.02,179
+San Simeon,jma_wc,P,62,53,0.855,0.066,556
+San Simeon,jma_wc,S,16,12,0.75,0.035,225
+San Simeon,original,P,62,53,0.855,0.058,331
+San Simeon,original,S,16,15,0.938,0.103,389
+San Simeon,instance,P,62,55,0.887,0.083,243
+San Simeon,instance,S,16,12,0.75,0.094,104
+Monte Cristo,quakescope2026,P,16,12,0.75,0.047,714
+Monte Cristo,quakescope2026,S,12,5,0.417,0.219,457
+Monte Cristo,jma_wc,P,16,13,0.812,0.051,856
+Monte Cristo,jma_wc,S,12,6,0.5,0.236,504
+Monte Cristo,original,P,16,13,0.812,0.049,734
+Monte Cristo,original,S,12,8,0.667,0.146,933
+Monte Cristo,instance,P,16,14,0.875,0.089,453
+Monte Cristo,instance,S,12,6,0.5,0.174,270
+Mendocino 2024,quakescope2026,P,200,166,0.83,0.071,318
+Mendocino 2024,quakescope2026,S,113,70,0.619,0.086,297
+Mendocino 2024,jma_wc,P,200,180,0.9,0.074,544
+Mendocino 2024,jma_wc,S,113,77,0.681,0.101,353
+Mendocino 2024,original,P,200,136,0.68,0.119,283
+Mendocino 2024,original,S,113,83,0.735,0.124,433
+Mendocino 2024,instance,P,200,168,0.84,0.089,199
+Mendocino 2024,instance,S,113,63,0.558,0.12,149

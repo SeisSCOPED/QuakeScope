@@ -25,14 +25,25 @@ ideal for Parquet — and a campaign produces tens of thousands of objects rathe
 than tens of millions. Per-station-day files would be correct and unusable.
 
 Concurrency needs no coordination. Every job writes its own keys, files are
-immutable, and a retried job overwrites itself byte for byte, so retries are
-idempotent without the ignore-duplicates machinery the database needs.
+immutable, and a job that restarts from scratch overwrites itself byte for
+byte, so retries are idempotent without the ignore-duplicates machinery the
+database needs.
+
+A job that *resumes* from a checkpoint is the one case where that is not
+enough. Its writer must continue the earlier attempt's file sequence rather
+than restart it - otherwise its first flush lands on ``<job>.parquet`` and
+replaces the first attempt's first checkpoint - and its manifest must describe
+the whole job, not the last attempt. Both were wrong until 2026-09-16 and cost
+about 1.8% of the western campaign's processed station-days, re-picked on
+2026-09-17 (``docs/rerun_2026/28_resumed_shard_overwrite.md``). ``prior_done``
+is what tells the writer it is resuming.
 """
 
 import datetime
 import json
 import logging
 import os
+import re
 import uuid
 from collections import defaultdict
 from typing import Any, Optional
@@ -116,6 +127,7 @@ class ParquetPickWriter:
         compression: str = "zstd",
         flush_threshold: int = 250_000,
         storage_options: Optional[dict] = None,
+        prior_done: Optional[Any] = None,
     ) -> None:
         self.root = root.rstrip("/")
         self.run_id = str(run_id)
@@ -135,11 +147,18 @@ class ParquetPickWriter:
         self._picks: dict[tuple, list] = defaultdict(list)
         self._classifies: dict[tuple, list] = defaultdict(list)
         self._records: list[dict] = []
-        self._part_seq: dict[tuple, int] = defaultdict(int)
+        # Next file sequence per (kind, partition). Filled lazily by
+        # _next_seq, which starts AFTER whatever an earlier attempt of this
+        # job already wrote there - never at zero on faith.
+        self._part_seq: dict[tuple, int] = {}
         self.n_picks = 0
         self.n_classifies = 0
         # Object keys written by this job, so readers never have to LIST.
         self._written: list[dict] = []
+        # Station-day-channels an earlier attempt of this job wrote and
+        # checkpointed, as (tid, yr, doy, cha). Their files are already in
+        # the bucket; close() finds them and puts them in the manifest.
+        self._prior_done: set[tuple] = {tuple(e) for e in (prior_done or ())}
 
     @staticmethod
     def _infer_job_id() -> str:
@@ -234,13 +253,77 @@ class ParquetPickWriter:
             f"month={month:02d}/{self.job_id}{suffix}"
         )
 
+    @staticmethod
+    def _suffix(seq: int) -> str:
+        return f"-{seq:03d}.parquet" if seq else ".parquet"
+
+    def _existing_files(self, kind: str, key: tuple) -> list[tuple[int, str]]:
+        """Objects this job already holds in a partition, as (seq, path).
+
+        One LIST with the job id as prefix. Anything not shaped like this
+        job's own ``<job>.parquet`` / ``<job>-NNN.parquet`` is ignored.
+        """
+        stem = self._partition_path(kind, key, "")
+        # s3fs strips the scheme itself (checked against the real bucket), but
+        # strip it here too so the listing cannot silently come back empty on
+        # a filesystem that does not.
+        stem = self.fs._strip_protocol(stem) if hasattr(self.fs, "_strip_protocol") else stem
+        try:
+            names = self.fs.glob(stem + "*.parquet")
+        except FileNotFoundError:
+            return []
+        out = []
+        for name in names:
+            base = name.rsplit("/", 1)[-1]
+            if base == f"{self.job_id}.parquet":
+                out.append((0, self._partition_path(kind, key, self._suffix(0))))
+            else:
+                m = re.fullmatch(re.escape(self.job_id) + r"-(\d{3})\.parquet", base)
+                if m:
+                    seq = int(m.group(1))
+                    out.append((seq, self._partition_path(kind, key, self._suffix(seq))))
+        return sorted(out)
+
+    def _next_seq(self, kind: str, key: tuple) -> int:
+        """The sequence number for the next file in a partition.
+
+        The first time a partition is touched, the sequence starts after the
+        highest suffix an earlier attempt of this job left there. A fresh job
+        finds nothing and starts at 0, as before. A resumed job continues the
+        series instead of replacing it - the bug this closes overwrote the
+        first attempt's first checkpoint on every resumed shard.
+        """
+        if (kind, key) not in self._part_seq:
+            existing = self._existing_files(kind, key)
+            self._part_seq[(kind, key)] = existing[-1][0] + 1 if existing else 0
+            if existing:
+                logger.info(
+                    f"Job {self.job_id} resumes {kind} {key} after "
+                    f"{len(existing)} earlier file(s); continuing at "
+                    f"{self._suffix(self._part_seq[(kind, key)])}"
+                )
+            elif kind == "picks" and key in self._prior_partitions():
+                # Progress says the earlier attempt flushed into this partition,
+                # yet the listing found nothing. Whatever the cause - a listing
+                # that lies, a bucket that lost the objects - starting at 0 is
+                # the one thing that must not happen, so start far above any
+                # sequence a first attempt could have reached and say so.
+                self._part_seq[(kind, key)] = 900
+                logger.error(
+                    f"Job {self.job_id} resumes {kind} {key} but found none of the "
+                    f"earlier attempt's files there; continuing at "
+                    f"{self._suffix(900)} so nothing can be overwritten"
+                )
+        seq = self._part_seq[(kind, key)]
+        self._part_seq[(kind, key)] = seq + 1
+        return seq
+
     def _write_partition(self, kind: str, key: tuple, schema, buffers) -> None:
         rows = buffers.get(key)
         if not rows:
             return
-        seq = self._part_seq[(kind, key)]
-        self._part_seq[(kind, key)] += 1
-        suffix = f"-{seq:03d}.parquet" if seq else ".parquet"
+        seq = self._next_seq(kind, key)
+        suffix = self._suffix(seq)
         path = self._partition_path(kind, key, suffix)
 
         # Encode and upload are timed apart: one is CPU on the worker, the other
@@ -293,8 +376,81 @@ class ParquetPickWriter:
         """Station-day-channels handled so far, flushed or not."""
         return len(self._records)
 
+    def _prior_partitions(self) -> set[tuple]:
+        """(network, year, month) partitions the earlier attempt's records fall in."""
+        partitions = set()
+        for tid, yr, doy, _cha in self._prior_done:
+            day = datetime.date(int(yr), 1, 1) + datetime.timedelta(days=int(doy) - 1)
+            partitions.add((_network_of(tid), day.year, day.month))
+        return partitions
+
+    def _prior_output(self) -> tuple[list[dict], list[dict]]:
+        """What an earlier attempt of this job left behind: its files and the
+        records they cover, rebuilt from the bucket rather than trusted.
+
+        The partitions to look in follow from ``prior_done``; the files in
+        each are this job's, minus the ones this attempt wrote. Pick counts and
+        run ids per station-day come from reading those files, so a resumed
+        shard's manifest says the same thing about the first attempt's
+        station-days as it would have said had the shard never been preempted.
+        A checkpointed station-day with no rows in any file reports
+        ``npks: 0``, which is what it had.
+        """
+        if not self._prior_done:
+            return [], []
+        partitions = self._prior_partitions()
+        mine = {f["path"] for f in self._written}
+        files, counts, rids, ccounts = [], {}, {}, {}
+        for key in sorted(partitions):
+            for kind in ("picks", "classifies"):
+                for _seq, path in self._existing_files(kind, key):
+                    if path in mine:
+                        continue
+                    with self.fs.open(path, "rb") as fh:
+                        if kind == "picks":
+                            table = pq.read_table(fh, columns=["tid", "cha", "peak", "rid"])
+                            rows = table.num_rows
+                            df = table.to_pandas()
+                            if len(df):
+                                df["yr"] = df["peak"].dt.year
+                                df["doy"] = df["peak"].dt.dayofyear
+                                for (tid, cha, yr, doy, rid), n in (
+                                    df.groupby(["tid", "cha", "yr", "doy", "rid"]).size().items()
+                                ):
+                                    entry = (tid, int(yr), int(doy), cha)
+                                    counts[entry] = counts.get(entry, 0) + int(n)
+                                    rids.setdefault(entry, rid)
+                        else:
+                            table = pq.read_table(fh, columns=["tid", "cha", "start"])
+                            rows = table.num_rows
+                            df = table.to_pandas()
+                            if len(df):
+                                df["yr"] = df["start"].dt.year
+                                df["doy"] = df["start"].dt.dayofyear
+                                for (tid, cha, yr, doy), n in df.groupby(["tid", "cha", "yr", "doy"]).size().items():
+                                    entry = (tid, int(yr), int(doy), cha)
+                                    ccounts[entry] = ccounts.get(entry, 0) + int(n)
+                    network, year, month = key
+                    files.append({"kind": kind, "path": path, "rows": rows,
+                                  "network": network, "year": year, "month": month,
+                                  "attempt": "prior"})
+        records = [
+            {"tid": tid, "cha": cha, "yr": int(yr), "doy": int(doy),
+             "npks": counts.get((tid, int(yr), int(doy), cha), 0),
+             "nclfs": ccounts.get((tid, int(yr), int(doy), cha), 0),
+             "rid": rids.get((tid, int(yr), int(doy), cha), "")}
+            for tid, yr, doy, cha in sorted(self._prior_done)
+        ]
+        return files, records
+
     def close(self) -> dict:
-        """Write everything still buffered, plus a manifest for the job."""
+        """Write everything still buffered, plus a manifest for the job.
+
+        The manifest covers the whole job. If this attempt resumed an earlier
+        one, the earlier attempt's files and station-days are found in the
+        bucket and listed first; a reader following ``files`` then sees every
+        object the job produced, and ``records`` every station-day it covered.
+        """
         for key in list(self._picks):
             self._write_partition("picks", key, PICK_SCHEMA, self._picks)
         for key in list(self._classifies):
@@ -302,16 +458,26 @@ class ParquetPickWriter:
                 "classifies", key, CLASSIFY_SCHEMA, self._classifies
             )
 
+        prior_files, prior_records = self._prior_output()
+        prior_picks = sum(f["rows"] for f in prior_files if f["kind"] == "picks")
+        prior_classifies = sum(f["rows"] for f in prior_files if f["kind"] == "classifies")
         summary = {
             "job_id": self.job_id,
             "run_id": self.run_id,
-            "n_picks": self.n_picks,
-            "n_classifies": self.n_classifies,
-            "station_days": len(self._records),
+            "n_picks": self.n_picks + prior_picks,
+            "n_classifies": self.n_classifies + prior_classifies,
+            "station_days": len(prior_records) + len(self._records),
             "written_at": datetime.datetime.utcnow().isoformat() + "Z",
-            "files": self._written,
-            "records": self._records,
+            "files": prior_files + self._written,
+            "records": prior_records + self._records,
         }
+        if prior_records:
+            summary["resumed"] = {
+                "prior_station_days": len(prior_records),
+                "prior_files": len(prior_files),
+                "prior_picks": prior_picks,
+                "prior_classifies": prior_classifies,
+            }
         # One manifest per job, flat rather than partitioned: it describes the
         # whole job, which may span several partitions, and it is what makes a
         # job's coverage auditable afterwards - which station-days it claimed

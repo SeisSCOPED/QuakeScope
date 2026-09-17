@@ -1,0 +1,4 @@
+sequence,events,arrivals,mode,status,method,agency,onset,uncertainty_set,zero_weight
+Kaikoura 2016,138,7134,"{'manual': np.int64(5308), 'automatic': np.int64(1826)}",{'None': np.int64(7134)},"{'': np.int64(5308), 'AIC': np.int64(1826)}",{'WEL(GNS_Primary)': np.int64(4806)},{'None': np.int64(7134)},0%,1845
+Norcia 2016,150,8873,{'manual': np.int64(8873)},{'None': np.int64(8873)},{'query?methodID=11': np.int64(8873)},{'INGV ': np.int64(8873)},{'questionable': np.int64(8873)},100%,617
+Thessaly 2021,74,3570,{'manual': np.int64(3570)},{'None': np.int64(3570)},{'': np.int64(3570)},{'NOAreg1': np.int64(3570)},{'None': np.int64(3570)},0%,37

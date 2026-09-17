@@ -1,0 +1,6 @@
+shard_id,prog_worker,comp_worker,checkpointed_records,manifest_records,station_days,picks_record,surviving_files_not_in_manifest,manifest_files,records_not_in_manifest,records_without_picks_anywhere
+2003309-2003329-57eb43e519f6,ip-172-31-24-40.us-east-2.compute.internal:14,ip-172-31-6-255.us-east-2.compute.internal:17,160,2,200,2,3,1,160,40
+2009317-2009337-e4cd47d658ee,ip-172-31-27-199.us-east-2.compute.internal:17,ip-172-31-16-98.us-east-2.compute.internal:17,160,26,200,26,3,2,160,40
+2006293-2006313-f1f9da6ab9cf,ip-172-31-27-225.us-east-2.compute.internal:15,ip-172-31-6-255.us-east-2.compute.internal:17,120,20,140,20,3,1,120,36
+2006333-2006353-0bf378ddcfb8,ip-172-31-24-33.us-east-2.compute.internal:16,ip-172-31-33-200.us-east-2.compute.internal:17,120,20,140,20,3,1,120,26
+2008303-2008323-edf1c470beb4,ip-172-31-22-215.us-east-2.compute.internal:14,ip-172-31-43-137.us-east-2.compute.internal:14,360,29,518,29,9,1,360,19

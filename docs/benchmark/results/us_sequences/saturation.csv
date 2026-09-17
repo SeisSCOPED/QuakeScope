@@ -1,0 +1,21 @@
+sequence,weights,S@0.02,S@0.1,S@0.3
+Ridgecrest,quakescope2026,684,459,291
+Ridgecrest,jma_wc,638,447,279
+Ridgecrest,original,832,646,520
+Ridgecrest,instance,246,149,98
+San Simeon,quakescope2026,1265,579,191
+San Simeon,jma_wc,1546,726,237
+San Simeon,original,986,640,404
+San Simeon,instance,571,277,116
+Monte Cristo,quakescope2026,1482,922,462
+Monte Cristo,jma_wc,1594,1023,510
+Monte Cristo,original,1952,1352,941
+Monte Cristo,instance,823,558,276
+Mendocino 2024,quakescope2026,1267,757,367
+Mendocino 2024,jma_wc,1555,914,430
+Mendocino 2024,original,1036,726,516
+Mendocino 2024,instance,659,398,212
+Monroe WA,quakescope2026,138,56,25
+Monroe WA,jma_wc,215,85,37
+Monroe WA,original,137,58,30
+Monroe WA,instance,37,20,12

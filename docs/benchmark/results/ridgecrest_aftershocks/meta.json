@@ -1,0 +1,27 @@
+{
+ "notebook": "phasenet_aftershock_benchmark.ipynb",
+ "executed": "2026-09-16T19:21:05+00:00",
+ "seisbench": "0.12.3",
+ "config": {
+  "T0": "2019-07-06T05:00:00.000000Z",
+  "T1": "2019-07-06T05:30:00.000000Z",
+  "MIN_MAG": 3.2,
+  "STATIONS": [
+   "CLC",
+   "WCS2",
+   "MPM",
+   "WBS",
+   "JRC2",
+   "WOR",
+   "TEH",
+   "LRL"
+  ],
+  "WEIGHTS": [
+   "quakescope2026",
+   "jma_wc",
+   "original",
+   "instance"
+  ],
+  "MATCH_TOL": 0.5
+ }
+}

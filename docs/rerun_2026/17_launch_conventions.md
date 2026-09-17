@@ -13,7 +13,7 @@ cross-region for `scedc-pds` (us-west-2) and `ncedc-pds` (us-east-1), which the
 head-to-head measured at about **one second per station-day** — the workload is
 CPU-bound, so locality is not worth splitting the output over.
 
-- **Public access:** blocked, all four settings.
+- **Public access:** anonymous read on `*/picks/*`, `*/manifests/*`, `*/runs/*`, `*/stations.parquet` and `ListBucket`, by bucket policy (`PublicReadPicksAndProvenance`, `PublicListForPartitionDiscovery`); `BlockPublicAcls` and `IgnorePublicAcls` stay on, `BlockPublicPolicy` and `RestrictPublicBuckets` are off. Read back 2026-09-16. The queue, claims, progress and completion objects are not public.
 - **Versioning: off, deliberately.** Objects are immutable and named after the
   shard that wrote them, so a retried shard overwrites itself byte for byte.
   Versioning would keep every superseded retry and silently double a 3.1 TB

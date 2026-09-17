@@ -3,7 +3,7 @@
 <html lang="en">
 <head><meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>bench_out</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
+<title>phasenet_aftershock_benchmark</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
 <style type="text/css">
     pre { line-height: 125%; }
 td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
@@ -8578,6 +8578,72 @@ it, so the ranking should hold as the window widens.</p>
         2.00           0.792   0.806     0.868     0.729
 
 S recall as a function of match tolerance
+</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=54e554b8">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h3 id="Export-for-the-consolidated-benchmark">Export for the consolidated benchmark<a class="anchor-link" href="#Export-for-the-consolidated-benchmark">¶</a></h3><p>Writes the tables above to <code>docs/benchmark/results/</code> so that <code>tutorials/benchmark_summary.ipynb</code> reads executed output.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell" id="cell-id=af9eccbf">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [12]:</div>
+<div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="cm-editor cm-s-jupyter">
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># Export the result tables for docs/benchmark/. The consolidated benchmark</span>
+<span class="c1"># (tutorials/benchmark_summary.ipynb) reads these files rather than numbers</span>
+<span class="c1"># transcribed from a rendered report, so every figure there traces to an</span>
+<span class="c1"># executed cell here. Defensive on purpose: a missing table is reported, not fatal.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_dt</span><span class="o">,</span><span class="w"> </span><span class="nn">json</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span> <span class="k">as</span> <span class="n">_Path</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">seisbench</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">_sb</span>
+<span class="n">_OUT</span> <span class="o">=</span> <span class="n">_Path</span><span class="p">(</span><span class="s2">"../docs/benchmark/results/ridgecrest_aftershocks"</span><span class="p">);</span> <span class="n">_OUT</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">_written</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_export</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">to_csv</span><span class="p">(</span><span class="n">_OUT</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">.csv"</span><span class="p">,</span> <span class="n">index</span><span class="o">=</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">obj</span><span class="o">.</span><span class="n">index</span><span class="p">,</span> <span class="n">pd</span><span class="o">.</span><span class="n">MultiIndex</span><span class="p">)</span> <span class="ow">or</span> <span class="n">obj</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+         <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="s2">"to_csv"</span><span class="p">)</span> <span class="k">else</span> <span class="p">(</span><span class="n">_OUT</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">.json"</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">_json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="nb">str</span><span class="p">)))</span>
+        <span class="n">_written</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">_exc</span><span class="p">:</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: not exported (</span><span class="si">{</span><span class="nb">type</span><span class="p">(</span><span class="n">_exc</span><span class="p">)</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">_exc</span><span class="si">}</span><span class="s2">)"</span><span class="p">)</span>
+
+<span class="n">_export</span><span class="p">(</span><span class="s2">"recall_at_threshold"</span><span class="p">,</span> <span class="n">bench</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"per_station"</span><span class="p">,</span> <span class="n">per_sta</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"tolerance_sensitivity"</span><span class="p">,</span> <span class="n">sens</span><span class="p">)</span>
+<span class="n">_meta</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">notebook</span><span class="o">=</span><span class="s2">"phasenet_aftershock_benchmark.ipynb"</span><span class="p">,</span>
+             <span class="n">executed</span><span class="o">=</span><span class="n">_dt</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">_dt</span><span class="o">.</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">(</span><span class="n">timespec</span><span class="o">=</span><span class="s2">"seconds"</span><span class="p">),</span>
+             <span class="n">seisbench</span><span class="o">=</span><span class="n">_sb</span><span class="o">.</span><span class="n">__version__</span><span class="p">,</span>
+             <span class="n">config</span><span class="o">=</span><span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="p">(</span><span class="n">v</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">str</span><span class="p">,</span> <span class="nb">list</span><span class="p">,</span> <span class="nb">dict</span><span class="p">))</span> <span class="k">else</span> <span class="nb">str</span><span class="p">(</span><span class="n">v</span><span class="p">))</span>
+                     <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="nb">globals</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                     <span class="k">if</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"WEIGHTS"</span><span class="p">,</span> <span class="s2">"REPORT_THRESHOLD"</span><span class="p">,</span> <span class="s2">"MATCH_TOL"</span><span class="p">,</span> <span class="s2">"STATIONS"</span><span class="p">,</span> <span class="s2">"T0"</span><span class="p">,</span> <span class="s2">"T1"</span><span class="p">,</span>
+                              <span class="s2">"WINDOW"</span><span class="p">,</span> <span class="s2">"MIN_MAG"</span><span class="p">,</span> <span class="s2">"THRESHOLD"</span><span class="p">)})</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"meta"</span><span class="p">,</span> <span class="n">_meta</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"wrote"</span><span class="p">,</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">_written</span><span class="p">),</span> <span class="s2">"to"</span><span class="p">,</span> <span class="n">_OUT</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell-outputWrapper">
+<div class="jp-Collapser jp-OutputCollapser jp-Cell-outputCollapser">
+</div>
+<div class="jp-OutputArea jp-Cell-outputArea">
+<div class="jp-OutputArea-child">
+<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
+<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
+<pre>wrote recall_at_threshold, per_station, tolerance_sensitivity, meta to ../docs/benchmark/results/ridgecrest_aftershocks
 </pre>
 </div>
 </div>

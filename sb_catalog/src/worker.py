@@ -321,7 +321,9 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
 
     def _checkpoint(records: list[dict]) -> None:
         # Called only after the Parquet flush covering these records returned.
-        state.write_progress(shard["shard_id"], records)
+        # `done` rides along so the progress object stays cumulative across
+        # attempts; without it a second resume would redo the first attempt.
+        state.write_progress(shard["shard_id"], records, prior=done)
         # MEMORY, MEASURED INSIDE THE SHARD. The between-shards reading cannot
         # see these deaths: the 2026-09-03 OOM jobs had completed a median of
         # 54 shards and then spent a median 4.68 h - against ~11 min for a
@@ -365,6 +367,9 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         on_checkpoint=_checkpoint,
         flush_threshold=args.flush_threshold,
         parquet_uri=args.parquet_uri or state.uri(),
+        # Tells the writer it is resuming: continue the earlier attempt's file
+        # sequence instead of overwriting it, and put its output in the manifest.
+        prior_done=done,
         # One Parquet object per shard. Anything less specific collides inside a
         # (network, year, month) partition when a node runs many shards.
         job_id=shard["shard_id"],

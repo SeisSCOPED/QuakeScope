@@ -82,6 +82,10 @@ pixi run smoke-test
 
 | Link | Purpose |
 |------|---------|
+| [docs/data_access.md](docs/data_access.md) | **Using the pick catalogue**: what is public, layout, schema, the three reading rules, coverage, citation |
+| [tutorials/read_the_catalogue.ipynb](tutorials/read_the_catalogue.ipynb) | First contact with the catalogue, runs anonymously on Colab |
+| [tutorials/download_the_catalogue.ipynb](tutorials/download_the_catalogue.ipynb) | Mirror a region and a period, check coverage, export for an associator |
+| [docs/benchmark/README.md](docs/benchmark/README.md) | The picker benchmarks consolidated: protocol, every result table, caveats, how to regenerate |
 | [INSTALL_TUTORIALS.md](INSTALL_TUTORIALS.md) | Local setup (pixi + notebooks) |
 | [INSTALL.md](INSTALL.md) | AWS Batch/Fargate deployment |
 | [docs/rerun_2026/README.md](docs/rerun_2026/README.md) | Production runbook |
