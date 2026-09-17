@@ -122,6 +122,8 @@ def station_days_in(keys: list[str]) -> set[tuple]:
     have = set()
     for key in keys:
         body = get_bytes(key)
+        if body is None:                                  # gone between LIST and GET
+            continue
         t = pq.read_table(io.BytesIO(body), columns=["tid", "peak"]).to_pandas()
         if len(t):
             t["yr"], t["doy"] = t.peak.dt.year, t.peak.dt.dayofyear
@@ -229,9 +231,11 @@ def main() -> None:
     print(f"resumed shards: {len(results)} ({dict(n_basis)}); lost station-days: {len(lost):,} ({time.time() - t0:.0f} s)")
 
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([dict(shard_id=r["shard_id"], basis=r["basis"], files=r["files"], survivors=r["survivors"],
-                       planned=r["planned"], with_picks=r["with_picks"], recorded=r["recorded"], lost=len(r["lost"]))
-                  for r in results]).sort_values("lost", ascending=False).to_csv(out / f"repair_shards_{camp}.csv", index=False)
+    cols = ["shard_id", "basis", "files", "survivors", "planned", "with_picks", "recorded", "lost"]
+    rows = pd.DataFrame([dict(shard_id=r["shard_id"], basis=r["basis"], files=r["files"], survivors=r["survivors"],
+                              planned=r["planned"], with_picks=r["with_picks"], recorded=r["recorded"], lost=len(r["lost"]))
+                         for r in results], columns=cols)
+    rows.sort_values("lost", ascending=False).to_csv(out / f"repair_shards_{camp}.csv", index=False)
     pd.DataFrame(lost, columns=["tid", "yr", "doy"]).to_csv(out / f"repair_station_days_{camp}.csv", index=False)
 
     queue = plan_repair(lost, a.max_sd)

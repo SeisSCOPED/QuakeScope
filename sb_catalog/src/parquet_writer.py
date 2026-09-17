@@ -400,7 +400,7 @@ class ParquetPickWriter:
             return [], []
         partitions = self._prior_partitions()
         mine = {f["path"] for f in self._written}
-        files, counts, rids = [], {}, {}
+        files, counts, rids, ccounts = [], {}, {}, {}
         for key in sorted(partitions):
             for kind in ("picks", "classifies"):
                 for _seq, path in self._existing_files(kind, key):
@@ -421,14 +421,23 @@ class ParquetPickWriter:
                                     counts[entry] = counts.get(entry, 0) + int(n)
                                     rids.setdefault(entry, rid)
                         else:
-                            rows = pq.read_metadata(fh).num_rows
+                            table = pq.read_table(fh, columns=["tid", "cha", "start"])
+                            rows = table.num_rows
+                            df = table.to_pandas()
+                            if len(df):
+                                df["yr"] = df["start"].dt.year
+                                df["doy"] = df["start"].dt.dayofyear
+                                for (tid, cha, yr, doy), n in df.groupby(["tid", "cha", "yr", "doy"]).size().items():
+                                    entry = (tid, int(yr), int(doy), cha)
+                                    ccounts[entry] = ccounts.get(entry, 0) + int(n)
                     network, year, month = key
                     files.append({"kind": kind, "path": path, "rows": rows,
                                   "network": network, "year": year, "month": month,
                                   "attempt": "prior"})
         records = [
             {"tid": tid, "cha": cha, "yr": int(yr), "doy": int(doy),
-             "npks": counts.get((tid, int(yr), int(doy), cha), 0), "nclfs": 0,
+             "npks": counts.get((tid, int(yr), int(doy), cha), 0),
+             "nclfs": ccounts.get((tid, int(yr), int(doy), cha), 0),
              "rid": rids.get((tid, int(yr), int(doy), cha), "")}
             for tid, yr, doy, cha in sorted(self._prior_done)
         ]

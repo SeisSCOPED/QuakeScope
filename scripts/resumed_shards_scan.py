@@ -42,8 +42,12 @@ with ThreadPoolExecutor(a.workers) as ex:
     rows = list(ex.map(one, keys))
 print(f"fetched in {time.time()-t:.0f}s", flush=True)
 import os; os.makedirs(a.out, exist_ok=True); out = f"{a.out}/scan_{camp}.csv"
+FIELDS = ["shard_id", "prog_worker", "prog_n", "comp_worker", "complete", "man_n", "man_files",
+          "in_prog_not_man", "in_man_not_prog", "station_days", "picks_record"]
 with open(out, "w") as f:
-    w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+    w = csv.DictWriter(f, fieldnames=FIELDS); w.writeheader(); w.writerows(rows)
+if not rows:
+    print(f"{camp}: no checkpointed shards, nothing to scan"); sys.exit(0)
 resumed = [r for r in rows if r["complete"] and r["prog_worker"] != r["comp_worker"]]
 under = [r for r in rows if r["complete"] and r["in_prog_not_man"] > 0]
 print(f"{camp}: complete {sum(r['complete'] for r in rows)}, finished by a different worker than checkpointed: {len(resumed)}, "
