@@ -123,7 +123,31 @@ than resumes if preempted and the old image's bug cannot bite. Per-shard
 findings: `resumed_shards/repair_shards_<campaign>.csv`; the station-days:
 `resumed_shards/repair_station_days_<campaign>.csv`.
 
-Two things a reader of the parent prefix should know afterwards: the repaired
-picks carry run ids whose records live under `<campaign>-repair/runs/` (copy
-them across once the repair completes), and a repair shard's manifest lists
-only the station-days it re-picked, which is what it should.
+A repair shard's manifest lists only the station-days it re-picked, which is
+what it should; its run records were copied from `<campaign>-repair/runs/`
+into `<campaign>/runs/` once the queue drained, so `rid` resolves where readers
+look.
+
+## What the repair recovered (2026-09-17)
+
+Read from the repair manifests in each parent prefix after the queues drained.
+"Read from the archive" is the station-days that produced a record (the
+archive held data); the difference from "planned" is the padding the plan
+basis carries.
+
+| campaign | resumed shards (visible + hidden) | repair shards | planned station-days | read from the archive | with picks | picks recovered |
+|---|--:|--:|--:|--:|--:|--:|
+| western | 308 + 1,644 | 6,393 | 302,598 | 140,329 | 125,549 | 25,275,872 |
+| western-2026 | 20 + 130 | 383 | 26,210 | 10,771 | 9,957 | 1,836,356 |
+| obs | 26 + 126 | 381 (5 blocked, Z5 2022-23) | 14,606 | 8,533 | 8,432 | 1,570,901 |
+| obs-early | 5 + 9 | 41 | 953 | 921 | 895 | 141,283 |
+
+So the loss was **1.8 % of western's processed station-days and about 1.9 %
+of its picks**, twelve times the 0.15 % first reported from the visible class
+alone, and the hidden class carried nearly all of it. Cost of the repair,
+attempt-level from Batch at $0.02132/vCPU-h: western 1,228 vCPU-h, $26
+(119 attempts, 74 of them Spot reclaims); western-2026 $2; obs $1; obs-early
+$0.2. Western's total therefore stands at 88,107 vCPU-h and $1,878 for
+7,871,289 processed station-days, $0.000239 each. The western figures above
+are from 6,389 of 6,393 shards; the last four were stranded twice by Spot
+reclaims of their workers and finished under tail jobs with a shorter lease.
