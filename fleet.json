@@ -2,7 +2,7 @@
   "_comment": "Fleet targets, read by .github/workflows/fleet.yml on every scheduled top-up (hourly). Edit through the Fleet workflow (Actions -> Fleet -> Run workflow) rather than by hand: the workflow commits its change here, so this file is the audit trail of who scaled what and when. target 0 stops a campaign without losing its place - the queue is durable, so it resumes where it left off.",
   "campaigns": {
     "western": {
-      "target": 10,
+      "target": 0,
       "job_definition": "quakescope_2026_western:27",
       "weight": "original",
       "procs": 4,
@@ -39,7 +39,7 @@
       "threads": 2
     },
     "obs-early": {
-      "target": 50,
+      "target": 0,
       "job_definition": "quakescope_2026_obs:23",
       "weight": "obs",
       "procs": 4,
@@ -53,7 +53,7 @@
       "threads": 2
     },
     "western-2026": {
-      "target": 5,
+      "target": 0,
       "job_definition": "quakescope_2026_western:27",
       "weight": "original",
       "procs": 4,
@@ -69,7 +69,7 @@
       "max_hours": 8
     },
     "western-early": {
-      "target": 100,
+      "target": 0,
       "job_definition": "quakescope_2026_western:27",
       "weight": "original",
       "procs": 4,
