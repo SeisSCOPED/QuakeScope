@@ -287,6 +287,7 @@ Recorded because they are the argument for the smoke-test discipline above.
 | | |
 |---|---|
 | [24_cost_model.md](24_cost_model.md) | **cost, rebuilt per campaign — supersedes every earlier figure** |
+| [29_one_prefix_per_catalogue.md](29_one_prefix_per_catalogue.md) | **plan**: fold the era prefixes into `western/`, `obs/`, `global/`; queues to `_queues/`, clutter to `_archive/` |
 | [28_resumed_shard_overwrite.md](28_resumed_shard_overwrite.md) | a resumed shard overwrites its first checkpoint files and its manifest covers only the last attempt; measured on every finished campaign |
 | [../data_access.md](../data_access.md) | how to read the catalogue: what is public, layout, the three reading rules, coverage |
 | [23_amplitude_review.md](23_amplitude_review.md) | WA taper, `wa_min_conf`, whole-day deconvolution |
