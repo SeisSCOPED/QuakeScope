@@ -1,0 +1,8 @@
+{
+ "archived_from": "_sweep",
+ "when": "2026-09-18T23:43:57.188525Z",
+ "objects": 2,
+ "bytes": 22478,
+ "why": "test, dry-run, profiling and abandoned-attempt prefixes moved out of the public listing 2026-09-18 (docs/rerun_2026/29); western-a is the abandoned first western attempt of 2026-09-03, scedc the pre-restructure jma_wc test, incident the 2026-09-04 evidence",
+ "mismatched": 0
+}

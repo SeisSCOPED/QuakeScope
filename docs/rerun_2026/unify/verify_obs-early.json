@@ -1,0 +1,23 @@
+{
+ "era": "obs-early",
+ "into": "obs",
+ "checked": "2026-09-18T21:17:17.928592Z",
+ "picks/": {
+  "source": 5524,
+  "mismatched": 0,
+  "examples": [],
+  "sampled_pairs": 200,
+  "row_mismatch": 0
+ },
+ "runs/": {
+  "source": 1693,
+  "mismatched": 0,
+  "examples": []
+ },
+ "manifests/": {
+  "source": 1663,
+  "problems": 0,
+  "examples": []
+ },
+ "problems": 0
+}

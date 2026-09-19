@@ -1,0 +1,19 @@
+{
+ "era": "obs-early",
+ "into": "obs",
+ "started": "2026-09-18T21:16:22.652113Z",
+ "picks/": {
+  "source": 5524,
+  "copied": 5524
+ },
+ "runs/": {
+  "source": 1693,
+  "copied": 1693
+ },
+ "manifests/": {
+  "source": 1663,
+  "rewritten": 1663
+ },
+ "station_ids_only_in_era": 0,
+ "finished": "2026-09-18T21:17:17.393005Z"
+}

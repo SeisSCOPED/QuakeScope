@@ -1,0 +1,19 @@
+{
+ "era": "western-early",
+ "into": "western",
+ "started": "2026-09-18T21:28:34.746853Z",
+ "picks/": {
+  "source": 123175,
+  "copied": 123175
+ },
+ "runs/": {
+  "source": 36085,
+  "copied": 36085
+ },
+ "manifests/": {
+  "source": 32211,
+  "rewritten": 32211
+ },
+ "station_ids_only_in_era": 0,
+ "finished": "2026-09-18T21:44:24.469903Z"
+}

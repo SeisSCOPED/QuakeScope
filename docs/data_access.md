@@ -40,37 +40,43 @@ the same month takes 86 s through `pandas` + `s3fs` against 9 s to sync plus
 ## 2. What is published
 
 Bucket **`s3://quakescope-picks-2026`**, region **us-east-2**, one prefix per
-campaign. Public read is granted on `*/picks/*`, `*/manifests/*`, `*/runs/*`,
-`*/stations.parquet` and on listing; `shards.jsonl`, `claims/`, `complete/`,
-`progress/` and `access.json` are the campaign's internal state and are not
-readable anonymously. Every public object is also reachable over plain HTTPS at
+catalogue. Public read is granted on each catalogue's `picks/`, `manifests/`,
+`runs/` and `stations.parquet`, and on listing. Everything else in the bucket
+starts with an underscore: `_queues/` holds the per-era work queues and their
+claim and completion state (not public), `_archive/` holds earlier attempts
+and test runs. Every public object is also reachable over plain HTTPS at
 `https://quakescope-picks-2026.s3.us-east-2.amazonaws.com/<key>`.
 
-| campaign | weight | period | shards complete | Parquet objects | size | picks | state |
-|---|---|---|--:|--:|--:|--:|---|
-| `western` | `original` | 2010-01-01 to 2026-01-01 | 72,464 / 72,505 | 276,829 | 33.6 GB | 1.31 B | **done**; 41 shards embargoed or awaiting review |
-| `western-2026` | `original` | 2026-01-01 to 2026-09-08 | 3,224 / 3,237 | 12,448 | 1.9 GB | 76 M | done; 13 shards awaiting review |
-| `western-early` | `original` | 1986-01-01 to 2010-01-01 | 84,839 / 85,278 | 123,175 | 5.8 GB | 25 M at 80 % | running, 100 workers |
-| `obs` | `obs` (PickBlue) | 2010-01-01 to 2026-01-01 | 6,231 / 6,566 | 19,067 | 2.7 GB | 102 M | 335 shards blocked (EarthScope 403) |
-| `obs-early` | `obs` | 1993-01-01 to 2010-01-01 | 3,631 / 3,631 | 5,499 | 0.7 GB | 27 M | done |
-| `global` | `jma_wc` | 2010-01-01 to 2026-01-01 | 7,344 / 202,468 | 22,460 | 15.8 GB | 584 M | paused at 3.6 % |
+| catalogue | weight | years | Parquet objects | size | picks | state |
+|---|---|---|--:|--:|--:|---|
+| `western` | `original` | 1986 to 2026 (to September) | 417,366 | 42.0 GB | 1.40 B | **done** for the years the archives serve; 493 shards embargoed or awaiting review |
+| `obs` | `obs` (PickBlue) | 1993 to 2026 | 24,896 | 3.5 GB | 130 M | done; 335 shards blocked (EarthScope 403), 2026 not yet run |
+| `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 584 M | paused at 3.6 % |
 
-Shard counts, object counts and sizes: S3 listing through boto3, 2026-09-16.
-Pick counts: the [campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html),
-rebuilt hourly from the Parquet footers; the figures above are its 2026-09-11
-15:51 UTC build, so `western-early` has grown since. Which shards are
-embargoed, blocked or awaiting review is on the same page.
+Object counts and sizes: S3 listing through boto3 after the eras were folded
+together on 2026-09-18. Pick counts: the
+[campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html),
+rebuilt hourly from the Parquet footers, per catalogue; queue progress per
+era is on the same page, as are the shards that are embargoed, blocked or
+awaiting review.
+
+Each catalogue was produced by several campaigns run in eras, because a work
+queue is immutable once written (`western-early` for 1986 to 2009, `western`
+for 2010 to 2025, `western-2026`), all with the same weight and thresholds and
+all writing into the same prefix, so a reader never has to know which era a
+year came from. Pick objects are named by the shard that wrote them and the
+`year=` partition runs continuously across the eras.
 
 **Western** is the stakeholder deliverable and the one to start with. It is
-24,008 station-locations in a box over Washington, Oregon, California, Nevada,
-Idaho and Wyoming (31.5 to 49.2 N, 125.0 to 104.0 W, which also takes in parts
-of Arizona, Utah, Montana and Colorado), read from the SCEDC, NCEDC and
-EarthScope archives. The three `western*` prefixes are one catalogue split by
-era, because a campaign's work queue is immutable once written: read them as
-one dataset (section 5).
+24,008 station-locations inside the state polygons of Washington, Oregon,
+California, Nevada, Idaho and Wyoming, read from the SCEDC, NCEDC and
+EarthScope archives. Stations in Utah, Montana, Arizona, Colorado, New Mexico,
+British Columbia and Baja California are not in it (see
+[29_one_prefix_per_catalogue.md](rerun_2026/29_one_prefix_per_catalogue.md)
+for the count); offshore stations are in `obs`.
 
-**Not compacted.** The catalogue is written by 1,500 concurrent workers, so a
-month partition holds hundreds of files of about 120 KB each. Reads are
+**Not compacted.** The catalogue was written by up to 1,500 concurrent
+workers, so a month partition holds hundreds of files of about 120 KB each. Reads are
 correct but pay per object, which is why every rule in section 4 is about
 touching fewer objects. Compaction is planned and will change object names,
 not content.
@@ -151,8 +157,8 @@ latency.
 
 **Rule 2: for anything larger than a month, sync first.** The AWS CLI and
 `s3fs` both fetch concurrently and land at 15 to 20 MB/s; every query after
-that is local. A network-year is 0.7 GB; the whole of `western` is 33.6 GB and
-277 k objects, which `aws s3 sync` handles in about an hour on a fast link.
+that is local. A network-year is 0.7 GB; the whole of `western` is 42 GB and
+417 k objects, which `aws s3 sync` handles in about 90 minutes on a fast link.
 
 **Rule 3: aggregate in the engine, select only the columns you need.** The
 catalogue is far larger than any laptop. A count, a histogram, a per-station
@@ -225,11 +231,6 @@ longitude box, or by network, take the distinct `network_code` values, and sync
 Then filter the rows on `tid` for the stations you kept, because a network
 partition holds every station of that network, not only the ones in your box.
 
-The three eras are one dataset. Sync the same `network=/year=` prefixes from
-`western-early` (before 2010), `western` (2010 to 2025) and `western-2026`
-(2026) into one local tree and read the tree; the schema is identical and
-`rid` keeps the runs separable.
-
 ## 6. Coverage: was this station-day picked at all?
 
 A station-day with no rows may mean the archive held no data, or that the
@@ -257,11 +258,12 @@ download notebook builds the coverage table this way for a region and period.
 
 ## 7. Provenance and citation
 
-The western campaign is PhaseNet with the `original` weights (Zhu and Beroza,
+The western catalogue is PhaseNet with the `original` weights (Zhu and Beroza,
 2019, as packaged by SeisBench), P and S thresholds 0.2, components ZNE12,
-SeisBench 0.12.5, weight version 2, run 2026-09-03 to 2026-09-11 on AWS Batch
+SeisBench 0.12.5, weight version 2, run 2026-09-03 to 2026-09-17 on AWS Batch
 Fargate Spot from image `ghcr.io/seisscoped/quakescope` at the commits pinned
-in the campaign job definitions (`fleet.json`). The picks reproduce exactly
+in the campaign job definitions (`fleet.json`); the three eras and the
+2026-09-17 repair share that configuration and are told apart by `rid`. The picks reproduce exactly
 when re-picked through ObsPy/FDSN on another architecture
 ([western_pick_validation.html](https://seisscoped.org/QuakeScope/western_pick_validation.html)).
 
@@ -282,5 +284,5 @@ date you read it, because the bucket is live.
 - `amp` exists only above `conf` 0.5. Magnitudes from this catalogue are
   magnitudes of the confident picks.
 - Coverage gaps (section 6) are not yet quantified for the whole campaign.
-- The bucket is live: `western-early` is still being written, and compaction
-  will rename objects. Record the date of any pull.
+- The bucket is live: embargoed years fill in as EarthScope opens them, and
+  compaction will rename objects. Record the date of any pull.

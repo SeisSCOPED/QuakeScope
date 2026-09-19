@@ -19,32 +19,42 @@ CPU-bound, so locality is not worth splitting the output over.
   Versioning would keep every superseded retry and silently double a 3.1 TB
   catalogue.
 
-## Campaign prefixes
+## Catalogue and queue prefixes
 
-One prefix per campaign. Campaigns never share a prefix, because the queue is
-keyed on shard id and two campaigns would collide.
+**Revised 2026-09-18 ([29](29_one_prefix_per_catalogue.md)).** One prefix per
+*catalogue* holds the output; one prefix per *campaign* (an era of a
+catalogue) holds the queue. A worker takes `--campaign` (the queue) and
+`--parquet_uri` (the catalogue); `fleet.json` records both as `queue` and
+`parquet_uri`.
 
 ```
 s3://quakescope-picks-2026/
-    scedc/          campaign 1
-    ncedc/          campaign 2
-    earthscope/     campaign 3
-    obs/            campaign 4
-    western/        campaign 5  (the stakeholder deliverable)
+    western/        catalogue: 1986 to 2026, `original`      (the stakeholder deliverable)
+    obs/            catalogue: 1993 to 2026, `obs`
+    global/         catalogue: 2010 to 2026, `jma_wc`
+    _queues/<campaign>/   western-early, western, western-2026, obs-early, obs, obs-2026, global, global-2026, *-repair
+    _archive/<name>/      earlier attempts, tests, dry runs
 ```
 
-## Layout inside a campaign
+Queues never share a prefix, because they are keyed on shard id; catalogues
+can be fed by any number of queues because shard ids embed their date range
+and eras hold disjoint years.
+
+## Layout inside a catalogue and a queue
 
 ```
-<campaign>/
-    stations.parquet              station metadata
+<catalogue>/
+    stations.parquet              station metadata (the planning table, shared by the eras)
+    manifests/<shard_id>.json     what each job wrote, including object keys
+    runs/<run_id>.json            model, weight, thresholds
+    picks/network=<NET>/year=<YYYY>/month=<MM>/<shard_id>.parquet
+_queues/<campaign>/
+    stations.parquet              the queue's own copy of the table the worker reads
     shards.jsonl                  the work queue, immutable once written
     claims/<shard_id>.json        who holds what
     progress/<shard_id>.json      mid-shard checkpoints
     complete/<shard_id>.json      finished shards
-    manifests/<shard_id>.json     what each job wrote, including object keys
-    runs/<run_id>.json            model, weight, thresholds
-    picks/network=<NET>/year=<YYYY>/month=<MM>/<shard_id>.parquet
+    blocked/, review/, access.json
 ```
 
 ### Shard id, and why files are named after it

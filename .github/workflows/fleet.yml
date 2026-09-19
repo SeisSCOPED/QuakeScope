@@ -352,9 +352,17 @@ jobs:
           max_age = float(os.environ["ACCESS_MAX_AGE_DAYS"])
           floor = float(os.environ["ACCESS_MIN_READABLE"])
           BUCKET = "quakescope-picks-2026"
-          key = f"{camp}/access.json"
-          s3 = boto3.client("s3")
           cfg = json.load(open("fleet.json"))["campaigns"][camp]
+          # A campaign's queue lives under `queue` (default: its own name at the
+          # bucket root); its picks go to `parquet_uri` (default: the same).
+          # Since 2026-09-18 the eras of one catalogue share an output prefix
+          # and keep their queues under _queues/ - docs/rerun_2026/29.
+          QUEUE = cfg.get("queue") or f"s3://{BUCKET}/{camp}"
+          if not QUEUE.startswith(f"s3://{BUCKET}/"):          # a bare key is accepted too
+              QUEUE = f"s3://{BUCKET}/{QUEUE.strip('/')}"
+          qkey = QUEUE[len(f"s3://{BUCKET}/"):].rstrip("/")
+          key = f"{qkey}/access.json"
+          s3 = boto3.client("s3")
 
           def say(md):
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
@@ -374,7 +382,7 @@ jobs:
               """
               try:
                   body = s3.get_object(Bucket=BUCKET,
-                                       Key=f"{camp}/shards.jsonl")["Body"].read()
+                                       Key=f"{qkey}/shards.jsonl")["Body"].read()
                   pairs = set()
                   for line in body.splitlines():
                       if not line.strip():
@@ -397,7 +405,7 @@ jobs:
                   jobDefinition=cfg["job_definition"],
                   containerOverrides={"command": [
                       "netyear-sweep",
-                      "--campaign", f"s3://{BUCKET}/{camp}",
+                      "--campaign", QUEUE,
                       "--out", f"s3://{BUCKET}/{key}",
                       "--pace", str(PACE)]})
               # SUCCEED. This step did something useful and deliberate; a red
@@ -601,9 +609,13 @@ jobs:
               print(f"--- {name}: target {c['target']}")
               # --once: submit what is missing and exit. The schedule is the
               # loop, so the workflow never holds a runner open.
+              queue = c.get("queue") or f"s3://quakescope-picks-2026/{name}"
               r = subprocess.run([
                   sys.executable, "scripts/spot_governor.py",
-                  "--campaign", f"s3://quakescope-picks-2026/{name}",
+                  "--campaign", queue,
+                  # Output root, when the campaign is one era of a shared
+                  # catalogue (docs/rerun_2026/29). Absent means the queue root.
+                  *(["--parquet-uri", c["parquet_uri"]] if c.get("parquet_uri") else []),
                   "--job-definition", c["job_definition"],
                   "--weight", c["weight"],
                   "--procs", str(c["procs"]), "--threads", str(c["threads"]),
@@ -648,7 +660,7 @@ jobs:
                       tok = r.get("nextToken")
                       if not tok: break
               try:
-                  p = S3CampaignState(f"s3://quakescope-picks-2026/{name}").progress()
+                  p = S3CampaignState(c.get("queue") or f"s3://quakescope-picks-2026/{name}").progress()
                   done, rem = p["complete"], p["remaining"]
               except Exception:
                   done = rem = "?"

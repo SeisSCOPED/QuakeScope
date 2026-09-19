@@ -46,6 +46,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REGION = "us-east-2"
 BUCKET = "quakescope-picks-2026"
 QUEUE = "niyiyu_earthscope_missing_station"
+
+
+def campaign_roots(name: str) -> tuple[str, str]:
+    """(queue key, output key) inside the bucket for a campaign name.
+
+    Since 2026-09-18 (docs/rerun_2026/29) the eras of one catalogue share an
+    output prefix - western-early, western and western-2026 all write picks,
+    manifests and runs under `western/` - while each keeps its own immutable
+    queue under `_queues/<name>/`. fleet.json records both as `queue` and
+    `parquet_uri`; a campaign that names neither is its own queue and its own
+    catalogue at the bucket root, which is how every campaign was laid out
+    before.
+    """
+    try:
+        cfg = json.load(open("fleet.json"))["campaigns"].get(name, {})
+    except Exception:
+        cfg = {}
+    def key(uri, default):
+        if not uri:
+            return default
+        return uri.split(f"s3://{BUCKET}/", 1)[1].rstrip("/") if uri.startswith("s3://") else uri.rstrip("/")
+    return key(cfg.get("queue"), name), key(cfg.get("parquet_uri"), name)
 FARGATE_SPOT_RATE = 0.0148          # $/vCPU-hour, us-east-2, published list rate
 
 # Cost model for the plan panel. VCPU_H_PER_STATION_DAY is MEASURED: 707
@@ -416,25 +438,47 @@ def gather(s3, b, campaigns):
     sampled = []
     unreadable = []
 
+    # One catalogue may be fed by several queues (western by western-early,
+    # western and western-2026). Its picks are counted once, on the row of the
+    # campaign that shares its name; the era rows show queue progress only.
+    counted_catalogues = set()
     for name in campaigns:
+        qkey, okey = campaign_roots(name)
         try:
-            body = s3.get_object(Bucket=BUCKET, Key=f"{name}/shards.jsonl")["Body"].read()
+            body = s3.get_object(Bucket=BUCKET, Key=f"{qkey}/shards.jsonl")["Body"].read()
             shards = sum(1 for x in body.decode().splitlines() if x.strip())
         except Exception:
             shards = 0
         done = picks = sdays = files = nbytes = 0
         pg = s3.get_paginator("list_objects_v2")
-        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/complete/"):
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{qkey}/complete/"):
             done += len(page.get("Contents", []))
         nobjs = 0
-        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/picks/"):
+        planned_sd = 0
+        try:
+            body = s3.get_object(Bucket=BUCKET,
+                                 Key=f"{qkey}/shards.jsonl")["Body"].read()
+            planned_sd = sum(json.loads(x).get("n_station_days", 0)
+                             for x in body.decode().splitlines() if x.strip())
+        except Exception:
+            pass
+        if okey != name or okey in counted_catalogues:
+            # An era of a shared catalogue: its output is counted on the
+            # catalogue's own row.
+            if shards:
+                camp_rows.append({"name": name, "shards": shards, "done": done,
+                                  "picks": None, "sdays": 0, "bytes": 0,
+                                  "planned_sd": planned_sd, "catalogue": okey})
+            continue
+        counted_catalogues.add(okey)
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{okey}/picks/"):
             for o in page.get("Contents", []):
                 nbytes += o["Size"]
                 nobjs += 1
         # Station-days still come from the manifests - the Parquet does not
         # record how many station-days were examined, only what was found.
         n_manifests = 0
-        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{name}/manifests/"):
+        for page in pg.paginate(Bucket=BUCKET, Prefix=f"{okey}/manifests/"):
             for o in page.get("Contents", []):
                 try:
                     m = json.loads(
@@ -448,7 +492,7 @@ def gather(s3, b, campaigns):
         # Picks and their breakdowns come from the Parquet itself, so a
         # preempted worker's output is counted even though it never wrote a
         # manifest.
-        ps = parquet_stats(name)
+        ps = parquet_stats(okey)
         picks = ps["picks"]
         for tid, n in ps["per_station"].items():
             per_station[str(tid)] += int(n)
@@ -470,21 +514,10 @@ def gather(s3, b, campaigns):
             # picks sat in the bucket - the note underneath said so, but a
             # number in a table outweighs a caption every time.
             picks = None
-        # Planned station-days come from the queue, not the manifests: the
-        # manifests only describe what is already finished, and the plan panel
-        # is about what is still to come.
-        planned_sd = 0
-        try:
-            body = s3.get_object(Bucket=BUCKET,
-                                 Key=f"{name}/shards.jsonl")["Body"].read()
-            planned_sd = sum(json.loads(x).get("n_station_days", 0)
-                             for x in body.decode().splitlines() if x.strip())
-        except Exception:
-            pass
         if shards or picks:
             camp_rows.append({"name": name, "shards": shards, "done": done,
                               "picks": picks, "sdays": sdays, "bytes": nbytes,
-                              "planned_sd": planned_sd})
+                              "planned_sd": planned_sd, "catalogue": okey})
         # Count objects from the same listing that produced the bytes. Taking
         # the count from the manifests instead made the two disagree - 9 files
         # against 49 MB - because a running shard has written objects but has
@@ -495,9 +528,9 @@ def gather(s3, b, campaigns):
     coords = {}
     try:
         import pandas as pd
-        for name in campaigns:
+        for okey in sorted({campaign_roots(n)[1] for n in campaigns}):
             try:
-                d = pd.read_parquet(f"s3://{BUCKET}/{name}/stations.parquet")
+                d = pd.read_parquet(f"s3://{BUCKET}/{okey}/stations.parquet")
             except Exception:
                 continue
             for i, sc, lat, lon in zip(d["id"], d["station_code"],
@@ -845,7 +878,7 @@ def waveform_examples(s3, campaigns, n=3, window=(6.0, 18.0), seed=None,
             return True
         return dc == "earthscope" and EarthScopeS3ObjectHelper.is_open_data(net)
 
-    for c in campaigns:
+    for c in sorted({campaign_roots(n)[1] for n in campaigns}):
         objs = []
         for page in s3.get_paginator("list_objects_v2").paginate(
                 Bucket=BUCKET, Prefix=f"{c}/picks/"):
@@ -1123,7 +1156,7 @@ def render(g, examples):
     _rows = []
     for _c in sorted({c["name"] for c in g["camps"]} | set(_cfg)):
         try:
-            _o = _s3.get_object(Bucket=BUCKET, Key=f"{_c}/access.json")
+            _o = _s3.get_object(Bucket=BUCKET, Key=f"{campaign_roots(_c)[0]}/access.json")
             _a = _json.load(_o["Body"])
             _p = _a.get("present", 0)
             _d, _m = len(_a.get("denied", [])), len(_a.get("missing", []))
@@ -1193,8 +1226,11 @@ def render(g, examples):
             f'<td class="num">{p:.2f}%</td>'
             f'<td class="num">'
             + (f'{c["picks"]:,}' if c["picks"] is not None
-               else '<span class="unread" title="the count failed this run; '
-                    'see the note below">not read</span>')
+               else (f'<span class="unread" title="this queue writes into the '
+                     f'{c["catalogue"]} catalogue, counted on that row">in {c["catalogue"]}</span>'
+                     if c.get("catalogue") and c["catalogue"] != c["name"]
+                     else '<span class="unread" title="the count failed this run; '
+                          'see the note below">not read</span>'))
             + '</td></tr>')
 
     # ---- campaign plan: what each queue will cost and how long it will take.
