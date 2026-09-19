@@ -25,8 +25,10 @@ flowchart LR
 ```
 
 **There is no database.** Work queue, claims, resume state, provenance and
-output are all S3 objects under one campaign prefix. A campaign costs nothing
-between runs and needs no VPC.
+output are all S3 objects. Since 2026-09-18 the output of a catalogue
+(`western/`, `obs/`, `global/`) is one prefix fed by any number of era queues
+under `_queues/`; see [29](29_one_prefix_per_catalogue.md). A campaign costs
+nothing between runs and needs no VPC.
 
 Workers claim shards with an S3 conditional write (`IfNoneMatch: "*"`), so two
 workers can never take the same shard. A claim goes stale after `lease_hours`
@@ -139,7 +141,7 @@ What changed inside `global`, against the three queues it replaces:
 
 **The 49 dropped networks** answered 403 for every year — the data exists and
 this account may not read it, so those shards could only ever fail. They are
-listed in `_sweep/{earthscope,western}.json` and can be restored if EarthScope
+listed in `_archive/_sweep/{earthscope,western}.json` and can be restored if EarthScope
 grants access: `AF DR KS PI TR VE EC GI TD YF I0 YE ZC MP RI OC DE EO` and 31
 more.
 

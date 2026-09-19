@@ -152,6 +152,10 @@ def submit(batch, args, n: int) -> list[str]:
     # against whatever is deployed.
     if args.max_hours:
         cmd += ["--max-hours", str(args.max_hours)]
+    # Same opt-in shape: the worker has accepted --parquet_uri since v3, but
+    # leaving it out keeps the default (output under the queue root) explicit.
+    if args.parquet_uri:
+        cmd += ["--parquet_uri", args.parquet_uri]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")]
@@ -171,7 +175,10 @@ def main(argv=None) -> int:
         format="%(asctime)s | %(levelname)s | %(message)s")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--campaign", required=True, help="s3://bucket/campaign")
+    ap.add_argument("--campaign", required=True, help="s3://bucket/campaign (the queue root)")
+    ap.add_argument("--parquet-uri", default="",
+                    help="output root for picks, manifests and runs when the queue is one era "
+                         "of a shared catalogue (docs/rerun_2026/29); default: the queue root")
     ap.add_argument("--job-definition", required=True)
     ap.add_argument("--queue", default="niyiyu_earthscope_missing_station")
     ap.add_argument("--target", type=int, default=10,

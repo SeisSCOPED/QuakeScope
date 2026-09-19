@@ -64,13 +64,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sb_catalog.src.shard_planner import shard_id as make_shard_id  # noqa: E402
 
 BUCKET, REGION = "quakescope-picks-2026", "us-east-2"
-JOBDEF = {  # parent campaign -> (job definition, weight); the definition carries the secret and the thread env
-    "western": ("quakescope_2026_western:26", "original"),
-    "western-2026": ("quakescope_2026_western:26", "original"),
-    "western-early": ("quakescope_2026_western:26", "original"),
-    "obs": ("quakescope_2026_obs:22", "obs"),
-    "obs-early": ("quakescope_2026_obs:22", "obs"),
-}
+
+
+def _fleet():
+    """(job definition, weight, queue key, output key) per campaign, from fleet.json.
+
+    Since 2026-09-18 a campaign's queue lives under _queues/<name>/ and its
+    picks under the catalogue prefix (docs/rerun_2026/29); both are recorded in
+    fleet.json and default to the campaign name at the bucket root.
+    """
+    cfg = json.loads(Path(__file__).resolve().parents[1].joinpath("fleet.json").read_text())["campaigns"]
+    out = {}
+    for name, c in cfg.items():
+        key = lambda u: u.split(f"s3://{BUCKET}/", 1)[1].rstrip("/") if u else name
+        out[name] = (c["job_definition"], c["weight"], key(c.get("queue")), key(c.get("parquet_uri")))
+    return out
+
+
+JOBDEF = _fleet()
 QUEUE = "niyiyu_earthscope_missing_station"
 s3 = boto3.client("s3", region_name=REGION, config=BotoConfig(
     retries={"max_attempts": 10, "mode": "adaptive"}, read_timeout=120, max_pool_connections=64))
@@ -204,7 +215,10 @@ def main() -> None:
     ap.add_argument("--launch-only", action="store_true", help="skip the analysis; submit workers on an existing queue")
     a = ap.parse_args()
     camp, repair = a.campaign, f"{a.campaign}-repair"
-    jobdef, weight = JOBDEF[camp]
+    jobdef, weight, qkey, okey = JOBDEF[camp]
+    if (qkey, okey) != (camp, camp):
+        sys.exit(f"{camp}: queue {qkey}, output {okey}. This script predates the prefix reorganisation "
+                 f"(docs/rerun_2026/29) and reads state from <campaign>/; adapt it before running.")
 
     if a.launch_only:
         if not a.launch:

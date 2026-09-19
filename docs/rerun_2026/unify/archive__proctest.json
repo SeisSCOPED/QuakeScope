@@ -1,0 +1,8 @@
+{
+ "archived_from": "_proctest",
+ "when": "2026-09-18T23:43:55.852628Z",
+ "objects": 85,
+ "bytes": 40617715,
+ "why": "test, dry-run, profiling and abandoned-attempt prefixes moved out of the public listing 2026-09-18 (docs/rerun_2026/29); western-a is the abandoned first western attempt of 2026-09-03, scedc the pre-restructure jma_wc test, incident the 2026-09-04 evidence",
+ "mismatched": 0
+}
