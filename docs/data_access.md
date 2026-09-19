@@ -49,16 +49,18 @@ and test runs. Every public object is also reachable over plain HTTPS at
 
 | catalogue | weight | years | Parquet objects | size | picks | state |
 |---|---|---|--:|--:|--:|---|
-| `western` | `original` | 1986 to 2026 (to September) | 417,366 | 42.0 GB | 1.40 B | **done** for the years the archives serve; 493 shards embargoed or awaiting review |
-| `obs` | `obs` (PickBlue) | 1993 to 2026 | 24,896 | 3.5 GB | 130 M | done; 335 shards blocked (EarthScope 403), 2026 not yet run |
+| `western` | `original` | 1986 to 2026 (to September) | 417,366 | 42.0 GB | 1.47 B | **done** for the years the archives serve; 493 shards embargoed or awaiting review |
+| `obs` | `obs` (PickBlue) | 1993 to 2026 | 24,896 | 3.5 GB | 131 M | done; 335 shards blocked (EarthScope 403), 2026 not yet run |
 | `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 584 M | paused at 3.6 % |
 
 Object counts and sizes: S3 listing through boto3 after the eras were folded
-together on 2026-09-18. Pick counts: the
-[campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html),
-rebuilt hourly from the Parquet footers, per catalogue; queue progress per
-era is on the same page, as are the shards that are embargoed, blocked or
-awaiting review.
+together on 2026-09-18. Pick counts: the sum of the eras' counts on the
+[campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html)
+of 2026-09-18 22:20 UTC (western 1,332,145,315 + western-early 64,693,941 +
+western-2026 about 77.9 M; obs 103,146,265 + obs-early 27,522,521). The
+dashboard now counts per catalogue from the Parquet footers, rebuilt hourly;
+queue progress per era is on the same page, as are the shards that are
+embargoed, blocked or awaiting review.
 
 Each catalogue was produced by several campaigns run in eras, because a work
 queue is immutable once written (`western-early` for 1986 to 2009, `western`
