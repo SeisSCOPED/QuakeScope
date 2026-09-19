@@ -47,6 +47,7 @@ s3 = boto3.client("s3", region_name=REGION, config=BotoConfig(
 QUEUE_PARTS = ("shards.jsonl", "access.json", "README.json", "claims/", "complete/", "progress/",
                "blocked/", "review/", "stations.parquet")
 OUTPUT_PARTS = ("picks/", "manifests/", "runs/")
+CATALOGUES = ("western", "obs", "global")     # prefixes readers see; each keeps its stations.parquet
 LOG = Path("docs/rerun_2026/unify")
 
 
@@ -199,8 +200,14 @@ def cmd_move_queues(a) -> int:
             write_log(f"queue_{camp}", {"campaign": camp, "objects": len(src), "copied": len(todo), "mismatched": len(bad),
                                         "when": datetime.datetime.utcnow().isoformat() + "Z"})
             if not bad and a.delete_source:
-                pmap(lambda k: retry(lambda: s3.delete_object(Bucket=BUCKET, Key=k)), sorted(src), a.workers, "delete")
-                print(f"  deleted {len(src):,} source objects")
+                # A campaign that shares its name with its catalogue (western,
+                # obs, global) keeps stations.parquet: the queue gets a copy,
+                # the catalogue keeps the original readers depend on. Learned
+                # by deleting it on 2026-09-18 and restoring it from _queues/.
+                keep = {f"{src_root}stations.parquet"} if camp in CATALOGUES else set()
+                todel = sorted(set(src) - keep)
+                pmap(lambda k: retry(lambda: s3.delete_object(Bucket=BUCKET, Key=k)), todel, a.workers, "delete")
+                print(f"  deleted {len(todel):,} source objects" + (f", kept {sorted(keep)}" if keep else ""))
     return 0 if not problems else 1
 
 

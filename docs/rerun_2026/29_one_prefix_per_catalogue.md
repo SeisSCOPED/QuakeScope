@@ -1,6 +1,7 @@
 # 29 — One prefix per catalogue
 
-Plan, written 2026-09-18, not yet executed. The three western eras
+Plan written 2026-09-18 and **executed the same day**; the outcome is at the
+end. The three western eras
 (`western-early` 1986 to 2009, `western` 2010 to 2025, `western-2026`) and the
 two OBS eras are one catalogue each split across prefixes only because a
 campaign's work queue is immutable once written. Readers should find every
@@ -151,3 +152,33 @@ Compaction (still unverified code, [OPTIMISE.md](OPTIMISE.md) item 5) is a
 separate change and should run after this one, on the unified prefixes.
 Renaming the catalogues themselves (`western`, `obs`, `global`) is not
 proposed; they are in every document and in the email.
+
+## Outcome (2026-09-18 to 19)
+
+Steps 1 to 6 and 9 done; step 7 (delete the era output under the old roots)
+is due on **2026-09-25** with `scripts/unify_catalogue.py delete --era <era>
+--into <catalogue> --yes` for `western-early`, `western-2026` and `obs-early`.
+Logs of every step: [`unify/`](unify/).
+
+| step | result |
+|---|---|
+| copy + verify | `obs-early` into `obs`: 5,524 picks, 1,693 runs, 1,663 manifests. `western-2026` into `western`: 12,735 / 2,912 / 2,177. `western-early` into `western`: 123,175 / 36,085 / 32,211. Every object has a twin with the same ETag and size; 200 sampled Parquet pairs per era hold the same rows; every rewritten manifest path answers a HEAD |
+| move-queues | twelve queues, 444,000 objects, under `_queues/`; sources deleted after verification |
+| archive | 26 prefixes under `_archive/`, each with a `README.json`; sources deleted after verification |
+| bucket policy | public `GetObject` named on `western/`, `obs/`, `global/` (picks, manifests, runs, stations.parquet); `ListBucket` unchanged. `_queues/*` and `_archive/*` answer 403 anonymously |
+| tutorials | both data-access notebooks re-executed against `western/`; the region example now also finds the repair shards' picks |
+
+Two things the verification did not catch and the script now handles:
+
+- **`CopyObject` of a multipart-uploaded object gets a plain MD5 ETag**, so
+  every `stations.parquet` (uploaded by s3fs in parts) and one gzip log
+  showed as a mismatch. Compared by MD5 of the bodies, all identical.
+- **`move-queues` deleted `stations.parquet` from the catalogue-named
+  campaigns** (`western`, `obs`, `global`) after copying it under `_queues/`,
+  so for about ten minutes `western/stations.parquet` answered 404. Restored
+  from the queue copies (MD5 identical); the script now keeps the catalogue's
+  table.
+
+Top-level listing after the move: `_archive/ _queues/ global/ obs/ western/`
+plus `obs-early/ western-2026/ western-early/` holding only the era output
+until 2026-09-25.
