@@ -76,7 +76,7 @@ def _fleet():
     cfg = json.loads(Path(__file__).resolve().parents[1].joinpath("fleet.json").read_text())["campaigns"]
     out = {}
     for name, c in cfg.items():
-        key = lambda u: u.split(f"s3://{BUCKET}/", 1)[1].rstrip("/") if u else name
+        key = lambda u: (u.split(f"s3://{BUCKET}/", 1)[1] if u.startswith("s3://") else u).strip("/") if u else name
         out[name] = (c["job_definition"], c["weight"], key(c.get("queue")), key(c.get("parquet_uri")))
     return out
 

@@ -154,7 +154,7 @@ def submit(batch, args, n: int) -> list[str]:
         cmd += ["--max-hours", str(args.max_hours)]
     # Same opt-in shape: the worker has accepted --parquet_uri since v3, but
     # leaving it out keeps the default (output under the queue root) explicit.
-    if args.parquet_uri:
+    if getattr(args, "parquet_uri", ""):
         cmd += ["--parquet_uri", args.parquet_uri]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",

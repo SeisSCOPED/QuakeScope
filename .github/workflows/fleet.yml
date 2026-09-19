@@ -358,7 +358,9 @@ jobs:
           # Since 2026-09-18 the eras of one catalogue share an output prefix
           # and keep their queues under _queues/ - docs/rerun_2026/29.
           QUEUE = cfg.get("queue") or f"s3://{BUCKET}/{camp}"
-          qkey = QUEUE.split(f"s3://{BUCKET}/", 1)[1].rstrip("/")
+          if not QUEUE.startswith(f"s3://{BUCKET}/"):          # a bare key is accepted too
+              QUEUE = f"s3://{BUCKET}/{QUEUE.strip('/')}"
+          qkey = QUEUE[len(f"s3://{BUCKET}/"):].rstrip("/")
           key = f"{qkey}/access.json"
           s3 = boto3.client("s3")
 

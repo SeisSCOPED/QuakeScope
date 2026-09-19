@@ -186,8 +186,11 @@ def cmd_move_queues(a) -> int:
     problems = 0
     for camp in a.campaign:
         src_root, dst_root = f"{camp}/", f"_queues/{camp}/"
-        src = {k: v for k, v in listing(src_root).items()
-               if any(k[len(src_root):] == p or k[len(src_root):].startswith(p) for p in QUEUE_PARTS)}
+        # List only the queue parts: a catalogue-named campaign also holds
+        # hundreds of thousands of pick objects under the same root.
+        src = {}
+        for part in QUEUE_PARTS:
+            src.update(listing(src_root + part))
         dst = listing(dst_root)
         todo = [k for k, v in src.items() if dst.get(dst_root + k[len(src_root):]) != v]
         print(f"{camp}: {len(src):,} queue objects, {len(todo):,} to copy", flush=True)
