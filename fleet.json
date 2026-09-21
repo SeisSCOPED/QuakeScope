@@ -76,6 +76,15 @@
       "threads": 2,
       "queue": "s3://quakescope-picks-2026/_queues/western-early",
       "parquet_uri": "s3://quakescope-picks-2026/western"
+    },
+    "western-fill": {
+      "target": 0,
+      "job_definition": "quakescope_2026_western:27",
+      "weight": "original",
+      "procs": 4,
+      "threads": 2,
+      "queue": "s3://quakescope-picks-2026/_queues/western-fill",
+      "parquet_uri": "s3://quakescope-picks-2026/western"
     }
   }
 }
