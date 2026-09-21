@@ -72,10 +72,14 @@ year came from. Pick objects are named by the shard that wrote them and the
 **Western** is the stakeholder deliverable and the one to start with. It is
 24,008 station-locations inside the state polygons of Washington, Oregon,
 California, Nevada, Idaho and Wyoming, read from the SCEDC, NCEDC and
-EarthScope archives. Stations in Utah, Montana, Arizona, Colorado, New Mexico,
-British Columbia and Baja California are not in it (see
-[29_one_prefix_per_catalogue.md](rerun_2026/29_one_prefix_per_catalogue.md)
-for the count); offshore stations are in `obs`.
+EarthScope archives, and from 2026-09-21 a further 2,402 station-locations
+being added by the `western-fill` campaign: the rest of the stakeholder list,
+in Utah, Montana, Arizona, Colorado, New Mexico, British Columbia, Alberta,
+Baja California and Sonora (`sb_catalog/configs/networks/western_fill.csv`,
+planned by `scripts/plan_western_fill.py`). The catalogue's `stations.parquet`
+lists the original 24,008; the fill's table is under
+`_queues/western-fill/` until the two are merged when the fill completes.
+Offshore stations are in `obs`.
 
 **Not compacted.** The catalogue was written by up to 1,500 concurrent
 workers, so a month partition holds hundreds of files of about 120 KB each. Reads are

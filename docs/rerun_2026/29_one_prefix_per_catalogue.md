@@ -182,3 +182,24 @@ Two things the verification did not catch and the script now handles:
 Top-level listing after the move: `_archive/ _queues/ global/ obs/ western/`
 plus `obs-early/ western-2026/ western-early/` holding only the era output
 until 2026-09-25.
+
+## The first new queue on the layout: `western-fill` (2026-09-21)
+
+The before/after station plots Marine sent on 2026-09-18 showed the western
+catalogue missing the interior of the stakeholder list. Of the 20,571
+stations in `WestCoast_stations.txt`, 2,732 are not in the western table:
+885 offshore (the `obs` catalogue's), 1,847 on land in Utah (622), Montana
+(248), British Columbia (245), Alberta (203), Arizona (201), Colorado (100),
+Baja California and Sonora (95), New Mexico (25), plus 107 temporary-network
+stations inside the six polygons added to the repo table after the queue was
+written. The specification that started the campaign (archive/09) had named
+Utah and New Mexico; the launch used Wyoming instead. Decided 2026-09-21:
+pick the whole list.
+
+`scripts/plan_western_fill.py` fetched channel-level metadata from EarthScope
+for the 1,847 land stations (162, nearly all `2K`, unknown to FDSN), which is
+2,402 station-locations, and planned them 1986.001 to 2026.251 with the
+production planner: 28,218 shards, 5,830,943 station-days, of which 1.26 M
+are `NP` triggered data. The queue lives under `_queues/western-fill/` and
+writes into `western/`; `fleet.json` names both. At western's measured
+$0.0000556 per planned station-day the fill is about $325.
