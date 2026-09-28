@@ -145,6 +145,63 @@ def apply_inference_precision(model: sbm.WaveformModel, precision: str
     return model
 
 
+#: How the picker's forward pass is executed inside SeisBench's annotate.
+#: "seisbench" is the model's own forward, with the precision set by
+#: apply_inference_precision. "fast" swaps in fast_forward.PhaseNetGraph
+#: (BatchNorm folded, channels-last (1, k) convs, weights stored in the compute
+#: dtype) at FAST_BATCH_SIZE windows per batch: the full-resolution layers are
+#: memory-bound, and 64 windows keep their activations in cache where 256 do
+#: not. Windowing, normalization, blinding, stacking and thresholds are
+#: SeisBench's, unchanged.
+CLASSIFY_IMPLS = ("seisbench", "fast")
+FAST_BATCH_SIZE = 64
+
+
+def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
+                        ) -> sbm.WaveformModel:
+    """Set the forward-pass precision and implementation of `model`, in place.
+
+    The fast graph is built for PhaseNet's exact architecture; any other model
+    keeps the "seisbench" forward, and says so in the log.
+    """
+    if impl not in CLASSIFY_IMPLS:
+        raise ValueError(
+            f"classify impl {impl!r} is not one of {CLASSIFY_IMPLS}")
+    if impl == "seisbench" or type(model) is not sbm.PhaseNet:
+        if impl != "seisbench":
+            logger.warning(f"No fast graph for {type(model).__name__}; "
+                           f"using SeisBench's forward")
+        model.fast_graph = None
+        return apply_inference_precision(model, precision)
+    if precision not in INFER_PRECISIONS:
+        raise ValueError(
+            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    from .fast_forward import PhaseNetGraph
+
+    model.eval()
+    graph = PhaseNetGraph(
+        model, torch.bfloat16 if precision == "bf16" else torch.float32).eval()
+    predict_windows = model._predict_windows
+
+    def forward(x, logits=False):
+        if logits:
+            raise NotImplementedError("the fast graph returns probabilities")
+        graph.batches += 1
+        graph.windows += x.shape[0]
+        return graph(x)
+
+    def _predict_windows(segments, argdict):
+        with torch.inference_mode():
+            return predict_windows(segments, argdict)
+
+    graph.batches = graph.windows = graph.station_days = 0
+    model.forward = forward
+    model._predict_windows = _predict_windows
+    model.default_args["batch_size"] = FAST_BATCH_SIZE
+    model.fast_graph = graph
+    return model
+
+
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -415,6 +472,7 @@ class S3MongoSBBridge:
         on_checkpoint: Optional[Any] = None,
         infer_precision: str = "fp32",
         amp_impl: str = "obspy",
+        classify_impl: str = "seisbench",
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -447,9 +505,10 @@ class S3MongoSBBridge:
 
         # model preparation
         if model is not None:
-            self.model = apply_inference_precision(
+            self.model = apply_classify_impl(
                 self.create_model(model, weight, p_threshold, s_threshold),
                 infer_precision,
+                classify_impl,
             )
         else:
             self.model = None
@@ -748,8 +807,13 @@ class S3MongoSBBridge:
         """Pick and measure one station-day-channel."""
         # do picking
         def _classify():
+            graph = self.model.fast_graph
+            windows = graph.windows if graph is not None else 0
             with stage("model.classify"):
-                return self.model.classify(stream)
+                output = self.model.classify(stream)
+            if graph is not None and graph.windows > windows:
+                graph.station_days += 1
+            return output
 
         stream_annotations = await asyncio.to_thread(_classify)
         n_picks = len(stream_annotations.picks)

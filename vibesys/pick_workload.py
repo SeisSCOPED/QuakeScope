@@ -47,6 +47,10 @@ INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
 #: Amplitude passes (sb_catalog.src.amplitude_extractor.AMP_IMPLS): "fast" reuses
 #: the per-station-day response spectra; QS_AMP_IMPL=obspy restores the seed path.
 AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fast")
+#: PhaseNet forward implementation (sb_catalog.src.picker.CLASSIFY_IMPLS): "fast" runs the
+#: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
+#: SeisBench's own forward at 256.
+CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -163,6 +167,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         job_id=f"group-{index}",
         infer_precision=INFER_PRECISION,
         amp_impl=AMP_IMPL,
+        classify_impl=CLASSIFY_IMPL,
     )
     bridge.run_picking()
     for fault in bridge.signal_faults:
@@ -170,6 +175,13 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     # Per-group start/end wall timestamps make the tail spread across groups visible.
     finished = time.time()
     logger.setLevel(logging.INFO)
+    graph = bridge.model.fast_graph
+    logger.info(
+        "group %d: classify impl %s, %s", index, CLASSIFY_IMPL,
+        f"{graph.station_days} station-days / {graph.batches} batches / {graph.windows} windows "
+        "through the fast graph"
+        if graph is not None else "SeisBench forward",
+    )
     logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
