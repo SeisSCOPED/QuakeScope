@@ -22,6 +22,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -51,6 +52,10 @@ AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fast")
 #: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
 #: SeisBench's own forward at 256.
 CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
+#: Waveform I/O (sb_catalog.src.prefetch): "on" has this parent process LIST each
+#: (net, day) once and GET every object ahead of the workers into the run's TMPDIR,
+#: so the workers only parse local copies; QS_PREFETCH=off restores the in-worker S3 path.
+PREFETCH = os.environ.get("QS_PREFETCH", "on")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -115,6 +120,7 @@ class PickJobConfig:
     output_dir: str
     threads: int
     data_queue_size: int
+    prefetch_dir: str | None = None
 
 
 def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tuple[int, list[list[dict]], int]:
@@ -129,7 +135,8 @@ def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tu
     return threads, groups, data_queue_size
 
 
-def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
+def pick_group(index: int, stations: list[dict], config: PickJobConfig,
+               prefetch_slots: object = None) -> None:
     """Run one production worker loop over a subset of the workload's stations."""
     started = time.time()
     for var in THREAD_ENV_VARS:
@@ -141,8 +148,12 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     )
 
     from sb_catalog.src.picker import S3MongoSBBridge
+    from sb_catalog.src.profiling import profile
     from sb_catalog.src.s3_helper import S3DataSource
     from sb_catalog.src.utils import parse_year_day
+
+    if os.environ.get("QS_PROFILE") == "1":
+        profile.enable()
 
     workload = config.workload
     db = StationTable(stations)
@@ -152,6 +163,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         end=parse_year_day(workload["end"]),
         components=workload["components"],
         db=db,
+        prefetch_dir=config.prefetch_dir,
+        prefetch_slots=prefetch_slots,
     )
     bridge = S3MongoSBBridge(
         s3=source,
@@ -183,8 +196,41 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         if graph is not None else "SeisBench forward",
     )
     logger.info(
+        "group %d: prefetch %s, %s", index, "on" if config.prefetch_dir else "off",
+        ", ".join(f"{k} {v}" for k, v in source.io_counts.items()),
+    )
+    logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
+    )
+    if profile.enabled:
+        logger.info("group %d stage profile:%s", index, profile.report())
+
+
+def run_prefetch(root: str, workload: dict, groups: list[list[dict]], slots: list,
+                 workers: list) -> None:
+    """Parent side of QS_PREFETCH=on: fetch every group's objects while the workers run."""
+    from sb_catalog.src.prefetch import ParentPrefetcher
+    from sb_catalog.src.s3_helper import S3DataSource
+    from sb_catalog.src.utils import parse_year_day
+
+    planners = [
+        S3DataSource.planner(
+            start=parse_year_day(workload["start"]),
+            end=parse_year_day(workload["end"]),
+            stations=",".join(s["id"] for s in group),
+            components=workload["components"],
+            db=StationTable(group),
+        )
+        for group in groups
+    ]
+    stats = ParentPrefetcher(root, planners, slots, alive=lambda g: workers[g].is_alive()).run()
+    logger.info(
+        "prefetch: parent LISTs %d (failed %d), GETs %d (failed %d, %.1f MB) per group %s, "
+        "last GET at %.2f s, done at %.2f s, slot wait %.2f s (timeouts %d)",
+        stats["lists"], stats["list_failed"], stats["gets"], stats["get_failed"],
+        stats["bytes"] / 1e6, stats["gets_per_group"], stats["last_get_s"],
+        stats["elapsed_s"], stats["slot_wait_s"], stats["slot_timeouts"],
     )
 
 
@@ -197,6 +243,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
+    if PREFETCH not in ("on", "off"):
+        raise ValueError(f"unknown QS_PREFETCH {PREFETCH!r}; expected 'on' or 'off'")
     workload = json.loads(args.workload.read_text())
     stations = workload["stations"]
     threads, groups, data_queue_size = resolve_layout(args.vcpus, stations)
@@ -211,25 +259,45 @@ def main() -> int:
     logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
-        "picking %d stations with %d procs x %d threads (layout %s, data queue %d)",
-        len(stations), len(groups), threads, LAYOUT, data_queue_size,
+        "picking %d stations with %d procs x %d threads (layout %s, data queue %d, prefetch %s)",
+        len(stations), len(groups), threads, LAYOUT, data_queue_size, PREFETCH,
     )
 
+    context = mp.get_context("spawn")
+    prefetch_dir = slots = None
+    if PREFETCH == "on":
+        sys.path.insert(0, str(QUAKESCOPE_ROOT))
+        from sb_catalog.src.prefetch import PREFETCH_WINDOW
+
+        # Under the run's own TMPDIR, removed below: never shared across runs.
+        prefetch_dir = tempfile.mkdtemp(prefix="qs-prefetch-")
+        slots = [context.Semaphore(PREFETCH_WINDOW) for _ in groups]
     config = PickJobConfig(
         workload=workload,
         output_dir=str(args.output_dir),
         threads=threads,
         data_queue_size=data_queue_size,
+        prefetch_dir=prefetch_dir,
     )
-    context = mp.get_context("spawn")
     workers = [
-        context.Process(target=pick_group, args=(i, group, config))
+        context.Process(target=pick_group,
+                        args=(i, group, config, slots[i] if slots else None))
         for i, group in enumerate(groups)
     ]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join()
+    try:
+        for worker in workers:
+            worker.start()
+        if prefetch_dir is not None:
+            try:
+                run_prefetch(prefetch_dir, workload, groups, slots, workers)
+            except Exception:
+                # The workers read whatever is missing directly.
+                logger.exception("prefetch failed; the workers read the rest from S3")
+        for worker in workers:
+            worker.join()
+    finally:
+        if prefetch_dir is not None:
+            shutil.rmtree(prefetch_dir, ignore_errors=True)
     failed = [i for i, worker in enumerate(workers) if worker.exitcode != 0]
     if failed:
         logger.error("worker groups %s failed", failed)

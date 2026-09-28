@@ -19,6 +19,7 @@ from obspy.clients.fdsn.header import (FDSNException,
                                        FDSNNoDataException)
 from s3fs import S3FileSystem
 
+from . import prefetch
 from .constants import NETWORK_MAPPING, select_channel
 from .profiling import stage
 if TYPE_CHECKING:                     # pymongo is a 2025 DocumentDB
@@ -1128,20 +1129,11 @@ class S3DataSource:
         components: str = "ZNE12",
         db: SeisBenchDatabase = None,
         limit_mb: Optional[int] = 200,
+        prefetch_dir: Optional[str] = None,
+        prefetch_slots=None,
     ):
-        self.start = start
-        self.end = end
-        self.components = components
-        self.limit_mb = limit_mb
-        if stations is None:
-            self.stations = []
-            self.networks = []
-        else:
-            self.stations = stations.split(",")
-            self.networks = list(set([s.split(".")[0] for s in self.stations]))
-        self.db = db
-        self._logged = set()                  # see `_log_once`
-        self.s3helper = CompositeS3ObjectHelper()
+        self._init_common(start, end, stations, components, db, limit_mb,
+                          prefetch_dir, prefetch_slots)
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
         # Fail before reading anything if this shard needs an archive the job
@@ -1169,6 +1161,65 @@ class S3DataSource:
 
         self.inventory = self._get_inventory()
         logger.info(f"Done preparing inventory for the assigned stations")
+
+    def _init_common(self, start, end, stations, components, db, limit_mb,
+                     prefetch_dir=None, prefetch_slots=None) -> None:
+        self.start = start
+        self.end = end
+        self.components = components
+        self.limit_mb = limit_mb
+        if stations is None:
+            self.stations = []
+            self.networks = []
+        else:
+            self.stations = stations.split(",")
+            self.networks = list(set([s.split(".")[0] for s in self.stations]))
+        self.db = db
+        self._logged = set()                  # see `_log_once`
+        self.s3helper = CompositeS3ObjectHelper()
+        # QS_PREFETCH=on (pick_workload.py): the runner's parent process LISTs
+        # each (net, day) once and GETs this shard's objects into `prefetch_dir`
+        # (see prefetch.py), so this process only reads and parses local files.
+        # None is the direct path: this process LISTs and GETs for itself.
+        self.prefetch_dir = prefetch_dir
+        self.prefetch_slots = prefetch_slots
+        self._shared_days = set()             # (net, day) listed by the parent
+        self.io_counts = {"worker_lists": 0, "worker_gets": 0,
+                          "shared_listings": 0, "local_reads": 0,
+                          "fallbacks": 0}
+
+    @classmethod
+    def planner(cls, start, end, stations, components, db,
+                limit_mb: Optional[int] = 200) -> "S3DataSource":
+        """A source that only resolves what `load_waveforms` would read.
+
+        Used by the runner's prefetching parent: the same station metadata, the
+        same channel choice and the same object rules as the worker's own
+        source, without the inventory request or the archive preflight, which
+        stay with the worker that picks.
+        """
+        self = cls.__new__(cls)
+        self._init_common(start, end, stations, components, db, limit_mb)
+        self.meta = self.db.get_station_metadata(
+            self.stations, {"_id": 0, "id": 1, "channels": 1}
+        ).set_index("id")
+        return self
+
+    def plan_station_day(self, station, day, avail_uri) -> list:
+        """(uri, sourcename) of every object `load_waveforms` reads for one
+        station-day, in its read order, given the day's listings."""
+        channel = select_channel(self.meta.loc[station, "channels"].split(","))
+        if channel is None:
+            return []
+        all_channels = [channel]
+        check = {cha: self.db.get_picks_record(station, day, cha, {"_id": 1})
+                 for cha in all_channels}
+        if all(check.values()):
+            return []
+        net, sta, loc = station.split(".")
+        dc = self.s3helper.get_data_center(net)
+        return [(uri, sel) for uri, sel, _ in self._station_day_reads(
+            net, sta, loc, dc, all_channels, check, day, avail_uri)]
 
     def _check_archives_reachable(self) -> None:
         """Fail before reading anything if this shard needs an archive the job
@@ -1248,6 +1299,11 @@ class S3DataSource:
             avail_uri = {}
             for net in self.networks:
                 avail_uri[net] = []
+                if self.prefetch_dir is not None:
+                    shared = await self._shared_listing(net, day)
+                    if shared is not None:
+                        avail_uri[net] += shared
+                        continue
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
@@ -1263,6 +1319,7 @@ class S3DataSource:
                     # One LIST per day per network. A SCEDC day prefix holds
                     # ~4,000 objects, so this is not free and is paid again for
                     # every day in the shard.
+                    self.io_counts["worker_lists"] += 1
                     with stage("s3.list"):
                         listing = self.s3helper.list_day(net, fs, prefix)
                     avail_uri[net] += listing
@@ -1346,50 +1403,15 @@ class S3DataSource:
                 dc = self.s3helper.get_data_center(net)
                 logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
                 stream = obspy.Stream()
-
-                if dc in ["scedc", "ncedc", "geonet"]:
-                    for channel in all_channels:
-                        if check[channel]:
-                            logger.debug(
-                                f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
-                            )
-                            continue
-                        for uri in self._generate_waveform_uris(
-                            net, sta, loc, channel, day
-                        ):
-                            if uri in avail_uri[net]:
-                                stream += await self._read_with_timeout(
-                                    uri, net, station, day
-                                )
-                elif dc == "earthscope":
-                    # use the first one: they should be all same
-                    r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
-                    # earthscope object name has version number
-                    uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
-                    if len(uri) > 0:
-                        # Ask libmseed for the bands we will keep, so the rest
-                        # is never decoded. One EarthScope object holds every
-                        # channel for the station-day - a UW sample had 214
-                        # traces across 38 codes - and decoding all of them is
-                        # what made --procs 4 exceed 16 GB (OPTIMISE item 0d).
-                        wanted = [c for c in all_channels if not check[c]]
-                        if not wanted:
-                            continue
-                        # obspy takes ONE pattern - a "a|b" form raises rather
-                        # than matching both - so filter only in the single-band
-                        # case, which is what CHANNEL_PRIORITY always yields.
-                        # More than one band falls back to a full read, which is
-                        # correct, just not lean.
-                        sel = (f"{net}.{sta}.{loc}.{wanted[0]}?"
-                               if len(wanted) == 1 else None)
-                        s = await self._read_with_timeout(
-                            uri[0], net, station, day, sourcename=sel
-                        )
+                for uri, sel, wanted in self._station_day_reads(
+                    net, sta, loc, dc, all_channels, check, day, avail_uri
+                ):
+                    s = await self._read(uri, net, station, day, sourcename=sel)
+                    if wanted is None:
+                        stream += s
+                    else:
                         for channel in wanted:
                             stream += s.select(channel=f"{channel}?", location=loc)
-
-                else:
-                    raise NotImplemented(f"Data center not supported: {dc}")
 
                 if len(stream) > 0:
                     # yield stream with all candidate channels for one station, day long stream, with metadata
@@ -1398,6 +1420,145 @@ class S3DataSource:
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
+
+    def _station_day_reads(self, net, sta, loc, dc, all_channels, check, day,
+                           avail_uri):
+        """The objects one station-day is read from, in read order, as
+        (uri, sourcename, wanted): `wanted` None adds the whole object's stream,
+        a list keeps those bands of it. Shared by `load_waveforms` and the
+        prefetching parent (`plan_station_day`), so both read the same bytes."""
+        if dc in ["scedc", "ncedc", "geonet"]:
+            for channel in all_channels:
+                if check[channel]:
+                    logger.debug(
+                        f"Skip {'.'.join((net, sta, loc)).ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                    )
+                    continue
+                for uri in self._generate_waveform_uris(
+                    net, sta, loc, channel, day
+                ):
+                    if uri in avail_uri[net]:
+                        yield uri, None, None
+        elif dc == "earthscope":
+            # use the first one: they should be all same
+            r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
+            # earthscope object name has version number
+            uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
+            if len(uri) > 0:
+                # Ask libmseed for the bands we will keep, so the rest
+                # is never decoded. One EarthScope object holds every
+                # channel for the station-day - a UW sample had 214
+                # traces across 38 codes - and decoding all of them is
+                # what made --procs 4 exceed 16 GB (OPTIMISE item 0d).
+                wanted = [c for c in all_channels if not check[c]]
+                if not wanted:
+                    return
+                # obspy takes ONE pattern - a "a|b" form raises rather
+                # than matching both - so filter only in the single-band
+                # case, which is what CHANNEL_PRIORITY always yields.
+                # More than one band falls back to a full read, which is
+                # correct, just not lean.
+                sel = (f"{net}.{sta}.{loc}.{wanted[0]}?"
+                       if len(wanted) == 1 else None)
+                yield uri[0], sel, wanted
+
+        else:
+            raise NotImplemented(f"Data center not supported: {dc}")
+
+    async def _read(self, uri, net, station, day, sourcename=None) -> obspy.Stream:
+        """One object: from the parent's prefetch when this (net, day) was
+        listed by it, else read directly from S3."""
+        if (net, day) in self._shared_days:
+            return await self._read_prefetched(uri, net, station, day, sourcename)
+        return await self._read_with_timeout(uri, net, station, day,
+                                             sourcename=sourcename)
+
+    async def _await_prefetched(self, path: str) -> Optional[str]:
+        """"ready" once the parent has published `path`, "failed" if it gave up
+        on it, None if it finished (or PREFETCH_WAIT passed) without either."""
+        done = prefetch.done_path(self.prefetch_dir)
+        deadline = time.monotonic() + prefetch.PREFETCH_WAIT
+        while True:
+            if os.path.exists(path):
+                return "ready"
+            if os.path.exists(path + prefetch.FAILED):
+                return "failed"
+            if os.path.exists(done) or time.monotonic() > deadline:
+                if os.path.exists(path):
+                    return "ready"
+                return "failed" if os.path.exists(path + prefetch.FAILED) else None
+            await asyncio.sleep(prefetch.POLL_SECONDS)
+
+    async def _shared_listing(self, net, day) -> Optional[list]:
+        """The parent's listing of (net, day), or None to LIST it here."""
+        path = prefetch.listing_path(self.prefetch_dir, net, day)
+        if await self._await_prefetched(path) != "ready":
+            return None
+        with stage("local.listing"):
+            with open(path) as f:
+                listing = json.load(f)
+        self._shared_days.add((net, day))
+        self.io_counts["shared_listings"] += 1
+        return listing
+
+    async def _read_prefetched(self, uri, net, station, day,
+                               sourcename=None) -> obspy.Stream:
+        """`_read_with_timeout`, from the parent's copy of the object.
+
+        Anything but a clean parse of a published file - the parent failed or
+        never got to it, or the bytes do not parse - falls back to the direct
+        read, whose own handling then decides the outcome exactly as it would
+        have without the prefetch.
+        """
+        path = prefetch.object_path(self.prefetch_dir, uri)
+        state = await self._await_prefetched(path)
+        if state is not None and self.prefetch_slots is not None:
+            self.prefetch_slots.release()     # the parent may fetch another
+        if state == "ready":
+            try:
+                st = await asyncio.wait_for(
+                    asyncio.to_thread(self._parse_prefetched, path, net,
+                                      sourcename, day.year),
+                    timeout=STATION_DAY_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"Timeout after {STATION_DAY_TIMEOUT:.0f}s reading {uri} for "
+                    f"{station} {day.strftime('%Y.%j')}; abandoning this "
+                    f"station-day so the shard can continue."
+                )
+                return obspy.Stream()
+            if st is not None:
+                self.io_counts["local_reads"] += 1
+                return st
+        self.io_counts["fallbacks"] += 1
+        return await self._read_with_timeout(uri, net, station, day,
+                                             sourcename=sourcename)
+
+    def _parse_prefetched(self, path, net, sourcename=None,
+                          year=None) -> Optional[obspy.Stream]:
+        """The parse half of `_read_waveform_from_s3` on a local copy; None if
+        it raised. The copy is deleted once read."""
+        with stage("local.read"):
+            with open(path, "rb") as f:
+                raw = f.read()
+            os.unlink(path)
+        size = len(raw)
+        if self.limit_mb is not None and size / 1024**2 > self.limit_mb:
+            return None                       # the direct read warns and skips
+        try:
+            buff = io.BytesIO(raw)
+            with stage("mseed.parse", unit=size, unit_name="bytes"):
+                if sourcename:
+                    st = obspy.read(buff, format="MSEED",
+                                    sourcename=sourcename)
+                else:
+                    st = obspy.read(buff)
+            self.s3helper.clear_access_denied(net, year)
+            with stage("resample"):
+                return downsample_to_target(st)
+        except Exception:
+            return None
 
     def _log_once(self, key: str, message: str) -> None:
         """Say it at ERROR the first time and at DEBUG after.
@@ -1434,6 +1595,7 @@ class S3DataSource:
         (447 minutes on one GET, no log line, killed by Spot) got past having
         neither.
         """
+        self.io_counts["worker_gets"] += 1
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(self._read_waveform_from_s3, uri, net,
