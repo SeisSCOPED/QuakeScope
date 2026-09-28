@@ -40,6 +40,9 @@ PICK_QUEUE_SIZE = 5
 #: PhaseNet forward-pass precision (sb_catalog.src.picker.INFER_PRECISIONS):
 #: bf16 autocast on AMX by default; QS_INFER_PRECISION=fp32 restores the seed path.
 INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
+#: Amplitude passes (sb_catalog.src.amplitude_extractor.AMP_IMPLS): "fast" reuses
+#: the per-station-day response spectra; QS_AMP_IMPL=obspy restores the seed path.
+AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fast")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -142,6 +145,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         parquet_uri=config.output_dir,
         job_id=f"group-{index}",
         infer_precision=INFER_PRECISION,
+        amp_impl=AMP_IMPL,
     )
     bridge.run_picking()
     for fault in bridge.signal_faults:

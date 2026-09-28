@@ -414,6 +414,7 @@ class S3MongoSBBridge:
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
         infer_precision: str = "fp32",
+        amp_impl: str = "obspy",
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -457,7 +458,7 @@ class S3MongoSBBridge:
             self.classifier = QuakeXNet.from_pretrained("base")
         else:
             self.classifier = None
-        self.amp_extor = AmplitudeExtractor()
+        self.amp_extor = AmplitudeExtractor(impl=amp_impl)
         self.model_name = model
         self.weight = weight
         self.p_threshold = p_threshold
