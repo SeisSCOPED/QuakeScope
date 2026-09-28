@@ -129,3 +129,40 @@ def stage(name: str, unit: float = 0.0, unit_name: str = ""):
         yield
     finally:
         profile.record(name, time.perf_counter() - t0, unit, unit_name)
+
+
+class Timeline:
+    """Wall-clock marks on one worker's startup critical path.
+
+    Always on: it is called a handful of times per station-day, not per window,
+    so it costs nothing measurable. Each name keeps its first and its last
+    time, which is what "first classify start" and "last pick written" need.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.first: dict[str, float] = {}
+        self.last: dict[str, float] = {}
+
+    def mark(self, name: str, when: Optional[float] = None) -> float:
+        when = time.time() if when is None else when
+        with self._lock:
+            self.first.setdefault(name, when)
+            self.last[name] = when
+        return when
+
+    def line(self, t0: float, names: list[tuple[str, str, str]]) -> str:
+        """`label=+offset` for (label, mark name, "first"|"last") that were
+        recorded, offsets in seconds from `t0`."""
+        with self._lock:
+            parts = []
+            for label, name, which in names:
+                marks = self.first if which == "first" else self.last
+                if name in marks:
+                    parts.append(f"{label}=+{marks[name] - t0:.3f}")
+                else:
+                    parts.append(f"{label}=-")
+            return " ".join(parts)
+
+
+timeline = Timeline()

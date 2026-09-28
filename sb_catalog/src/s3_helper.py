@@ -8,8 +8,10 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from abc import abstractmethod
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 import numpy as np
@@ -20,7 +22,7 @@ from obspy.clients.fdsn.header import (FDSNException,
 from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING, select_channel
-from .profiling import stage
+from .profiling import stage, timeline
 if TYPE_CHECKING:                     # pymongo is a 2025 DocumentDB
     from .utils import SeisBenchDatabase   # dependency; v3 writes Parquet
     # and never touches Mongo, so importing it eagerly made the path
@@ -1115,9 +1117,42 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             self.es_denials.pop(self.es_scope_key(net, year), None)
 
 
+def in_background(name: str, fn, *args) -> Future:
+    """Run `fn(*args)` on a daemon thread; the Future carries its result or
+    re-raises its exception, class and all, in whoever asks for it.
+
+    Daemon, not a pool thread: a shard that fails its metadata checks while a
+    startup fetch is still in flight must be able to exit without waiting on
+    the fetch. The thread inherits the process's CPU affinity.
+    """
+    future = Future()
+
+    def run():
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name=name, daemon=True).start()
+    return future
+
+
 class S3DataSource:
     """
     This class provides functionality to load waveform data from an S3 bucket.
+
+    Two startups (`QS_STARTUP` in pick_workload.py):
+
+    * serial - the constructor checks access and metadata, then fetches the
+      inventory, and the first LIST and GETs wait for `load_waveforms`.
+    * overlap - construct with `db=None` and `early_channels`, which checks
+      access and starts, on background threads, the same inventory request and
+      the first day's LIST plus the first station-day's reads; then
+      `attach_db` runs the metadata checks. Everything fetched early is held in
+      this object, used once and dropped: nothing outlives the run. Component
+      reads of one station-day are then issued concurrently.
     """
 
     def __init__(
@@ -1128,6 +1163,7 @@ class S3DataSource:
         components: str = "ZNE12",
         db: SeisBenchDatabase = None,
         limit_mb: Optional[int] = 200,
+        early_channels: Optional[dict[str, str]] = None,
     ):
         self.start = start
         self.end = end
@@ -1141,6 +1177,23 @@ class S3DataSource:
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.db = db
         self._logged = set()                  # see `_log_once`
+        # Overlap startup state. Empty on the serial path, which never reads it
+        # beyond a truth test.
+        self.concurrent_reads = early_channels is not None
+        self._inventory_future: Optional[Future] = None
+        self._inventory_lock = threading.Lock()
+        self._inventory_request_early = None
+        self._early_listing: dict = {}        # (net, prefix) -> Future[list]
+        self._prefetched: dict = {}           # (uri, net, sourcename, year) -> Future
+        self._prefetch_targets: set = set()
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
+        self.startup_counters = {
+            "inventory_early": 0, "inventory_request_mismatch": 0,
+            "listing_early": 0, "listing_consumed": 0,
+            "prefetched": 0, "prefetch_consumed": 0, "prefetch_fallbacks": 0,
+            "prefetch_unused": 0, "max_reads_in_flight": 0,
+        }
         self.s3helper = CompositeS3ObjectHelper()
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
@@ -1149,6 +1202,125 @@ class S3DataSource:
         # is 87% EarthScope fails 87% of its work one station at a time.
         self._check_archives_reachable()
 
+        if db is None and early_channels is not None:
+            self._start_early(early_channels)
+            return
+        self._prepare_metadata()
+        self.inventory = self._get_inventory()
+        logger.info(f"Done preparing inventory for the assigned stations")
+
+    @property
+    def inventory(self):
+        """The station inventory. On the overlap path, the first access joins
+        the startup fetch and re-raises whatever it raised."""
+        if self._inventory_future is not None:
+            # Both amplitude passes ask at once on the fused arm.
+            with self._inventory_lock:
+                if self._inventory_future is not None:
+                    self._inventory = self._inventory_future.result()
+                    self._inventory_future = None
+                    timeline.mark("inventory_joined")
+                    logger.info(f"Done preparing inventory for the assigned stations")
+        return self._inventory
+
+    @inventory.setter
+    def inventory(self, value):
+        self._inventory_future = None
+        self._inventory = value
+
+    def _start_early(self, early_channels: dict[str, str]) -> None:
+        """Overlap startup: begin the inventory fetch, then the first day's
+        LIST and the first station-day's reads, in the background.
+
+        `early_channels` is the station table's `channels` per station id - the
+        column `_get_inventory` reads from the metadata. `attach_db` rebuilds
+        the request from the real metadata and discards this fetch if the two
+        differ.
+        """
+        if not self.stations or any(s not in early_channels for s in self.stations):
+            # Nothing to start from; `attach_db` fails the shard or fetches.
+            return
+        request = self._inventory_request(
+            [early_channels[s] for s in self.stations])
+        self._inventory_request_early = request
+        self._inventory_future = in_background(
+            "qs-inventory", self._fetch_inventory, *request)
+        self.startup_counters["inventory_early"] = 1
+        # The listing futures exist before the loader can look for them, and
+        # are resolved only after the first station-day's reads are
+        # registered: a loader holding the listing therefore always finds
+        # those reads, and never issues a second GET for one of them.
+        day = datetime.datetime.combine(self.start, datetime.time())
+        for net in self.networks:
+            prefix = self.s3helper.get_prefix(
+                net, day.strftime("%Y"), day.strftime("%j"))
+            self._early_listing[(net, prefix)] = Future()
+        # The thread gets its own view: the loader pops from `_early_listing`.
+        in_background("qs-prefetch", self._prefetch_first, early_channels, day,
+                      dict(self._early_listing))
+        timeline.mark("early_started")
+
+    def attach_db(self, db: SeisBenchDatabase) -> None:
+        """Overlap startup, second half: the metadata checks the serial
+        constructor runs, before any picking. The inventory stays in flight."""
+        self.db = db
+        self._prepare_metadata()
+        request = self._inventory_request(self.meta.channels)
+        if self._inventory_request_early is None:
+            self.inventory = self._fetch_inventory(*request)
+        elif request != self._inventory_request_early:
+            # Never expected; if it happens the early answer is for a different
+            # question, so ask the right one, serially, as the serial path does.
+            self.startup_counters["inventory_request_mismatch"] = 1
+            logger.warning(f"Startup inventory request {self._inventory_request_early} "
+                           f"differs from the metadata's {request}; refetching")
+            self.inventory = self._fetch_inventory(*request)
+
+    def _prefetch_first(self, early_channels: dict[str, str],
+                        day: datetime.datetime, listings: dict) -> None:
+        """The first day's LIST for every network, then the first station-day's
+        component reads, each on its own thread. Results and exceptions are
+        both kept for `load_waveforms`, which consumes each once."""
+        outcomes = {}
+        try:
+            for (net, prefix) in listings:
+                try:
+                    outcomes[net] = (self._list_network_day(net, day, prefix), None)
+                except BaseException as exc:
+                    outcomes[net] = (None, exc)
+                self.startup_counters["listing_early"] += 1
+            station = self.stations[0] if self.stations else None
+            if station is not None:
+                net, sta, loc = station.split(".")
+                channel = select_channel(early_channels[station].split(","))
+                listing, _ = outcomes.get(net, (None, None))
+                if (self.s3helper.get_data_center(net) in ["scedc", "ncedc", "geonet"]
+                        and channel is not None and listing is not None):
+                    for uri in self._generate_waveform_uris(net, sta, loc, channel, day):
+                        if uri in listing:
+                            key = (uri, net, None, day.year)
+                            self._prefetch_targets.add(key)
+                            self._prefetched[key] = in_background(
+                                "qs-prefetch-get", self._read_waveform_from_s3,
+                                uri, net, None, day.year)
+                            self.startup_counters["prefetched"] += 1
+        finally:
+            # A listing this thread never reached resolves to None, which the
+            # loader answers with its own LIST.
+            for (net, prefix), future in listings.items():
+                listing, exc = outcomes.get(net, (None, None))
+                if exc is not None:
+                    future.set_exception(exc)
+                else:
+                    future.set_result(listing)
+
+    def release_prefetch(self) -> None:
+        """Drop whatever the startup fetched and nobody used."""
+        self.startup_counters["prefetch_unused"] += len(self._prefetched)
+        self._prefetched.clear()
+        self._early_listing.clear()
+
+    def _prepare_metadata(self) -> None:
         self.meta = self.db.get_station_metadata(
             self.stations, {"_id": 0, "id": 1, "channels": 1}
         ).set_index("id")
@@ -1166,9 +1338,6 @@ class S3DataSource:
                 scope={"stations": missing[:20]},
             )
         logger.info(f"Done preparing metadata for the assigned stations")
-
-        self.inventory = self._get_inventory()
-        logger.info(f"Done preparing inventory for the assigned stations")
 
     def _check_archives_reachable(self) -> None:
         """Fail before reading anything if this shard needs an archive the job
@@ -1259,12 +1428,15 @@ class S3DataSource:
                     # and failed the whole shard - 16 of 48 in the 2026-09-02
                     # dry run, every one of them 5A/2018, which simply does not
                     # exist. A network-year with no data is a day with no data.
-                    fs = self.s3helper.get_filesystem(net, day.year)
-                    # One LIST per day per network. A SCEDC day prefix holds
-                    # ~4,000 objects, so this is not free and is paid again for
-                    # every day in the shard.
-                    with stage("s3.list"):
-                        listing = self.s3helper.list_day(net, fs, prefix)
+                    early = (self._early_listing.pop((net, prefix), None)
+                             if self._early_listing else None)
+                    # The overlap startup already ran this day's LIST; take its
+                    # answer, or its exception, into the same handlers below.
+                    listing = early.result() if early is not None else None
+                    if listing is not None:
+                        self.startup_counters["listing_consumed"] += 1
+                    else:
+                        listing = self._list_network_day(net, day, prefix)
                     avail_uri[net] += listing
                 except EarthScopeNoAccess as exc:
                     # 403 is a fact about access, not a transient fault.
@@ -1347,7 +1519,29 @@ class S3DataSource:
                 logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
                 stream = obspy.Stream()
 
-                if dc in ["scedc", "ncedc", "geonet"]:
+                if dc in ["scedc", "ncedc", "geonet"] and self.concurrent_reads:
+                    # Overlap arm: the station-day's component reads in flight
+                    # together, joined in URI order - the order, and so the
+                    # stream, the serial loop below builds. The first
+                    # exception in that order is the one raised.
+                    uris = [
+                        uri
+                        for channel in all_channels if not check[channel]
+                        for uri in self._generate_waveform_uris(
+                            net, sta, loc, channel, day)
+                        if uri in avail_uri[net]
+                    ]
+                    parts = await asyncio.gather(
+                        *(self._read_with_timeout(uri, net, station, day)
+                          for uri in uris),
+                        return_exceptions=True,
+                    )
+                    for part in parts:
+                        if isinstance(part, BaseException):
+                            raise part
+                    for part in parts:
+                        stream += part
+                elif dc in ["scedc", "ncedc", "geonet"]:
                     for channel in all_channels:
                         if check[channel]:
                             logger.debug(
@@ -1392,12 +1586,29 @@ class S3DataSource:
                     raise NotImplemented(f"Data center not supported: {dc}")
 
                 if len(stream) > 0:
+                    timeline.mark("sd_loaded")
                     # yield stream with all candidate channels for one station, day long stream, with metadata
                     yield [stream, station, day]
                 else:
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
                     )
+        self.release_prefetch()
+
+    def _list_network_day(self, net, day, prefix) -> list:
+        """One network's LIST for one day; the caller handles what it raises."""
+        # INSIDE the caller's try: acquiring the filesystem can itself raise
+        # FileNotFoundError (see `load_waveforms`).
+        fs = self.s3helper.get_filesystem(net, day.year)
+        # One LIST per day per network. A SCEDC day prefix holds
+        # ~4,000 objects, so this is not free and is paid again for
+        # every day in the shard.
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                return self.s3helper.list_day(net, fs, prefix)
+        finally:
+            timeline.mark("list_end")
 
     def _log_once(self, key: str, message: str) -> None:
         """Say it at ERROR the first time and at DEBUG after.
@@ -1434,12 +1645,19 @@ class S3DataSource:
         (447 minutes on one GET, no log line, killed by Spot) got past having
         neither.
         """
+        key = (uri, net, sourcename, day.year)
+        pending = self._prefetched.pop(key, None) if self._prefetched else None
+        if pending is not None:
+            # Started at worker startup; wait for it under the same bound.
+            self.startup_counters["prefetch_consumed"] += 1
+            read = asyncio.to_thread(pending.result)
+        else:
+            if key in self._prefetch_targets:
+                self.startup_counters["prefetch_fallbacks"] += 1
+            read = asyncio.to_thread(self._read_waveform_from_s3, uri, net,
+                                     sourcename, day.year)
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self._read_waveform_from_s3, uri, net,
-                                  sourcename, day.year),
-                timeout=STATION_DAY_TIMEOUT,
-            )
+            return await asyncio.wait_for(read, timeout=STATION_DAY_TIMEOUT)
         except asyncio.TimeoutError:
             logger.error(
                 f"Timeout after {STATION_DAY_TIMEOUT:.0f}s reading {uri} for "
@@ -1478,6 +1696,21 @@ class S3DataSource:
         # indistinguishable from a hang: a profiling shard sat on a single
         # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
         # Bound the attempts and say what is actually wrong.
+        with self._inflight_lock:
+            self._inflight += 1
+            counters = self.startup_counters
+            counters["max_reads_in_flight"] = max(
+                counters["max_reads_in_flight"], self._inflight)
+        timeline.mark("read_start")
+        try:
+            return self._read_waveform_attempts(uri, net, sourcename, year)
+        finally:
+            timeline.mark("read_end")
+            with self._inflight_lock:
+                self._inflight -= 1
+
+    def _read_waveform_attempts(self, uri, net, sourcename, year) -> obspy.Stream:
+        """The body of `_read_waveform_from_s3`: its retry loop."""
         denied = busy = 0
         while True:
             try:
@@ -1646,6 +1879,11 @@ class S3DataSource:
         return uris
 
     def _get_inventory(self):
+        return self._fetch_inventory(*self._inventory_request(self.meta.channels))
+
+    def _inventory_request(self, channels) -> tuple[str, str, str]:
+        """(network, station, channel) codes for the shard's FDSN request;
+        `channels` is the station table's `channels` column."""
         sta_code = ",".join([i.split(".")[1] for i in self.stations])
         net_code = ",".join(self.networks)
         # Take the band code and add the component wildcard. The metadata may
@@ -1655,10 +1893,19 @@ class S3DataSource:
         # below used to treat that permanent error as a busy server and spin on
         # it forever, so a whole campaign burned vCPU without picking anything.
         cha_code = ",".join(sorted(
-            {f"{str(j).strip()[:2]}?" for i in self.meta.channels
+            {f"{str(j).strip()[:2]}?" for i in channels
              for j in str(i).split(",") if str(j).strip()}
         ))
+        return net_code, sta_code, cha_code
 
+    def _fetch_inventory(self, net_code, sta_code, cha_code):
+        timeline.mark("inventory_start")
+        try:
+            return self._fetch_inventory_attempts(net_code, sta_code, cha_code)
+        finally:
+            timeline.mark("inventory_ready")
+
+    def _fetch_inventory_attempts(self, net_code, sta_code, cha_code):
         for attempt in range(1, FDSN_ATTEMPTS + 1):
             try:
                 client = obspy.clients.fdsn.Client("EARTHSCOPE")

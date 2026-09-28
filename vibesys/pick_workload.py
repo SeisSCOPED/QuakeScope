@@ -18,6 +18,7 @@ so a module-level numpy import would size BLAS before ``pick_group`` runs.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import logging
 import multiprocessing as mp
@@ -59,6 +60,12 @@ CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
 #: QS_ANNOTATE_IMPL=seisbench restores SeisBench's annotate (the round-7 path).
 ANNOTATE_IMPLS = ("seisbench", "fast")
 ANNOTATE_IMPL = os.environ.get("QS_ANNOTATE_IMPL", "fast")
+#: Worker startup (sb_catalog.src.s3_helper.S3DataSource): "overlap" starts the FDSN
+#: inventory fetch and the first station-day's LIST and reads on background threads before
+#: the heavy imports and the model build, and reads a station-day's components
+#: concurrently; QS_STARTUP=serial is the round-8 order (inventory, model, then the first LIST).
+STARTUP_ARMS = ("serial", "overlap")
+STARTUP = os.environ.get("QS_STARTUP", "overlap")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -123,6 +130,7 @@ class PickJobConfig:
     output_dir: str
     threads: int
     data_queue_size: int
+    launched: float = 0.0
 
 
 def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tuple[int, list[list[dict]], int]:
@@ -148,19 +156,48 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         level=logging.WARNING, format=f"[group {index}] %(levelname)s %(name)s: %(message)s"
     )
 
+    workload = config.workload
+    source = None
+    if STARTUP == "overlap":
+        # The network work first, with only what it needs imported: obspy, s3fs and
+        # the readers it will call, so the background threads import nothing while
+        # this thread imports torch and SeisBench.
+        import obspy.clients.fdsn  # noqa: F401
+        import obspy.io.mseed.core  # noqa: F401
+        import obspy.io.stationxml.core  # noqa: F401
+
+        from sb_catalog.src.s3_helper import S3DataSource
+
+        source = S3DataSource(
+            stations=",".join(s["id"] for s in stations),
+            start=datetime.datetime.strptime(workload["start"], "%Y.%j").date(),
+            end=datetime.datetime.strptime(workload["end"], "%Y.%j").date(),
+            components=workload["components"],
+            db=None,
+            early_channels={s["id"]: s["channels"] for s in stations},
+        )
+
     from sb_catalog.src.picker import S3MongoSBBridge
+    from sb_catalog.src.profiling import timeline
     from sb_catalog.src.s3_helper import S3DataSource
     from sb_catalog.src.utils import parse_year_day
 
-    workload = config.workload
+    timeline.mark("imports_done")
     db = StationTable(stations)
-    source = S3DataSource(
-        stations=",".join(s["id"] for s in stations),
-        start=parse_year_day(workload["start"]),
-        end=parse_year_day(workload["end"]),
-        components=workload["components"],
-        db=db,
-    )
+    start, end = parse_year_day(workload["start"]), parse_year_day(workload["end"])
+    if source is None:
+        source = S3DataSource(
+            stations=",".join(s["id"] for s in stations),
+            start=start,
+            end=end,
+            components=workload["components"],
+            db=db,
+        )
+    else:
+        if (source.start, source.end) != (start, end):
+            raise RuntimeError(f"startup dates {source.start}..{source.end} != {start}..{end}")
+        source.attach_db(db)
+    timeline.mark("source_ready")
     bridge = S3MongoSBBridge(
         s3=source,
         db=db,
@@ -178,6 +215,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         classify_impl=CLASSIFY_IMPL,
         annotate_impl=ANNOTATE_IMPL,
     )
+    timeline.mark("model_ready")
     bridge.run_picking()
     for fault in bridge.signal_faults:
         logger.warning("signal fault: %s", fault)
@@ -205,6 +243,25 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         extor.vel_counters["masked_fallbacks"], bridge.amp_overlap["overlapped"],
         bridge.amp_overlap["station_days"],
     )
+    timeline.mark("end", finished)
+    logger.info(
+        "group %d: startup %s timeline launch=%+.3f %s", index, STARTUP,
+        config.launched - started if config.launched else float("nan"),
+        timeline.line(started, [
+            ("early", "early_started", "first"), ("imports", "imports_done", "first"),
+            ("inv_start", "inventory_start", "first"), ("inv_ready", "inventory_ready", "first"),
+            ("source", "source_ready", "first"), ("model", "model_ready", "first"),
+            ("list_start", "list_start", "first"), ("list_end", "list_end", "first"),
+            ("read_start", "read_start", "first"), ("first_sd", "sd_loaded", "first"),
+            ("first_data", "data_enqueued", "first"), ("first_classify", "classify_start", "first"),
+            ("first_amp", "amp_start", "first"), ("inv_joined", "inventory_joined", "first"),
+            ("last_pick", "pick_written", "last"), ("end", "end", "first"),
+        ]),
+    )
+    logger.info(
+        "group %d: startup %s counters %s", index, STARTUP,
+        " ".join(f"{k}={v}" for k, v in source.startup_counters.items()),
+    )
     logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
@@ -220,6 +277,8 @@ def main() -> int:
     args = parser.parse_args()
     if AMP_IMPL not in AMP_IMPLS:
         parser.error(f"unknown QS_AMP_IMPL {AMP_IMPL!r}; expected one of {list(AMP_IMPLS)}")
+    if STARTUP not in STARTUP_ARMS:
+        parser.error(f"unknown QS_STARTUP {STARTUP!r}; expected one of {list(STARTUP_ARMS)}")
     if ANNOTATE_IMPL not in ANNOTATE_IMPLS:
         parser.error(
             f"unknown QS_ANNOTATE_IMPL {ANNOTATE_IMPL!r}; expected one of {list(ANNOTATE_IMPLS)}")
@@ -248,6 +307,7 @@ def main() -> int:
         output_dir=str(args.output_dir),
         threads=threads,
         data_queue_size=data_queue_size,
+        launched=time.time(),
     )
     context = mp.get_context("spawn")
     workers = [

@@ -24,7 +24,7 @@ import torch
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
 from .parquet_writer import ParquetPickWriter
-from .profiling import stage
+from .profiling import stage, timeline
 from .s3_helper import S3DataSource
 from .utils import parse_year_day
 
@@ -697,6 +697,10 @@ class S3MongoSBBridge:
         task_db = self._write_picks_to_db(picks_queue)
 
         await asyncio.gather(task_load, task_pick, task_db)
+        # The overlap startup fetches the inventory in the background and the
+        # first amplitude pass joins it. Join it here too, so a failed fetch
+        # fails the run even when no station-day needed it.
+        await asyncio.to_thread(getattr, self.s3, "inventory")
 
         if self._parquet is not None:
             # Written at the end because the file boundary is the job, not the
@@ -759,6 +763,7 @@ class S3MongoSBBridge:
                     else:
                         logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
 
+                    timeline.mark("data_enqueued")
                     await data_queue.put([stream_c, station, day, channel, note])
             else:
                 # put empty stream
@@ -848,6 +853,7 @@ class S3MongoSBBridge:
         def _classify():
             graph = self.model.fast_graph
             windows = graph.windows if graph is not None else 0
+            timeline.mark("classify_start")
             with stage("model.classify"):
                 output = self.model.classify(stream)
             if graph is not None and graph.windows > windows:
@@ -864,6 +870,7 @@ class S3MongoSBBridge:
         # pick counts vary ~4x between an ordinary day and a mainshock
         # day, so per-station-day timing would hide how it scales.
         def _amps():
+            timeline.mark("amp_start")
             t0 = time.perf_counter()
             try:
                 with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
@@ -965,6 +972,7 @@ class S3MongoSBBridge:
                 day,
                 channel,
             )
+            timeline.mark("pick_written")
 
     def _write_single_picklist_to_db(
         self,
