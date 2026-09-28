@@ -1,6 +1,8 @@
 import logging
+import sys
 import warnings
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import numpy as np
@@ -31,7 +33,11 @@ WOOD_ANDERSON = {
 #: numpy with the loop-invariant spectra (evalresp response, pre_filt taper,
 #: water-level inverse, WA response, time tapers) memoised per station-day,
 #: and falls back to "obspy" per pick for anything it does not mirror.
-AMP_IMPLS = ("fast", "obspy")
+#: "fused" is "fast" with the velocity prep fused per trace (detrend into a
+#: fresh array, taper only the edge samples, obspy's zero-phase highpass as
+#: separate forward/backward sosfilt tasks on a small thread pool, sensitivity
+#: divided into the scalar peaks); the picker also overlaps its two passes.
+AMP_IMPLS = ("fast", "obspy", "fused")
 
 
 class _Fallback(Exception):
@@ -163,6 +169,7 @@ class AmplitudeExtractor:
         wa_window_seconds: float = 70.0,
         vel_highpass: float = 0.2,
         impl: str = "obspy",
+        workers: Optional[int] = None,
     ):
         if impl not in AMP_IMPLS:
             raise ValueError(f"impl must be one of {AMP_IMPLS}, not {impl!r}")
@@ -170,6 +177,23 @@ class AmplitudeExtractor:
         # Fast-path counters, cumulative over the extractor's life: spectrum
         # cache hits/misses, evalresp evaluations, per-pick obspy fallbacks.
         self.wa_counters = defaultdict(int)
+        # Fused velocity counters: station passes, traces filtered, masked
+        # stations sent back to the obspy prep.
+        self.vel_counters = defaultdict(int)
+        # Size of the fused arm's filter pool; None = the process's torch
+        # intra-op thread count (the worker's core budget), resolved lazily.
+        self._workers = workers
+        self._pool: Optional[ThreadPoolExecutor] = None
+        if impl == "fused":
+            # The fused arm runs both passes on two threads at once, and their
+            # lazy imports race: a first import of scipy from two threads can
+            # see a partially initialised module. Import them here, once.
+            import scipy.fft  # noqa: F401
+            import scipy.signal  # noqa: F401
+            from obspy.core.inventory import PolynomialResponseStage  # noqa: F401
+            from obspy.core.util.base import _get_function_from_entry_point
+            from obspy.signal import invsim, util  # noqa: F401
+            _get_function_from_entry_point("taper", "cosine")
         self.time_before = time_before
         self.time_after = time_after
         self.slack = slack
@@ -221,6 +245,27 @@ class AmplitudeExtractor:
                     f"the pre_filt low corner.",
                     stacklevel=2,
                 )
+
+    @property
+    def workers(self) -> int:
+        """Filter-pool size for the fused velocity pass."""
+        if self._workers is None:
+            torch = sys.modules.get("torch")
+            self._workers = max(1, torch.get_num_threads()) if torch else 1
+        return self._workers
+
+    def _filter_pool(self) -> ThreadPoolExecutor:
+        """One pool per extractor, created on first use; see close()."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=self.workers,
+                                            thread_name_prefix="amp-vel")
+        return self._pool
+
+    def close(self) -> None:
+        """Shut the fused arm's filter pool down (a no-op for other arms)."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     def _stations_with_picks(self, picks: sbu.PickList) -> dict[str, list[int]]:
         """Pick indices grouped by NET.STA, so the response is removed once per
@@ -337,7 +382,7 @@ class AmplitudeExtractor:
 
             spectra: dict = {}              # per station-day; dropped on return
             for i in strong:
-                if self.impl == "fast":
+                if self.impl in ("fast", "fused"):
                     try:
                         amplitudes[i] = self._wa_pick_fast(
                             station_stream, sub_inv, picks[i], half, spectra)
@@ -557,6 +602,15 @@ class AmplitudeExtractor:
             selected = stream.select(network=net, station=sta)
             if len(selected) == 0:
                 continue
+            if self.impl == "fused":
+                if not any(np.ma.isMaskedArray(tr.data) for tr in selected):
+                    arrays = self._fused_velocity_arrays(
+                        selected, inventory.select(network=net, station=sta))
+                    for i in indices:
+                        amplitudes[i] = self._scaled_peak_from_arrays(
+                            arrays, picks[i])
+                    continue
+                self.vel_counters["masked_fallbacks"] += 1
             if self.impl == "fast" and not any(
                     np.ma.isMaskedArray(tr.data) for tr in selected):
                 # detrend("linear") in closed form, straight into a new array:
@@ -596,6 +650,117 @@ class AmplitudeExtractor:
                 amplitudes[i] = self._peak_from_arrays(arrays, picks[i], mean=False)
 
         return amplitudes
+
+    def _fused_velocity_arrays(self, selected: obspy.Stream,
+                               sub_inv: obspy.Inventory) -> list[tuple]:
+        """The fast arm's velocity prep for one station's unmasked traces,
+        without the day-long copies it does not need, as `_as_arrays` rows
+        plus each trace's sensitivity.
+
+        Per trace, bit for bit what the fast arm computes: `_linear_detrend`
+        into a fresh array, `Trace.taper(max_percentage, "cosine")` applied to
+        the edge samples only (the window is exactly 1.0 in between), and
+        obspy's `highpass(zerophase=True)`: the same iirfilter sos, sosfilt,
+        then sosfilt of the flipped result flipped back. The two sosfilt
+        passes run as separate tasks on the filter pool (sosfilt drops the
+        GIL), so a third channel's forward pass overlaps the first two
+        channels' backward passes. The divide by sensitivity is left to the
+        scalar peak (`_scaled_peak_from_arrays`), which is exact because
+        rounding a quotient is monotonic in the dividend.
+        """
+        from obspy.core.util.base import _get_function_from_entry_point
+        from scipy.signal import iirfilter, sosfilt
+
+        fraction = self._taper_fraction(selected)
+        _, hp = self._fit_to_nyquist(selected, highpass=self.vel_highpass)
+        cosine = _get_function_from_entry_point("taper", "cosine")
+        # Traces without a usable sensitivity are dropped as the fast arm
+        # drops them, but before any filtering.
+        kept = []
+        for tr in selected:
+            try:
+                sens = (sub_inv
+                        .get_response(tr.id, tr.stats.starttime)
+                        .instrument_sensitivity.value)
+            except Exception:
+                continue                    # no response for this component
+            if not sens:
+                continue
+            kept.append((tr, float(sens)))
+        if not kept:
+            return []
+
+        def forward(tr):
+            data = (_linear_detrend(tr.data) if len(tr.data)
+                    else tr.data.copy())
+            npts = len(data)
+            if npts:
+                # Trace.taper: half-length, taper_sides, then data *= taper.
+                wlen = min(int(fraction * npts), int(npts / 2))
+                sides = cosine(2 * wlen if 2 * wlen == npts else 2 * wlen + 1,
+                               p=1.0)
+                if wlen:
+                    data[:wlen] *= sides[:wlen]
+                    data[npts - wlen:] *= sides[len(sides) - wlen:]
+            if hp is None or not npts:
+                return data, None
+            fe = 0.5 * tr.stats.sampling_rate
+            sos = iirfilter(4, hp / fe, rp=None, rs=None, btype="highpass",
+                            ftype="butter", output="sos")
+            return np.flip(sosfilt(sos, data, axis=-1), axis=-1), sos
+
+        def backward(first, sos):
+            return np.flip(sosfilt(sos, first, axis=-1), axis=-1)
+
+        pool = self._filter_pool()
+        out: list = [None] * len(kept)
+        pending = {pool.submit(forward, tr): k for k, (tr, _) in enumerate(kept)}
+        second = {}
+        for fut in as_completed(pending):
+            k = pending[fut]
+            data, sos = fut.result()
+            if sos is None:
+                out[k] = data
+            else:
+                second[pool.submit(backward, data, sos)] = k
+                self.vel_counters["traces_filtered"] += 1
+        for fut, k in second.items():
+            out[k] = fut.result()
+        self.vel_counters["stations"] += 1
+
+        # _as_arrays(kept, _taper_length(kept, fraction)), plus sensitivity.
+        taper_len = self._taper_length([tr for tr, _ in kept], fraction)
+        arrays = []
+        for (tr, sens), data in zip(kept, out):
+            if len(data) == 0:
+                continue
+            start = tr.stats.starttime.timestamp
+            arrays.append((tr.id[-1], data, start, float(tr.stats.sampling_rate),
+                           start + taper_len,
+                           tr.stats.endtime.timestamp - taper_len, sens))
+        return arrays
+
+    def _scaled_peak_from_arrays(self, arrays: list[tuple], pick: sbu.Pick):
+        """`_peak_from_arrays(mean=False)` on data that is still in counts:
+        each trace's window peak is divided by its sensitivity as a scalar.
+        max|x / s| == max|x| / |s| exactly, in the data's own dtype."""
+        t0 = pick.peak_time.timestamp - self.time_before
+        t1 = pick.peak_time.timestamp + self.time_after
+
+        peaks: dict[str, float] = {}
+        for comp, data, start, rate, core_start, core_end, sens in arrays:
+            if t0 < core_start or t1 > core_end:
+                continue
+            i0 = int(round((t0 - start) * rate))
+            i1 = int(round((t1 - start) * rate)) + 1
+            if i0 < 0 or i1 > len(data) or i1 <= i0:
+                continue
+            val = float(np.max(np.abs(data[i0:i1])) / abs(sens))
+            peaks[comp] = max(peaks.get(comp, 0.0), val)
+
+        if not peaks:
+            return np.nan
+        return float(np.max(list(peaks.values())))
 
     def extract_raw_amplitudes(
         self, stream: obspy.Stream, picks: sbu.PickList

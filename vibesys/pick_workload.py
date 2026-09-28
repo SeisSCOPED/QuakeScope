@@ -44,17 +44,16 @@ PICK_QUEUE_SIZE = 5
 #: PhaseNet forward-pass precision (sb_catalog.src.picker.INFER_PRECISIONS):
 #: bf16 autocast on AMX by default; QS_INFER_PRECISION=fp32 restores the seed path.
 INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
-#: Amplitude passes (sb_catalog.src.amplitude_extractor.AMP_IMPLS): "fast" reuses
-#: the per-station-day response spectra; QS_AMP_IMPL=obspy restores the seed path.
-AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fast")
+#: Amplitude passes (sb_catalog.src.amplitude_extractor.AMP_IMPLS): "fused" is the
+#: "fast" arithmetic with the velocity prep fused onto a per-process filter pool and
+#: the Wood-Anderson and velocity passes overlapped; QS_AMP_IMPL=fast is the serial
+#: round-4 path; QS_AMP_IMPL=obspy restores the seed path.
+AMP_IMPLS = ("fast", "obspy", "fused")
+AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fused")
 #: PhaseNet forward implementation (sb_catalog.src.picker.CLASSIFY_IMPLS): "fast" runs the
 #: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
 #: SeisBench's own forward at 256.
 CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
-#: PhaseNet window overlap in samples (sb_catalog.src.picker.apply_overlap): 1500 is
-#: SeisBench's own for PhaseNet (stride 1501); QS_OVERLAP sets another, at least the
-#: blinding sum and below the 3001-sample window.
-OVERLAP = os.environ.get("QS_OVERLAP", "1500")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -133,17 +132,6 @@ def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tu
     return threads, groups, data_queue_size
 
 
-def parse_overlap(value: str) -> int:
-    """QS_OVERLAP as a sample count; the picker checks it against the model's window."""
-    try:
-        overlap = int(value)
-    except ValueError:
-        raise ValueError(f"QS_OVERLAP {value!r} is not an integer sample count") from None
-    if overlap < 1:
-        raise ValueError(f"QS_OVERLAP {value!r} must be a positive sample count")
-    return overlap
-
-
 def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     """Run one production worker loop over a subset of the workload's stations."""
     started = time.time()
@@ -155,13 +143,9 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         level=logging.WARNING, format=f"[group {index}] %(levelname)s %(name)s: %(message)s"
     )
 
-    from sb_catalog.src.picker import S3MongoSBBridge, window_blinding, window_overlap
-    from sb_catalog.src.profiling import profile
+    from sb_catalog.src.picker import S3MongoSBBridge
     from sb_catalog.src.s3_helper import S3DataSource
     from sb_catalog.src.utils import parse_year_day
-
-    if os.environ.get("QS_PROFILE") == "1":
-        profile.enable()
 
     workload = config.workload
     db = StationTable(stations)
@@ -187,7 +171,6 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         infer_precision=INFER_PRECISION,
         amp_impl=AMP_IMPL,
         classify_impl=CLASSIFY_IMPL,
-        overlap=parse_overlap(OVERLAP),
     )
     bridge.run_picking()
     for fault in bridge.signal_faults:
@@ -202,18 +185,15 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         "through the fast graph"
         if graph is not None else "SeisBench forward",
     )
-    model = bridge.model
-    overlap = window_overlap(model)
+    extor = bridge.amp_extor
     logger.info(
-        "group %d: window overlap %d (stride %d, window %d), blinding %s, stacking %s, "
-        "default_args %s%s", index, overlap, model.in_samples - overlap, model.in_samples,
-        list(window_blinding(model)), model._argdict_get_with_default(model.default_args, "stacking"),
-        json.dumps(model.default_args, sort_keys=True),
-        f", {graph.windows / graph.station_days:.1f} windows/SD"
-        if graph is not None and graph.station_days else "",
+        "group %d: amp impl %s, filter pool %s, %d traces filtered over %d station passes "
+        "(%d masked fallbacks), WA/velocity overlapped on %d of %d station-days",
+        index, AMP_IMPL, extor.workers if AMP_IMPL == "fused" else "-",
+        extor.vel_counters["traces_filtered"], extor.vel_counters["stations"],
+        extor.vel_counters["masked_fallbacks"], bridge.amp_overlap["overlapped"],
+        bridge.amp_overlap["station_days"],
     )
-    if profile.enabled:
-        logger.info("group %d stage profile:%s", index, profile.report())
     logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
@@ -227,12 +207,13 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--vcpus", required=True, type=int)
     args = parser.parse_args()
+    if AMP_IMPL not in AMP_IMPLS:
+        parser.error(f"unknown QS_AMP_IMPL {AMP_IMPL!r}; expected one of {list(AMP_IMPLS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
     stations = workload["stations"]
     threads, groups, data_queue_size = resolve_layout(args.vcpus, stations)
-    parse_overlap(OVERLAP)
 
     cache_root = Path(tempfile.mkdtemp(prefix="seisbench-"))
     stage_weights(cache_root)
@@ -244,8 +225,8 @@ def main() -> int:
     logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
-        "picking %d stations with %d procs x %d threads (layout %s, data queue %d, overlap %s)",
-        len(stations), len(groups), threads, LAYOUT, data_queue_size, OVERLAP,
+        "picking %d stations with %d procs x %d threads (layout %s, data queue %d)",
+        len(stations), len(groups), threads, LAYOUT, data_queue_size,
     )
 
     config = PickJobConfig(

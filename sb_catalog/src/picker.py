@@ -202,40 +202,6 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
     return model
 
 
-def window_overlap(model: sbm.WaveformModel) -> int:
-    """The window overlap, in samples, SeisBench's annotate uses for `model`."""
-    return model._get_overlap(model.in_samples, model.default_args)
-
-
-def window_blinding(model: sbm.WaveformModel) -> tuple[int, int]:
-    """The (start, end) samples annotate_batch_post blinds in every window."""
-    blinding = model.default_args.get("blinding", model._annotate_args["blinding"][1])
-    return int(blinding[0]), int(blinding[1])
-
-
-def apply_overlap(model: sbm.WaveformModel, overlap: Optional[int]
-                  ) -> sbm.WaveformModel:
-    """Set the overlap, in samples, of the windows SeisBench cuts, in place.
-
-    None, or the model's own effective overlap, leaves `model` untouched. Any
-    other value must be at least the blinding sum, so every sample keeps one
-    unblinded prediction, and below the window length. Only the window stride
-    changes: the tail window, blinding and stacking are SeisBench's, unchanged,
-    and the fast graph gets whatever windows SeisBench cuts.
-    """
-    if overlap is None or overlap == window_overlap(model):
-        return model
-    if isinstance(overlap, bool) or not isinstance(overlap, (int, np.integer)):
-        raise ValueError(f"window overlap {overlap!r} is not an integer sample count")
-    blinding = window_blinding(model)
-    if not sum(blinding) <= overlap < model.in_samples:
-        raise ValueError(
-            f"window overlap {overlap} is outside [{sum(blinding)}, {model.in_samples}): "
-            f"at least the blinding sum {blinding} and below the {model.in_samples}-sample window")
-    model.default_args["overlap"] = int(overlap)
-    return model
-
-
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -507,7 +473,6 @@ class S3MongoSBBridge:
         infer_precision: str = "fp32",
         amp_impl: str = "obspy",
         classify_impl: str = "seisbench",
-        overlap: Optional[int] = None,
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -541,8 +506,7 @@ class S3MongoSBBridge:
         # model preparation
         if model is not None:
             self.model = apply_classify_impl(
-                apply_overlap(self.create_model(model, weight, p_threshold, s_threshold),
-                              overlap),
+                self.create_model(model, weight, p_threshold, s_threshold),
                 infer_precision,
                 classify_impl,
             )
@@ -554,6 +518,9 @@ class S3MongoSBBridge:
         else:
             self.classifier = None
         self.amp_extor = AmplitudeExtractor(impl=amp_impl)
+        # Fused arm: station-days whose two amplitude passes ran, and how many
+        # of them had both passes in flight at once.
+        self.amp_overlap = {"station_days": 0, "overlapped": 0}
         self.model_name = model
         self.weight = weight
         self.p_threshold = p_threshold
@@ -676,7 +643,10 @@ class S3MongoSBBridge:
         # Per RUN, not per class: a class attribute would be shared by every
         # bridge in the process and carry one shard's faults into the next.
         self.signal_faults = []
-        asyncio.run(self._run_picking_async())
+        try:
+            asyncio.run(self._run_picking_async())
+        finally:
+            self.amp_extor.close()
 
     async def _run_picking_async(self) -> None:
         """
@@ -853,6 +823,7 @@ class S3MongoSBBridge:
 
         stream_annotations = await asyncio.to_thread(_classify)
         n_picks = len(stream_annotations.picks)
+        spans = {}
 
         # Wood-Anderson, deconvolved on a short window around each pick
         # above the confidence gate. Timed against PICK COUNT, not
@@ -860,23 +831,48 @@ class S3MongoSBBridge:
         # pick counts vary ~4x between an ordinary day and a mainshock
         # day, so per-station-day timing would hide how it scales.
         def _amps():
-            with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
-                return self.amp_extor.extract_amplitudes(
-                    stream, stream_annotations.picks, self.s3.inventory
-                )
-
-        stream_amplitudes = await asyncio.to_thread(_amps)
+            t0 = time.perf_counter()
+            try:
+                with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
+                    return self.amp_extor.extract_amplitudes(
+                        stream, stream_annotations.picks, self.s3.inventory
+                    )
+            finally:
+                spans["wa"] = (t0, time.perf_counter())
 
         # Gain-corrected peak ground velocity for every pick. Replaces
         # the raw-counts pass: same cost class, but the number is
         # physical and comparable between instruments.
         def _vel_amps():
-            with stage("amp.velocity", unit=n_picks, unit_name="pick"):
-                return self.amp_extor.extract_velocity_amplitudes(
-                    stream, stream_annotations.picks, self.s3.inventory
-                )
+            t0 = time.perf_counter()
+            try:
+                with stage("amp.velocity", unit=n_picks, unit_name="pick"):
+                    return self.amp_extor.extract_velocity_amplitudes(
+                        stream, stream_annotations.picks, self.s3.inventory
+                    )
+            finally:
+                spans["vel"] = (t0, time.perf_counter())
 
-        stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
+        with stage("amp.total", unit=n_picks, unit_name="pick"):
+            if self.amp_extor.impl == "fused":
+                # Both passes only read the stream, the picks and the
+                # inventory, so they run side by side on the worker's second
+                # core, after classify and never during it. An exception is
+                # raised as the serial order would: Wood-Anderson's first.
+                results = await asyncio.gather(
+                    asyncio.to_thread(_amps), asyncio.to_thread(_vel_amps),
+                    return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+                stream_amplitudes, stream_raw_amplitudes = results
+                self.amp_overlap["station_days"] += 1
+                (wa0, wa1), (vel0, vel1) = spans["wa"], spans["vel"]
+                if max(wa0, vel0) < min(wa1, vel1):
+                    self.amp_overlap["overlapped"] += 1
+            else:
+                stream_amplitudes = await asyncio.to_thread(_amps)
+                stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
 
         # classifier
         if self.classifier and (channel in ["BH", "HH"]):
