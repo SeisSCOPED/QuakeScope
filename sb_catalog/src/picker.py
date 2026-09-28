@@ -202,6 +202,40 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
     return model
 
 
+def window_overlap(model: sbm.WaveformModel) -> int:
+    """The window overlap, in samples, SeisBench's annotate uses for `model`."""
+    return model._get_overlap(model.in_samples, model.default_args)
+
+
+def window_blinding(model: sbm.WaveformModel) -> tuple[int, int]:
+    """The (start, end) samples annotate_batch_post blinds in every window."""
+    blinding = model.default_args.get("blinding", model._annotate_args["blinding"][1])
+    return int(blinding[0]), int(blinding[1])
+
+
+def apply_overlap(model: sbm.WaveformModel, overlap: Optional[int]
+                  ) -> sbm.WaveformModel:
+    """Set the overlap, in samples, of the windows SeisBench cuts, in place.
+
+    None, or the model's own effective overlap, leaves `model` untouched. Any
+    other value must be at least the blinding sum, so every sample keeps one
+    unblinded prediction, and below the window length. Only the window stride
+    changes: the tail window, blinding and stacking are SeisBench's, unchanged,
+    and the fast graph gets whatever windows SeisBench cuts.
+    """
+    if overlap is None or overlap == window_overlap(model):
+        return model
+    if isinstance(overlap, bool) or not isinstance(overlap, (int, np.integer)):
+        raise ValueError(f"window overlap {overlap!r} is not an integer sample count")
+    blinding = window_blinding(model)
+    if not sum(blinding) <= overlap < model.in_samples:
+        raise ValueError(
+            f"window overlap {overlap} is outside [{sum(blinding)}, {model.in_samples}): "
+            f"at least the blinding sum {blinding} and below the {model.in_samples}-sample window")
+    model.default_args["overlap"] = int(overlap)
+    return model
+
+
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -473,6 +507,7 @@ class S3MongoSBBridge:
         infer_precision: str = "fp32",
         amp_impl: str = "obspy",
         classify_impl: str = "seisbench",
+        overlap: Optional[int] = None,
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -506,7 +541,8 @@ class S3MongoSBBridge:
         # model preparation
         if model is not None:
             self.model = apply_classify_impl(
-                self.create_model(model, weight, p_threshold, s_threshold),
+                apply_overlap(self.create_model(model, weight, p_threshold, s_threshold),
+                              overlap),
                 infer_precision,
                 classify_impl,
             )
