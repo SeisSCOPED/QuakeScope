@@ -19,6 +19,7 @@ import obspy
 import seisbench
 import seisbench.models as sbm
 import seisbench.util as sbu
+import torch
 
 from .amplitude_extractor import AmplitudeExtractor
 from .classifier import QuakeXNet
@@ -102,6 +103,46 @@ def prepare_channel_stream(stream: obspy.Stream, window_seconds: float
     if note:
         return obspy.Stream(), note
     return merged, None
+
+
+#: Numeric precision of the picker's forward pass. "fp32" is SeisBench's own
+#: path, unchanged. "bf16" runs the convolutions under CPU bf16 autocast, which
+#: oneDNN dispatches to AMX-BF16 kernels on Sapphire Rapids and later (about 3x
+#: the fp32 AVX-512 throughput for PhaseNet); the probabilities are cast back to
+#: fp32 before blinding, stacking and thresholding, which stay as they were.
+INFER_PRECISIONS = ("fp32", "bf16")
+
+
+def apply_inference_precision(model: sbm.WaveformModel, precision: str
+                              ) -> sbm.WaveformModel:
+    """Set the forward-pass precision of `model`, in place.
+
+    Autocast is thread-local, and SeisBench runs each batch in a thread of its
+    own (`asyncio.to_thread(self._predict_windows, ...)` inside annotate), so a
+    context entered around `classify` would never reach the convolutions. It
+    is entered in `_predict_windows` itself, on the thread that runs the batch.
+    """
+    if precision not in INFER_PRECISIONS:
+        raise ValueError(
+            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    model.eval()
+    if precision == "fp32":
+        return model
+
+    predict_windows = model._predict_windows
+    batch_post = model.annotate_batch_post
+
+    def _predict_windows(segments, argdict):
+        with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16):
+            return predict_windows(segments, argdict)
+
+    def annotate_batch_post(batch, piggyback, argdict):
+        # numpy has no bf16: the batch must leave torch as fp32.
+        return batch_post(batch.float(), piggyback=piggyback, argdict=argdict)
+
+    model._predict_windows = _predict_windows
+    model.annotate_batch_post = annotate_batch_post
+    return model
 
 
 def is_signal_fault(exc: BaseException) -> bool:
@@ -372,6 +413,7 @@ class S3MongoSBBridge:
         prior_done: Optional[Any] = None,
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
+        infer_precision: str = "fp32",
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -404,7 +446,10 @@ class S3MongoSBBridge:
 
         # model preparation
         if model is not None:
-            self.model = self.create_model(model, weight, p_threshold, s_threshold)
+            self.model = apply_inference_precision(
+                self.create_model(model, weight, p_threshold, s_threshold),
+                infer_precision,
+            )
         else:
             self.model = None
 
