@@ -4,7 +4,7 @@ Picks every station-day of a workload with QuakeScope's production v3 code
 path (``S3DataSource`` -> ``S3MongoSBBridge`` -> ``ParquetPickWriter``), laid
 out the way a production Batch task runs it: ``procs`` independent worker
 processes, each with ``threads`` BLAS/OpenMP threads (fleet.json: 4 x 2 on the
-8 vCPU / 16 GB Fargate shape).
+8 vCPU / 16 GB Fargate shape; QS_LAYOUT=8x1 selects one station per 1-thread worker).
 
 The candidate contract (arguments, output, rules) is in the task's
 OBJECTIVE.md. The evaluator keeps a pristine copy of this file to build the
@@ -24,6 +24,7 @@ import multiprocessing as mp
 import os
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,8 +35,11 @@ if TYPE_CHECKING:
 
 QUAKESCOPE_ROOT = Path(__file__).resolve().parent / "quakescope"
 
-#: Production layout on 8 vCPU (fleet.json): 4 worker loops x 2 threads.
-THREADS_PER_PROC = 2
+#: Worker layout, named for the 8 vCPU shape: BLAS/OpenMP threads per worker process.
+#: The process count is vcpus // threads. "4x2" is the fleet.json production layout;
+#: "8x1" measured no faster (1-thread forward throughput drops under 8-core contention).
+LAYOUT_THREADS = {"4x2": 2, "8x1": 1}
+LAYOUT = os.environ.get("QS_LAYOUT", "4x2")
 PICK_QUEUE_SIZE = 5
 #: PhaseNet forward-pass precision (sb_catalog.src.picker.INFER_PRECISIONS):
 #: bf16 autocast on AMX by default; QS_INFER_PRECISION=fp32 restores the seed path.
@@ -109,8 +113,21 @@ class PickJobConfig:
     data_queue_size: int
 
 
+def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tuple[int, list[list[dict]], int]:
+    """Return (threads per proc, station groups, data queue size) for a layout on ``vcpus``."""
+    if layout not in LAYOUT_THREADS:
+        raise ValueError(f"unknown QS_LAYOUT {layout!r}; expected one of {sorted(LAYOUT_THREADS)}")
+    threads = min(LAYOUT_THREADS[layout], vcpus)
+    procs = max(1, vcpus // threads)
+    groups = [stations[i::procs] for i in range(procs) if stations[i::procs]]
+    # worker._resolve_queue_size: a node-wide budget of 8 decoded station-days.
+    data_queue_size = max(1, min(5, 8 // len(groups)))
+    return threads, groups, data_queue_size
+
+
 def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     """Run one production worker loop over a subset of the workload's stations."""
+    started = time.time()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
@@ -150,6 +167,13 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     bridge.run_picking()
     for fault in bridge.signal_faults:
         logger.warning("signal fault: %s", fault)
+    # Per-group start/end wall timestamps make the tail spread across groups visible.
+    finished = time.time()
+    logger.setLevel(logging.INFO)
+    logger.info(
+        "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
+        index, len(stations), config.threads, started, finished, finished - started,
+    )
 
 
 def main() -> int:
@@ -162,12 +186,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
-    threads = min(THREADS_PER_PROC, args.vcpus)
-    procs = max(1, args.vcpus // threads)
     stations = workload["stations"]
-    groups = [stations[i::procs] for i in range(procs) if stations[i::procs]]
-    # worker._resolve_queue_size: a node-wide budget of 8 decoded station-days.
-    data_queue_size = max(1, min(5, 8 // len(groups)))
+    threads, groups, data_queue_size = resolve_layout(args.vcpus, stations)
 
     cache_root = Path(tempfile.mkdtemp(prefix="seisbench-"))
     stage_weights(cache_root)
@@ -179,7 +199,8 @@ def main() -> int:
     logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
-        "picking %d stations with %d procs x %d threads", len(stations), len(groups), threads
+        "picking %d stations with %d procs x %d threads (layout %s, data queue %d)",
+        len(stations), len(groups), threads, LAYOUT, data_queue_size,
     )
 
     config = PickJobConfig(
