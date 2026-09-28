@@ -54,6 +54,11 @@ AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fused")
 #: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
 #: SeisBench's own forward at 256.
 CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
+#: Windowing/stacking/picking around the fast graph (sb_catalog.src.picker.ANNOTATE_IMPLS):
+#: "fast" cuts the windows from one float32 array per block and stacks them as an overlap-add;
+#: QS_ANNOTATE_IMPL=seisbench restores SeisBench's annotate (the round-7 path).
+ANNOTATE_IMPLS = ("seisbench", "fast")
+ANNOTATE_IMPL = os.environ.get("QS_ANNOTATE_IMPL", "fast")
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -171,6 +176,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         infer_precision=INFER_PRECISION,
         amp_impl=AMP_IMPL,
         classify_impl=CLASSIFY_IMPL,
+        annotate_impl=ANNOTATE_IMPL,
     )
     bridge.run_picking()
     for fault in bridge.signal_faults:
@@ -184,6 +190,11 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         f"{graph.station_days} station-days / {graph.batches} batches / {graph.windows} windows "
         "through the fast graph"
         if graph is not None else "SeisBench forward",
+    )
+    annotator = bridge.model.fast_annotator
+    logger.info(
+        "group %d: annotate impl %s, %s", index, ANNOTATE_IMPL,
+        annotator.summary() if annotator is not None else "SeisBench annotate",
     )
     extor = bridge.amp_extor
     logger.info(
@@ -209,6 +220,9 @@ def main() -> int:
     args = parser.parse_args()
     if AMP_IMPL not in AMP_IMPLS:
         parser.error(f"unknown QS_AMP_IMPL {AMP_IMPL!r}; expected one of {list(AMP_IMPLS)}")
+    if ANNOTATE_IMPL not in ANNOTATE_IMPLS:
+        parser.error(
+            f"unknown QS_ANNOTATE_IMPL {ANNOTATE_IMPL!r}; expected one of {list(ANNOTATE_IMPLS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())

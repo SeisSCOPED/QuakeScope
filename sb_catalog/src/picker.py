@@ -202,6 +202,35 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
     return model
 
 
+#: How the windows around the fast graph are cut, stacked and picked.
+#: "seisbench" is SeisBench's annotate/classify, unchanged. "fast" is
+#: fast_annotate.FastAnnotator: the same windows, batches, normalization,
+#: blinding, avg stacking and trigger, without SeisBench's per-window copies;
+#: a stream it does not reproduce exactly goes to SeisBench and is counted.
+ANNOTATE_IMPLS = ("seisbench", "fast")
+
+
+def apply_annotate_impl(model: sbm.WaveformModel, impl: str) -> sbm.WaveformModel:
+    """Set how `model.classify` annotates, in place (after apply_classify_impl).
+
+    The fast annotate drives the fast graph directly; without one (another
+    model, or classify impl "seisbench") it keeps SeisBench's, and says so.
+    """
+    if impl not in ANNOTATE_IMPLS:
+        raise ValueError(
+            f"annotate impl {impl!r} is not one of {ANNOTATE_IMPLS}")
+    model.fast_annotator = None
+    if impl == "seisbench":
+        return model
+    if getattr(model, "fast_graph", None) is None:
+        logger.warning("No fast graph to annotate on; using SeisBench's annotate")
+        return model
+    from . import fast_annotate
+
+    fast_annotate.apply(model, model.fast_graph)
+    return model
+
+
 def is_signal_fault(exc: BaseException) -> bool:
     """Is this exception a property of the data, so the station-day is skipped?
 
@@ -473,6 +502,7 @@ class S3MongoSBBridge:
         infer_precision: str = "fp32",
         amp_impl: str = "obspy",
         classify_impl: str = "seisbench",
+        annotate_impl: str = "seisbench",
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -505,10 +535,13 @@ class S3MongoSBBridge:
 
         # model preparation
         if model is not None:
-            self.model = apply_classify_impl(
-                self.create_model(model, weight, p_threshold, s_threshold),
-                infer_precision,
-                classify_impl,
+            self.model = apply_annotate_impl(
+                apply_classify_impl(
+                    self.create_model(model, weight, p_threshold, s_threshold),
+                    infer_precision,
+                    classify_impl,
+                ),
+                annotate_impl,
             )
         else:
             self.model = None
