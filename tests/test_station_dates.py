@@ -76,8 +76,48 @@ def test_planner_clips_to_the_true_window_in_either_encoding():
     print("PASS  a station with no dates is still planned for the whole campaign")
 
 
+def test_the_stored_table_keeps_the_still_operating_sentinel():
+    """The conversion write_stations applies, which is where the sentinel dies.
+
+    `pd.to_datetime` bounds a Timestamp to 1677..2262, so routing the decoded
+    dates through it turns the year-3000 sentinel into NaT - the null this
+    design exists to avoid, and the same "silently drops what is still
+    recording" failure as the float bug. Caught in review on PR #42 before any
+    table was written that way; the published tables were converted by a
+    standalone script that assigns dates directly.
+    """
+    import tempfile
+
+    import pyarrow.parquet as pq
+
+    from sb_catalog.src.s3_state import OPEN_ENDED, prepare_station_dates
+
+    df = pd.concat([_stations(2010.001, 3000.001),                    # still operating
+                    _stations(2023.298, float("nan")).assign(id="XX.BBB."),  # no end epoch
+                    _stations(2010.001, 2010.21).assign(id="XX.CCC.")],      # the misread value
+                   ignore_index=True)
+    out = prepare_station_dates(df)
+
+    assert out.end_date.tolist() == [OPEN_ENDED, OPEN_ENDED, datetime.date(2010, 7, 29)]
+    assert out.start_date.tolist()[0] == datetime.date(2010, 1, 1)
+    print("PASS  year 3000 survives, a missing end epoch becomes it, day 210 is day 210")
+
+    assert out.start_yearday.iloc[0] == 2010.001 and out.end_yearday.iloc[2] == 2010.21
+    print("PASS  the original float is kept beside the date")
+
+    path = tempfile.mkdtemp() + "/stations.parquet"
+    out.to_parquet(path, index=False)
+    schema = pq.read_schema(path)
+    for c in ("start_date", "end_date"):
+        assert str(schema.field(c).type) == "date32[day]", (c, schema.field(c).type)
+    back = pd.read_parquet(path)
+    assert back.end_date.iloc[0] == OPEN_ENDED and back.end_date.notna().all()
+    print("PASS  written as date32 and read back with the sentinel intact")
+
+
 if __name__ == "__main__":
     test_float_day_of_year_is_decoded_numerically()
     test_every_other_encoding_a_table_may_hold()
     test_planner_clips_to_the_true_window_in_either_encoding()
+    test_the_stored_table_keeps_the_still_operating_sentinel()
     print("\nall station-date checks passed")

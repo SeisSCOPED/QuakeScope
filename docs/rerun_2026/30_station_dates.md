@@ -69,7 +69,25 @@ being fixed.
 
 All 16 station tables in the bucket were rewritten this way (3 catalogues, 13
 queues), each verified row by row against the float it replaced; the
-pre-conversion tables are in `_archive/station_tables_yearday/`.
+pre-conversion tables are in `_archive/station_tables_yearday/`. Ten `LH`
+stations whose metadata carried no end epoch at all had a null there; they are
+still recording, so they now carry the sentinel like everyone else.
+
+**Two traps in the conversion itself**, both caught in review on PR #42 before
+any table was written by the library code:
+
+- `pd.to_datetime` bounds a Timestamp to 1677-09-21 .. 2262-04-11, so it turns
+  `3000-01-01` into `NaT` - handing back exactly the null the sentinel exists
+  to avoid. The conversion assigns plain `datetime.date` objects instead,
+  which pyarrow writes as `date32`, a type that spans year 3000 without
+  complaint. The published tables were never exposed to this: they were
+  converted by a standalone script that already assigned dates directly.
+- A constant documenting the sentinel is not the same as applying it. The
+  conversion now fills a missing `end_date` with `OPEN_ENDED` rather than
+  relying on every upstream producer to have written `3000.001` itself.
+
+Both are pinned by `tests/test_station_dates.py`, which asserts the sentinel
+survives a real Parquet round trip as `date32`.
 
 Pinned by `tests/test_station_dates.py`, which asserts the three misread
 values, the direction of the old error, and that a planner clips to the same
