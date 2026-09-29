@@ -115,9 +115,30 @@ def test_the_stored_table_keeps_the_still_operating_sentinel():
     print("PASS  written as date32 and read back with the sentinel intact")
 
 
+def test_write_stations_refuses_a_repeated_id():
+    """One row per station-location, or the read loop dies mid-shard.
+
+    S3DataSource indexes metadata by id and reads `meta.loc[station,
+    "channels"]` expecting a string. A repeated id makes that a Series and the
+    shard fails on `'Series' object has no attribute 'split'`, is released, and
+    the next worker rediscovers it. The western-fill table carried one row per
+    FDSN epoch and 662 shards span on it for four days.
+    """
+    import pytest
+
+    from sb_catalog.src.s3_state import S3CampaignState
+
+    state = S3CampaignState.__new__(S3CampaignState)      # no S3 needed to reach the guard
+    df = pd.concat([_stations(2010.001, 2010.21), _stations(2011.001, 2012.100)], ignore_index=True)
+    with pytest.raises(ValueError, match="more than once"):
+        S3CampaignState.write_stations(state, df)
+    print("PASS  a table with a repeated station id is refused, with the id named")
+
+
 if __name__ == "__main__":
     test_float_day_of_year_is_decoded_numerically()
     test_every_other_encoding_a_table_may_hold()
     test_planner_clips_to_the_true_window_in_either_encoding()
     test_the_stored_table_keeps_the_still_operating_sentinel()
+    test_write_stations_refuses_a_repeated_id()
     print("\nall station-date checks passed")

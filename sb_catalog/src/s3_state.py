@@ -251,6 +251,21 @@ class S3CampaignState:
         consumers did exactly that and planned 1,168 station-locations to stop
         early. docs/rerun_2026/30_station_dates.md.
         """
+        # Station ids must be unique. `S3DataSource` indexes the metadata by id
+        # and reads `meta.loc[station, "channels"]` expecting a string; with a
+        # repeated id that is a Series, and the shard dies on
+        # `'Series' object has no attribute 'split'` deep in the read loop,
+        # is released, and the next worker rediscovers it. On 2026-09-25 the
+        # western-fill table carried one row per FDSN epoch - 33 extra rows on
+        # 25 stations - and 662 shards span for four days and $51 before anyone
+        # noticed. Refuse here, where the producer can still fix it.
+        dup = stations["id"][stations["id"].duplicated()].unique() if "id" in stations else []
+        if len(dup):
+            raise ValueError(
+                f"{len(dup)} station id(s) appear more than once: {sorted(dup)[:5]}"
+                f"{' ...' if len(dup) > 5 else ''}. Merge the epochs (union the "
+                f"channels, earliest start, latest end) before writing."
+            )
         uri = self.uri("stations.parquet")
         stations = stations.copy()
         for c in self._ID_COLUMNS:
