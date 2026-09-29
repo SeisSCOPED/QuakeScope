@@ -85,6 +85,24 @@
       "threads": 2,
       "queue": "s3://quakescope-picks-2026/_queues/western-fill",
       "parquet_uri": "s3://quakescope-picks-2026/western"
+    },
+    "western-dates": {
+      "target": 0,
+      "job_definition": "quakescope_2026_western:27",
+      "weight": "original",
+      "procs": 4,
+      "threads": 2,
+      "queue": "s3://quakescope-picks-2026/_queues/western-dates",
+      "parquet_uri": "s3://quakescope-picks-2026/western"
+    },
+    "obs-dates": {
+      "target": 0,
+      "job_definition": "quakescope_2026_obs:23",
+      "weight": "obs",
+      "procs": 4,
+      "threads": 2,
+      "queue": "s3://quakescope-picks-2026/_queues/obs-dates",
+      "parquet_uri": "s3://quakescope-picks-2026/obs"
     }
   }
 }
