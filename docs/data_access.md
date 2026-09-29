@@ -123,8 +123,17 @@ Wood-Anderson constants, whole-day deconvolution, taper rule):
 
 `id` (= `tid`), `network_code`, `station_code`, `location_code`, `channels`
 (the bands the archive lists, e.g. `HH` or `DP,EH`), `latitude`, `longitude`,
-`elevation` (m), `start_date`, `end_date` (decimal `YYYY.DDD`; `3000.001` means
-still operating), `state`. Western has 24,008 rows across 119 networks; the
+`elevation` (m), `start_date`, `end_date`, `state`.
+
+**`start_date` and `end_date` are Parquet dates** (`date32`), so they compare
+directly with a `datetime.date` and need no decoding. A station still
+operating carries **3000-01-01** rather than a null, so `end_date >= when` keeps
+it instead of dropping it. Until 2026-09-29 both columns were a `YYYY.DDD`
+float, which is still there as `start_yearday` / `end_yearday`; that float is
+three zero-padded digits after the point, so `2010.21` is day **210**, and
+formatting it as a string to parse it reads day 21 instead. Two of our own
+planners did that, which is why the columns changed:
+[30_station_dates.md](rerun_2026/30_station_dates.md). Western has 24,008 rows across 119 networks; the
 `state` column is filled for 23,948 of them.
 
 ### Run records
@@ -292,3 +301,7 @@ date you read it, because the bucket is live.
 - Coverage gaps (section 6) are not yet quantified for the whole campaign.
 - The bucket is live: embargoed years fill in as EarthScope opens them, and
   compaction will rename objects. Record the date of any pull.
+- Station coverage is still being completed. `western-fill` is adding 2,402
+  station-locations from the rest of the stakeholder list, and a re-pick of
+  121,692 station-days that a date-parsing defect kept out of the original
+  plan is pending ([30_station_dates.md](rerun_2026/30_station_dates.md)).

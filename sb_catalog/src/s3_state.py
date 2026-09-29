@@ -41,6 +41,9 @@ from typing import Any, Iterator, Optional
 import boto3
 from botocore.config import Config as BotoConfig
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
+
+from .utils import station_date
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger("s3_state")
@@ -196,13 +199,39 @@ class S3CampaignState:
     # object key built from it no longer matches anything in S3.
     _ID_COLUMNS = ("id", "network_code", "station_code", "location_code", "channels")
 
+    # Open-ended operation. A station still running needs a value that compares
+    # as "later than anything", because the obvious alternative - null - makes
+    # `end_date >= when_i_care` false and silently drops exactly the stations
+    # that are still recording. Year 3000 is what the float encoding used
+    # (3000.001) and it keeps every naive filter correct.
+    OPEN_ENDED = datetime.date(3000, 1, 1)
+
     def write_stations(self, stations: pd.DataFrame) -> str:
-        """Persist station metadata. Replaces the `stations` collection."""
+        """Persist station metadata. Replaces the `stations` collection.
+
+        `start_date` and `end_date` are written as **Parquet dates**, not as
+        the `YYYY.DDD` float the tables carried until 2026-09-29. That float
+        was not lossy in itself, but it is decoded wrongly by anything that
+        reaches for `strptime(str(v), "%Y.%j")`: `str(2010.21)` drops the
+        trailing zero and reads day 21 instead of 210. Two of our own
+        consumers did exactly that and planned 1,168 station-locations to stop
+        early. docs/rerun_2026/30_station_dates.md.
+        """
         uri = self.uri("stations.parquet")
         stations = stations.copy()
         for c in self._ID_COLUMNS:
             if c in stations.columns:
                 stations[c] = stations[c].fillna("").astype(str)
+        for c in ("start_date", "end_date"):
+            if c not in stations.columns:
+                continue
+            # Keep the original encoding beside the date, so the conversion can
+            # be checked against what the table used to say.
+            if is_numeric_dtype(stations[c]):
+                stations[f"{c[:-len('_date')]}_yearday"] = stations[c]
+            stations[c] = pd.to_datetime(
+                [station_date(v) for v in stations[c]], errors="coerce"
+            ).date
         stations.to_parquet(uri, index=False)
         logger.info(f"Wrote {len(stations)} stations to {uri}")
         return uri
