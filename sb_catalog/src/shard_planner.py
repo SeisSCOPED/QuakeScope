@@ -29,6 +29,7 @@ import logging
 import pandas as pd
 
 from .s3_state import S3CampaignState
+from .utils import station_date
 
 logger = logging.getLogger("shard_planner")
 
@@ -140,10 +141,14 @@ def _operating_windows(stations: pd.DataFrame) -> dict:
     out = {}
     for sid, s, e in zip(stations["id"].astype(str),
                          stations["start_date"], stations["end_date"]):
-        try:
-            out[sid] = (parse_year_day(str(s)), parse_year_day(str(e)))
-        except (ValueError, TypeError):
-            continue
+        # station_date decodes a real date, a YYYY.DDD string, or the legacy
+        # float - the last numerically, because str() drops the trailing zero
+        # and made every day-of-year divisible by ten parse ten times small.
+        # See docs/rerun_2026/30_station_dates.md.
+        start, end = station_date(s), station_date(e)
+        if start is None or end is None:
+            continue                          # unknown window: plan it whole
+        out[sid] = (start, end)
     return out
 
 
