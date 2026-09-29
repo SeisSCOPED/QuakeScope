@@ -203,8 +203,17 @@ class S3StateAdapter:
     """
 
     def __init__(self, state: S3CampaignState, stations: pd.DataFrame,
-                 done: Optional[set] = None):
+                 done: Optional[set] = None,
+                 output: Optional[S3CampaignState] = None):
         self.state = state
+        # Where the run record goes. A pick carries `rid`, and a reader
+        # resolves it under the prefix the pick is in - so the record belongs
+        # with the picks, not with the queue that scheduled them. They are the
+        # same prefix for an ordinary campaign and different for every repair
+        # and fill queue, where the record used to stay behind and leave
+        # published picks with an rid that resolved to nothing until someone
+        # ran scripts/promote_runs.py by hand.
+        self.output = output or state
         self._stations = stations
         self.done = done or set()
         self.picks_record: list[dict] = []
@@ -235,7 +244,7 @@ class S3StateAdapter:
 
     def write_run_data(self, **kwargs) -> str:
         run_id = str(uuid.uuid4())
-        self.state.write_run(run_id, **{k: str(v) for k, v in kwargs.items()})
+        self.output.write_run(run_id, **{k: str(v) for k, v in kwargs.items()})
         return run_id
 
     def insert_many_ignore_duplicates(self, collection: str, records: list[dict]) -> None:
@@ -315,7 +324,10 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
             f"Resuming {shard['shard_id']}: {len(done)} station-day-channels "
             f"already written, skipping them"
         )
-    db = S3StateAdapter(state, stations, done=done)
+    out = state
+    if args.parquet_uri and args.parquet_uri.rstrip("/") != state.root.rstrip("/"):
+        out = S3CampaignState(args.parquet_uri)
+    db = S3StateAdapter(state, stations, done=done, output=out)
 
     n_ckpt = [0]
 
