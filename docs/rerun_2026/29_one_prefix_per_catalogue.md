@@ -203,3 +203,19 @@ production planner: 28,218 shards, 5,830,943 station-days, of which 1.26 M
 are `NP` triggered data. The queue lives under `_queues/western-fill/` and
 writes into `western/`; `fleet.json` names both. At western's measured
 $0.0000556 per planned station-day the fill is about $325.
+
+## Run records follow the picks (2026-09-29)
+
+A worker takes its queue from `--campaign` and its output root from
+`--parquet_uri`. Picks and manifests went to the catalogue, but the **run
+record** went to the campaign state, which is the queue - so every pick a
+repair or fill queue published carried an `rid` that resolved to nothing under
+`<catalogue>/runs/`. Copied by hand after the September repairs; missed for
+`western-fill`, whose 112,549 records sat in `_queues/western-fill/runs/` for
+nine days while its picks were public in `western/`.
+
+`S3StateAdapter` now takes an `output` state and writes the record there, which
+`worker._run_shard` sets to `--parquet_uri` when it differs from the queue. A
+campaign that writes into its own prefix is unchanged.
+`scripts/promote_runs.py` copies records across for the queues that ran before
+this, and is idempotent.
