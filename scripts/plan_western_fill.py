@@ -107,6 +107,31 @@ def fetch(pairs):
     return pd.DataFrame(rows), absent
 
 
+def merge_epochs(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per station-location, whatever FDSN says about its epochs.
+
+    `get_stations(level="channel")` returns a station object per epoch, so a
+    station that was reconfigured comes back two or three times and a naive
+    loop writes the id that many times. The reader indexes metadata by id and
+    expects one row; with several it dies mid-shard. Union the bands and take
+    the widest window, which is what a picker needs: the per-day channel choice
+    happens later, from what the archive actually holds that day.
+    """
+    if df.empty:
+        return df
+    out = (df.groupby("id", as_index=False)
+             .agg(network_code=("network_code", "first"), station_code=("station_code", "first"),
+                  location_code=("location_code", "first"),
+                  channels=("channels", lambda v: ",".join(sorted({b for x in v for b in str(x).split(",") if b}))),
+                  latitude=("latitude", "first"), longitude=("longitude", "first"),
+                  elevation=("elevation", "first"),
+                  start_date=("start_date", "min"), end_date=("end_date", "max")))
+    n = len(df) - len(out)
+    if n:
+        print(f"merged {n} extra epoch row(s) into {len(out):,} unique station-locations")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", required=True, help="WestCoast_stations.txt")
@@ -129,6 +154,7 @@ def main() -> None:
     print(land.region.value_counts().to_string())
 
     df, missing = fetch(list(zip(land.net, land.sta)))
+    df = merge_epochs(df)
     region_of = {(n, s): r for n, s, r in zip(land.net, land.sta, land.region)}
     df["state"] = [region_of.get((n, s)) for n, s in zip(df.network_code, df.station_code)]
     df = df[~df.id.isin(set(western.id))]
