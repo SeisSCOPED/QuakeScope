@@ -67,9 +67,11 @@ def merge_epochs(df: pd.DataFrame) -> pd.DataFrame:
                latitude=("latitude", "first"), longitude=("longitude", "first"),
                elevation=("elevation", "first"),
                start_date=("start_date", "min"), end_date=("end_date", "max"))
-    for extra in ("state", "start_yearday", "end_yearday"):
+    # The float columns must follow their date twins, or the two disagree:
+    # start_yearday with the earliest start, end_yearday with the latest end.
+    for extra, how in (("state", "first"), ("start_yearday", "min"), ("end_yearday", "max")):
         if extra in df.columns:
-            agg[extra] = (extra, "min" if extra.endswith("yearday") else "first")
+            agg[extra] = (extra, how)
     return df.groupby("id", as_index=False).agg(**agg)
 
 
