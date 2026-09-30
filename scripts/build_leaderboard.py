@@ -132,6 +132,9 @@ REFS = [
     ("aguilar2024", "Aguilar Suarez, A. L. and Beroza, G. C. (2024). Curated Regional Earthquake "
      "Waveforms (CREW) dataset. <i>Seismica</i> 3(1).",
      "https://doi.org/10.26443/seismica.v3i1.1049"),
+    ("aguilar2025", "Aguilar Suarez, A. L. and Beroza, G. C. (2025). Picking regional seismic "
+     "phase arrival times with deep learning. <i>Seismica</i> 4(1).",
+     "https://doi.org/10.26443/seismica.v4i1.1431"),
     ("chen2024", "Chen, Y. et al. (2024). TXED: the Texas earthquake dataset for AI. "
      "<i>Seismological Research Letters</i> 95, 2013-2022.",
      "https://doi.org/10.1785/0220230327"),
@@ -178,6 +181,14 @@ REFS = [
     ("guo2017", "Guo, C., Pleiss, G., Sun, Y. and Weinberger, K. Q. (2017). On calibration of modern "
      "neural networks. <i>Proceedings of the 34th International Conference on Machine Learning</i>, "
      "PMLR 70, 1321-1330.", "https://arxiv.org/abs/1706.04599"),
+    ("park2025", "Park, Y., Armstrong, A. D., Yeck, W. L., Shelly, D. R. and Beroza, G. C. "
+     "(2025). Divide and conquer: separating the two probabilities in seismic phase picking. "
+     "<i>Geophysical Journal International</i> 243, ggaf333.",
+     "https://doi.org/10.1093/gji/ggaf333"),
+    ("yuan2023", "Yuan, C., Denolle, M. A., Ni, Y., Chen, Y. and Zhu, W. (2023). Better "
+     "together: ensemble learning for earthquake detection and phase picking. <i>IEEE "
+     "Transactions on Geoscience and Remote Sensing</i> 61, 5914213.",
+     "https://doi.org/10.1109/TGRS.2023.3320148"),
     ("bekker2020", "Bekker, J. and Davis, J. (2020). Learning from positive and unlabeled data: a "
      "survey. <i>Machine Learning</i> 109, 719-760.",
      "https://doi.org/10.1007/s10994-020-05877-5"),
@@ -786,6 +797,11 @@ def main() -> None:
   bulletin the observed rate is a lower bound, so the quantity here is <code>ece_lb</code>. The
   shape of the curve is what makes one threshold mean different things to different weight
   sets.</p>
+  <p>There is a reason beyond training for the gap. A segmentation picker is trained against a
+  kernel placed on the labelled arrival time, and the height of the output peak it is read at
+  is neither the probability that a phase exists nor the probability attached to the arrival
+  time{cite('park2025')}. The curves below measure a quantity that the architecture does not
+  define as a probability in the first place.</p>
   <figure>{fig3}
     <figcaption>Perfect calibration is the dashed diagonal. Every weight set sits below it: a
     pick labelled 0.8 agrees with the bulletin less often than 80&thinsp;% of the time, partly
@@ -829,6 +845,56 @@ def main() -> None:
     <code>{worst_swap}</code>. No weight set emits duplicate picks on an arrival it already
     matched, at any threshold tested.</caption>
   </table></div></div>
+""")
+    A(f"""
+  <div class="card"><h3>Inference cost</h3>
+  <p>A picker that cannot be run across the archive cannot build the catalogue, so cost belongs
+  on the board next to recall. It is a scoring axis here with a fixed protocol and no numbers
+  yet, which is why rule R9 below is only partly met.</p>
+  <div class="table-scroll"><table class="data">
+    <thead><tr><th class="l">quantity</th><th class="l">unit</th><th class="l">how to report it</th>
+    <th class="l">status</th></tr></thead><tbody>
+      <tr><td class="l"><strong>Model time</strong></td><td class="l">s per station-day</td>
+      <td class="l">Wall clock for the forward pass alone, at a stated batch size and window
+      overlap, excluding data read. Architecture drives this: the doubled filter width of
+      <code>jma_wc</code> and its fine-tune costs more per window than
+      <code>original</code>.</td>
+      <td class="l"><span class="pill unmet">not measured here</span></td></tr>
+      <tr><td class="l"><strong>End-to-end time</strong></td><td class="l">s per station-day</td>
+      <td class="l">Wall clock including the archive read, which dominates at campaign scale
+      and depends on the store rather than the model.</td>
+      <td class="l"><span class="pill unmet">not measured here</span></td></tr>
+      <tr><td class="l"><strong>Peak memory</strong></td><td class="l">MB resident</td>
+      <td class="l">Peak resident set for one worker at the stated batch size. It sets the task
+      size, and a model that does not fit the smallest task is more expensive than its
+      per-window time suggests.</td>
+      <td class="l"><span class="pill unmet">not measured here</span></td></tr>
+      <tr><td class="l"><strong>Cost</strong></td><td class="l">USD per 1,000 station-days</td>
+      <td class="l">vCPU-hours times the stated instance price, summed over attempts rather than
+      jobs, so retries and preemptions are counted. The QuakeScope campaign measures this per
+      campaign and not per weight set.</td>
+      <td class="l"><span class="pill partial">campaign only</span></td></tr>
+  </tbody>
+  <caption>Reporting recall without cost ranks a model nobody can afford to run first. The four
+  quantities are separated because they have different causes: model time follows the
+  architecture, end-to-end time follows the data path, memory sets the task size, and cost
+  follows the platform.</caption>
+  </table></div></div>
+
+  <div class="card"><h3>Pick uncertainty comes next</h3>
+  <p>Every number on this board treats a pick as a time and a scalar confidence. Two lines of
+  work make that assumption avoidable, and neither has a column here yet.</p>
+  <p>Ensemble pickers report the spread across models as well as the pick, so a disagreement
+  between architectures becomes a usable uncertainty rather than a hidden
+  one{cite('yuan2023')}. Separately, the detection probability and the arrival-time
+  probability can be estimated as the distinct quantities they are, instead of being read off
+  one output peak{cite('park2025')}. A board that scored those would replace the calibration
+  curve above with something a location code could consume directly: an arrival time with a
+  standard error, scored by whether the stated error matches the observed residual
+  distribution. That is the next axis to add.</p>
+  </div>
+""")
+    A("""
 </section>
 """)
 
@@ -882,6 +948,15 @@ def main() -> None:
   instrumentation, noise, depth distribution and analyst conventions. A picker evaluated near
   its training distribution is answering an easier question than the same picker deployed
   elsewhere, which is what makes a single benchmark number hard to read.</p>
+  <p>The corpora also carry artefacts. Labels inherited from an operator pipeline include
+  mislabelled and duplicated arrivals, windows where the marked phase is not the first
+  arrival, and traces whose metadata does not describe the recording. CREW was assembled with
+  semi-supervised quality control for that reason{cite('aguilar2024')}, and the regional
+  pickers trained on it are the current demonstration that a cleaner corpus changes what a
+  model learns{cite('aguilar2025')}. Excluding artefact-contaminated windows from both the
+  training and the test set is the design of the retraining this project runs, and it is why a
+  benchmark assembled from the same curated corpora a model was trained on cannot settle
+  whether the model generalises.</p>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">Corpus</th><th class="l">Source network</th><th class="l">Used here</th></tr></thead>
     <tbody>
@@ -965,6 +1040,14 @@ def main() -> None:
          cite('munchmeyer2022'), "Survives association and moves a location."),
         ("Duplicate rate", "extra picks within tolerance of an already-matched arrival",
          "exact", cite('zhu2022', 'munchmeyer2024'), "Invisible in recall. Costs an associator work."),
+        ("Model time, memory, cost", "seconds and MB per station-day, and USD per 1,000 "
+         "station-days", "protocol set", "",
+         "A model too slow or too large to run across the archive cannot build the catalogue. "
+         "The reporting protocol is fixed above. No per-weight numbers yet."),
+        ("Pick uncertainty", "a stated error on the arrival time, scored against the observed "
+         "residual spread", "not yet scored", cite('yuan2023', 'park2025'),
+         "The peak height of a segmentation picker is neither the detection probability nor the "
+         "timing probability, so a model that reports the two separately needs its own column."),
         ("Catalogue completeness", "magnitude above which the catalogue is complete",
          "downstream", cite('woessner2005'),
          "The quantity a catalogue user cares about. Absent from this board, which needs association and location as well as picks."),
@@ -983,7 +1066,7 @@ def main() -> None:
     <th class="l">source</th><th class="l">reason</th></tr></thead><tbody>""")
     for name, defn, status, src, why in ident:
         cls = {"exact": "exact", "lower bound": "bound", "not computable": "unmet",
-               "downstream": ""}[status]
+               "downstream": "", "protocol set": "partial", "not yet scored": "partial"}[status]
         A(f'    <tr><td class="l"><strong>{name}</strong></td><td class="l">{defn}</td>'
           f'<td class="l"><span class="pill {cls}">{status}</span></td><td class="l">{src}</td>'
           f'<td class="l" style="color:#6f6890">{why}</td></tr>')
@@ -1027,9 +1110,9 @@ def main() -> None:
          f"outside its own region: <code>{ours}</code> ranks {us_ours} of {len(WEIGHTS)} on track 1 "
          f"and {gl_ours} of {len(WEIGHTS)} on track 2."),
         ("R9", "Every row states the model version, the data and the cost", "partial",
-         "Weight set, SeisBench version, notebook and execution time are stamped in the footer, "
-         "and the reference agency is stated per track. Compute cost per station-day is measured "
-         "for the campaign and is not yet a column here."),
+         "Weight set, SeisBench version, notebook and execution time are stamped in the footer, and "
+         "the reference agency is stated per track. Model time, memory and cost per station-day "
+         "have a fixed reporting protocol on the board and no per-weight numbers yet."),
     ]
     n_met = sum(1 for r in rules if r[2] == "met")
     n_part = sum(1 for r in rules if r[2] == "partial")
@@ -1103,9 +1186,11 @@ python scripts/score_picks.py --demo</code></pre>
     </div>
     <div class="card">
       <h3>What would move a rank</h3>
-      <p>A held-out sequence nobody has looked at. An STA/LTA baseline for the recall floor.
-      Association and location, so that completeness{cite('woessner2005')} replaces recall as
-      the headline metric. Cost per station-day on every row.</p>
+      <p>A held-out sequence nobody has looked at, from the embargoed acceptance suite. Model
+      time, memory and cost per station-day on every row. Association and location, so that
+      completeness{cite('woessner2005')} replaces recall as the headline metric. A column for
+      models that report an arrival time with an error rather than a
+      confidence{cite('yuan2023', 'park2025')}.</p>
     </div>
   </div>
 </section>
