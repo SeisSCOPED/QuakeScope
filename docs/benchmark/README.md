@@ -87,6 +87,22 @@ midpoint of the budget range all models can reach. Where a model cannot reach
 the others' counts with its threshold on the floor, that is reported as a
 ceiling.
 
+**Computing these metrics on other picks.** The full metric set, with the
+definitions and the reasoning, is at
+[benchmark_metrics.html](https://seisscoped.org/QuakeScope/benchmark_metrics.html);
+the definitions themselves are in `sb_catalog/src/benchmark_metrics.py`, pinned
+by `tests/test_benchmark_metrics.py`. `scripts/score_picks.py` runs the lot on
+any two pick files:
+
+    python scripts/score_picks.py --reference arrivals.csv --picks mypicks.csv --out scores/
+
+It needs `station,phase,time` in the reference and `station,phase,time,conf` in
+the picks, takes the column names our exports and SeisBench already use, and
+accepts optional `dataset` and `model` columns to score several sequences or
+models in one run. `--demo` runs it on synthetic picks with known properties.
+Section 8 of that page checks, on every row of both sequence studies, that the
+script reproduces the published tables bit for bit.
+
 **Reproduction.** 52 station-days of the western campaign (a mainshock day and
 a quiet day for five stations of each of four sequences) are re-picked locally
 with the production modules imported from `sb_catalog.src`, reading the same
