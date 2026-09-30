@@ -143,15 +143,24 @@
 </a>
 
 <a class="card" href="benchmark_metrics.html">
-  <h3>Scoring a picker: every metric, on every benchmark</h3>
-  <p>The full metric set for all five benchmarks — detection at three threshold
-  treatments, onset-time statistics, confidence calibration, phase swaps,
-  duplicate picks — with what each one means and which are identifiable when
-  the reference is an operator bulletin rather than a labelled test set.
-  Written to be read by people who evaluate models for a living and by people
-  who pick phases for a living. Section 8 is the script that computes all of
-  it on your own two CSV files.</p>
-  <div class="meta">Computed from the studies' exported picks · definitions in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py">benchmark_metrics.py</a> · run it yourself with <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> · ~2 min</div>
+  <h3>Phase-picker leaderboard</h3>
+  <p>Four published sets of PhaseNet weights ranked against analyst arrivals
+  from five agencies on two continents, under three threshold protocols, on
+  detection, onset time, confidence calibration and phase identification. The
+  ranking inverts between protocols, and once each model is allowed its own
+  threshold the four are indistinguishable. Includes the architecture and
+  curated-dataset context with citations, the metric definitions with sources,
+  and this track's scorecard against the nine rules for a citable benchmark.</p>
+  <div class="meta">The catalogue-workflow track of <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> &middot; scorer: <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> &middot; ~6 min</div>
+</a>
+
+<a class="card" href="benchmark_metrics_methods.html">
+  <h3>Methods: how the picker board is computed</h3>
+  <p>The executed appendix to the leaderboard. Derives the metric set from the
+  benchmark literature, computes every table the board reads, and verifies that
+  the standalone scorer reproduces all of them bit for bit.</p>
+  <div class="meta">Executed notebook &middot; definitions in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py">benchmark_metrics.py</a> &middot; ~10 min</div>
+</a> · run it yourself with <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> · ~2 min</div>
 </a>
 
 <a class="card" href="benchmark_summary.html">

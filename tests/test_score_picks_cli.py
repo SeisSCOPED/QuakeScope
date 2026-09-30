@@ -1,8 +1,9 @@
 """The scorer colleagues run on their own picks, pinned end to end.
 
 `scripts/score_picks.py` is the published entry point to the metrics in
-`sb_catalog/src/benchmark_metrics.py` (see section 8 of
-https://seisscoped.org/QuakeScope/benchmark_metrics.html). These tests check
+`sb_catalog/src/benchmark_metrics.py`. It is the scorer behind the picker board
+at https://seisscoped.org/QuakeScope/benchmark_metrics.html and is verified
+against that board's tables in section 8 of its methods appendix. These tests check
 the two things a user cannot check for themselves: that the numbers the CLI
 writes are the numbers the module computes, and that the failures which would
 otherwise report a working picker as recall 0 stop the run instead.

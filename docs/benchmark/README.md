@@ -87,11 +87,25 @@ midpoint of the budget range all models can reach. Where a model cannot reach
 the others' counts with its threshold on the floor, that is reported as a
 ceiling.
 
-**Computing these metrics on other picks.** The full metric set, with the
-definitions and the reasoning, is at
-[benchmark_metrics.html](https://seisscoped.org/QuakeScope/benchmark_metrics.html);
-the definitions themselves are in `sb_catalog/src/benchmark_metrics.py`, pinned
-by `tests/test_benchmark_metrics.py`. `scripts/score_picks.py` runs the lot on
+**The leaderboard.** These results are published as a scored board at
+[benchmark_metrics.html](https://seisscoped.org/QuakeScope/benchmark_metrics.html),
+the catalogue-workflow track of
+[HazEvalHub](https://gaia-hazlab.github.io/hazevalhub). It ranks the four weight
+sets under three threshold protocols, gives the architecture and curated-dataset
+context with citations, and carries this track's scorecard against the nine
+rules for a citable benchmark. Its methods appendix, which computes every table
+on it, is
+[benchmark_metrics_methods.html](https://seisscoped.org/QuakeScope/benchmark_metrics_methods.html).
+Rebuild the board after any notebook re-runs with
+
+    pixi run -e dev python scripts/build_leaderboard.py
+
+which reads `results/*.csv` and fails rather than publishing if a result moves
+far enough to contradict the prose.
+
+**Computing these metrics on other picks.** The definitions are in
+`sb_catalog/src/benchmark_metrics.py`, pinned by
+`tests/test_benchmark_metrics.py`. `scripts/score_picks.py` runs the lot on
 any two pick files:
 
     python scripts/score_picks.py --reference arrivals.csv --picks mypicks.csv --out scores/
