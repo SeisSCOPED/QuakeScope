@@ -1,9 +1,12 @@
 /* ==========================================================================
    QuakeScope picker leaderboard
-   Design tokens mirrored from the GAIA HazLab system (gaia-book.css) and the
-   Repere EvalHub board (mdenolle/repere, site/styles.css): UW Husky Purple on
-   lavender, Montserrat headings, Inter body. Kept in one file so the board can
-   be embedded in an iframe from HazEvalHub without pulling the book theme.
+   Colours from the GAIA HazLab system (gaia-book.css) and the Repere EvalHub
+   board (mdenolle/repere, site/styles.css): UW Husky Purple on lavender.
+   Typeface is Manrope throughout, as the AstaBench leaderboard uses, which
+   reads closer to a research table than a geometric display sans does. Kept in
+   one file so the board can be embedded in an iframe from HazEvalHub without
+   pulling the book theme. reports/fonts/ carries the same font for the figures,
+   under the SIL Open Font License (see OFL.txt).
    ========================================================================== */
 
 :root {
@@ -36,17 +39,19 @@
 html { scroll-behavior: smooth; }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  line-height: 1.65;
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+  font-size: 15.5px;
+  line-height: 1.58;
   color: var(--ink);
   background: var(--lav);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 h1, h2, h3, h4, .brand {
-  font-family: 'Montserrat', 'Inter', system-ui, sans-serif;
-  letter-spacing: -0.01em;
-  line-height: 1.22;
+  font-family: 'Manrope', system-ui, sans-serif;
+  letter-spacing: -0.018em;
+  line-height: 1.2;
 }
 
 .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
@@ -83,11 +88,11 @@ h1, h2, h3, h4, .brand {
 .hero .nav-links a:hover { color: var(--peri-light); }
 .hero-inner { padding-top: 48px; max-width: 72ch; }
 .eyebrow {
-  text-transform: uppercase; letter-spacing: 0.12em;
-  font-size: 0.72rem; font-weight: 700; color: var(--peri-light); margin-bottom: 14px;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  font-size: 0.7rem; font-weight: 700; color: var(--peri-light); margin-bottom: 14px;
 }
-.hero h1 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); font-weight: 800; margin-bottom: 18px; }
-.hero p { color: #ded8f2; font-size: 1.06rem; max-width: 68ch; }
+.hero h1 { font-size: clamp(1.75rem, 3.6vw, 2.5rem); font-weight: 800; margin-bottom: 18px; }
+.hero p { color: #ded8f2; font-size: 1.02rem; max-width: 70ch; }
 .hero p + p { margin-top: 12px; }
 .hero-actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
 
@@ -111,8 +116,8 @@ h1, h2, h3, h4, .brand {
   box-shadow: var(--shadow); padding: 16px 18px;
 }
 .stat .n {
-  font-family: 'Montserrat', sans-serif; font-weight: 800;
-  font-size: 1.5rem; color: var(--purple); line-height: 1.1;
+  font-weight: 800; font-size: 1.45rem; color: var(--purple);
+  line-height: 1.1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
 }
 .stat .k { color: var(--stone); font-size: 0.8rem; margin-top: 4px; }
 
@@ -120,11 +125,11 @@ h1, h2, h3, h4, .brand {
 section { margin-bottom: 56px; }
 .section-head { max-width: 78ch; margin-bottom: 24px; }
 .section-head .eyebrow { color: var(--peri); }
-.section-head h2 { font-size: clamp(1.4rem, 2.8vw, 2rem); font-weight: 700; margin-bottom: 10px; }
-.lede { color: var(--stone); font-size: 1.02rem; }
+.section-head h2 { font-size: clamp(1.25rem, 2.2vw, 1.65rem); font-weight: 700; margin-bottom: 10px; }
+.lede { color: var(--stone); font-size: 0.99rem; }
 section p { max-width: 82ch; }
 section p + p { margin-top: 12px; }
-h3 { font-size: 1.1rem; margin: 26px 0 10px; color: var(--purple-deep); }
+h3 { font-size: 1.04rem; font-weight: 700; margin: 26px 0 10px; color: var(--purple-deep); }
 h4 { font-size: 0.98rem; margin: 18px 0 8px; color: var(--purple-deep); }
 
 .card {
@@ -136,32 +141,35 @@ h4 { font-size: 0.98rem; margin: 18px 0 8px; color: var(--purple-deep); }
 /* ---------- tables ---------- */
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table.board, table.data {
-  width: 100%; border-collapse: collapse; font-size: 0.88rem;
-  font-variant-numeric: tabular-nums;
+  width: 100%; border-collapse: collapse; font-size: 0.83rem;
+  line-height: 1.35; font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
 }
 table.board th, table.data th {
-  text-align: right; padding: 9px 11px; color: var(--purple);
-  font-weight: 700; font-size: 0.8rem; text-transform: uppercase;
-  letter-spacing: 0.04em; border-bottom: 2px solid var(--line); white-space: nowrap;
+  text-align: right; padding: 8px 11px; color: var(--purple);
+  font-weight: 700; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.055em; border-bottom: 1.5px solid var(--line); white-space: nowrap;
+  vertical-align: bottom;
 }
 table.board td, table.data td {
-  text-align: right; padding: 9px 11px; border-bottom: 1px solid var(--line);
+  text-align: right; padding: 8px 11px; border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
 table.board th:first-child, table.board td:first-child,
 table.data th:first-child, table.data td:first-child { text-align: left; }
 table.board th.l, table.board td.l, table.data th.l, table.data td.l { text-align: left; }
+table.data td.l { white-space: normal; }
 table.board tbody tr:hover, table.data tbody tr:hover { background: var(--lav-2); }
-table.data { font-size: 0.85rem; }
+table.data { font-size: 0.81rem; }
 table.data caption, table.board caption {
   caption-side: bottom; text-align: left; color: var(--stone);
-  font-size: 0.83rem; padding-top: 10px;
+  font-size: 0.81rem; line-height: 1.5; padding-top: 11px;
 }
 
 /* leaderboard rank column */
 .rank {
-  display: inline-grid; place-items: center; width: 26px; height: 26px;
-  border-radius: 8px; font-weight: 800; font-size: 0.8rem;
+  display: inline-grid; place-items: center; width: 25px; height: 25px;
+  border-radius: 7px; font-weight: 800; font-size: 0.78rem;
   background: var(--lav-2); color: var(--purple);
 }
 .rank.r1 { background: var(--purple); color: #fff; }
@@ -198,7 +206,7 @@ td.na { color: var(--stone); }
 /* ---------- figures ---------- */
 figure { margin: 22px 0 0; }
 figure svg { width: 100%; height: auto; display: block; }
-figcaption { color: var(--stone); font-size: 0.86rem; margin-top: 10px; max-width: 86ch; }
+figcaption { color: var(--stone); font-size: 0.84rem; line-height: 1.5; margin-top: 10px; max-width: 86ch; }
 
 /* ---------- callout ---------- */
 .callout {
@@ -233,7 +241,8 @@ li { margin-bottom: 6px; max-width: 80ch; }
 ol.refs { list-style: none; margin: 0; counter-reset: ref; }
 ol.refs li {
   counter-increment: ref; position: relative; padding-left: 40px;
-  font-size: 0.89rem; margin-bottom: 11px; color: var(--ink); max-width: 96ch;
+  font-size: 0.86rem; line-height: 1.5; margin-bottom: 11px; color: var(--ink);
+  max-width: 96ch;
 }
 ol.refs li::before {
   content: "[" counter(ref) "]"; position: absolute; left: 0; top: 0;
@@ -267,5 +276,5 @@ sup.c a { text-decoration: none; }
   .stat .n { font-size: 1.25rem; }
   section { margin-bottom: 40px; }
   .card { padding: 16px 14px; }
-  table.board, table.data { font-size: 0.8rem; }
+  table.board, table.data { font-size: 0.78rem; }
 }

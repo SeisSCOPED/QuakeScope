@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import tempfile
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 import pandas as pd
 
@@ -35,6 +37,61 @@ from sb_catalog.src.benchmark_metrics import ece, match_picks, reliability  # no
 
 RES = ROOT / "docs" / "benchmark" / "results"
 OUT = ROOT / "reports" / "benchmark_metrics.html"
+# The figures are set in the same face as the page. The file is vendored under
+# reports/fonts/ (SIL Open Font License) so the build does not depend on what
+# happens to be installed.
+FONT = ROOT / "reports" / "fonts" / "Manrope[wght].ttf"
+
+
+def _use_page_font() -> None:
+    """Set the figures in Manrope, the face the page uses.
+
+    The vendored file is a variable font whose default axis position is wght
+    200, so registering it as it stands gives ExtraLight axis labels. Instance
+    it at Medium and Bold instead, into a temporary directory, so no extra
+    binaries sit in the repository and the result is derived from the one file
+    that is versioned.
+    """
+    if not FONT.exists():
+        print(f"warning: {FONT.name} missing, figures keep the default face")
+        return
+    try:
+        from fontTools.ttLib import TTFont
+        from fontTools.varLib import instancer
+    except ModuleNotFoundError:
+        print("warning: fonttools missing, figures keep the default face")
+        return
+    tmp = Path(tempfile.mkdtemp(prefix="board-fonts-"))
+    # A distinct family name, because a variable Manrope registered anywhere in
+    # matplotlib's font cache also answers to "Manrope" and would win at its
+    # default axis position, which is ExtraLight.
+    # One instance, at Medium, declared as the family's regular face. A single
+    # font in the family leaves matplotlib nothing to mis-resolve, and no figure
+    # text here is set bold.
+    family = "Manrope Board"
+    inst = instancer.instantiateVariableFont(TTFont(str(FONT)), {"wght": 500},
+                                             updateFontNames=True)
+    name = inst["name"]
+    # Drop the typographic family and subfamily records: they say "Manrope" and
+    # take precedence over name ID 1 in the parser matplotlib reads through.
+    for nid in (16, 17, 21, 22):
+        name.removeNames(nameID=nid)
+    for nid, value in ((1, family), (2, "Regular"), (4, f"{family} Regular"),
+                       (6, "ManropeBoard-Regular")):
+        name.setName(value, nid, 3, 1, 0x409)
+        name.setName(value, nid, 1, 0, 0)
+    inst["OS/2"].usWeightClass = 400
+    out = tmp / "ManropeBoard-Regular.ttf"
+    inst.save(str(out))
+    font_manager.fontManager.addfont(str(out))
+    plt.rcParams["font.family"] = family
+    got = Path(font_manager.findfont(font_manager.FontProperties(family=family))).name
+    if got != out.name:
+        raise RuntimeError(f"figures would not use the page face: matplotlib resolved "
+                           f"{family!r} to {got}, not {out.name}")
+
+
+_use_page_font()
 
 WEIGHTS = ["quakescope2026", "jma_wc", "original", "instance"]
 WCOLOR = {"quakescope2026": "#4b2e83", "jma_wc": "#c2571a",
@@ -311,18 +368,31 @@ def _style(ax):
 def fig_protocols(prot: pd.DataFrame) -> str:
     """Slope chart: the ranking under each protocol, joined per model."""
     order = ["recall_at_03", "recall_at_budget", "recall_at_best"]
-    labels = ["Shared\nthreshold 0.3", "Matched\npick budget", "Own best\nthreshold"]
+    labels = ["One shared\nthreshold, 0.3", "Equal\npick count", "Each model's\nown threshold"]
     fig, ax = plt.subplots(figsize=(7.6, 4.0))
     x = np.arange(len(order))
+    ys = {m: [prot[(prot.weights == m) & (prot.col == c)].recall.iloc[0] for c in order]
+          for m in WEIGHTS}
     for m in WEIGHTS:
-        y = [prot[(prot.weights == m) & (prot.col == c)].recall.iloc[0] for c in order]
-        ax.plot(x, y, "-o", color=WCOLOR[m], lw=2.2, ms=7, label=m, zorder=3)
-        ax.annotate(f"{y[0]:.3f}", (x[0], y[0]), textcoords="offset points",
+        ax.plot(x, ys[m], "-o", color=WCOLOR[m], lw=2.2, ms=7, label=m, zorder=3)
+        ax.annotate(f"{ys[m][0]:.3f}", (x[0], ys[m][0]), textcoords="offset points",
                     xytext=(-10, 0), ha="right", va="center", fontsize=8.5, color=WCOLOR[m])
-        ax.annotate(f"{y[-1]:.3f}", (x[-1], y[-1]), textcoords="offset points",
-                    xytext=(10, 0), ha="left", va="center", fontsize=8.5, color=WCOLOR[m])
+
+    # Protocol C bunches the four within a few points, so the right-hand labels
+    # would overprint. Lay them out at a fixed spacing around their own mean.
+    span = max(max(v) for v in ys.values()) - min(min(v) for v in ys.values())
+    gap = 0.035 * span
+    right = sorted(WEIGHTS, key=lambda m: ys[m][-1], reverse=True)
+    place = [ys[m][-1] for m in right]
+    for i in range(1, len(place)):
+        place[i] = min(place[i], place[i - 1] - gap)
+    for m, yt in zip(right, place):
+        ax.annotate(f"{ys[m][-1]:.3f}", (x[-1], ys[m][-1]), xytext=(x[-1] + 0.10, yt),
+                    ha="left", va="center", fontsize=8.5, color=WCOLOR[m],
+                    arrowprops=dict(arrowstyle="-", color=WCOLOR[m], lw=0.7,
+                                    shrinkA=2, shrinkB=2, alpha=0.55))
     ax.set_xticks(x); ax.set_xticklabels(labels)
-    ax.set_xlim(-0.55, 2.55)
+    ax.set_xlim(-0.55, 2.75)
     ax.set_ylabel("recall, weighted by reference arrivals")
     ax.set_title("The same four weight sets, scored three ways")
     _style(ax)
@@ -359,6 +429,10 @@ def fig_curves(sweep: pd.DataFrame, d: pd.DataFrame) -> str:
         ax.set_ylabel("recall")
     for ax in axes[1, :]:
         ax.set_xlabel("picks emitted (log)")
+    handles = [plt.Line2D([], [], color=WCOLOR[m], lw=2.0, marker="o", ms=5,
+                          mec="white", mew=1.0, label=m) for m in WEIGHTS]
+    fig.legend(handles=handles, frameon=False, fontsize=9, labelcolor=INK,
+               loc="lower center", ncol=len(WEIGHTS), bbox_to_anchor=(0.5, -0.035))
     fig.tight_layout()
     return _svg(fig)
 
@@ -395,7 +469,7 @@ def fig_reliability(published: pd.DataFrame) -> tuple[str, pd.DataFrame]:
                          "ece_lb": e, "n": len(conf)})
             ax.plot(tab.mean_conf, tab.observed_lb, "-o", color=WCOLOR[m], lw=1.8,
                     ms=5, label=f"{m}  ECE {e:.3f}", zorder=3)
-        ax.set_title(study.replace("_sequences", "").upper() + " sequences", fontsize=10)
+        ax.set_title(TRACKS[study.replace("_sequences", "")]["title"], fontsize=10)
         ax.set_xlabel("stated confidence")
         ax.legend(frameon=False, fontsize=8, labelcolor=INK, loc="upper left")
         _style(ax)
@@ -524,7 +598,7 @@ def main() -> None:
 <title>The Board: Seismic Phase Picking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="quakescope-board.css">
 </head>
 <body>
