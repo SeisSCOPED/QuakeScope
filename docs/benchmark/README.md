@@ -87,13 +87,15 @@ midpoint of the budget range all models can reach. Where a model cannot reach
 the others' counts with its threshold on the floor, that is reported as a
 ceiling.
 
-**The leaderboard.** These results are published as a scored board at
-[benchmark_metrics.html](https://seisscoped.org/QuakeScope/benchmark_metrics.html),
+**The leaderboard.** These results are published as a scored board,
+[The Board: Seismic Phase Picking](https://seisscoped.org/QuakeScope/benchmark_metrics.html),
 the catalogue-workflow track of
 [HazEvalHub](https://gaia-hazlab.github.io/hazevalhub). It ranks the four weight
-sets under three threshold protocols, gives the architecture and curated-dataset
-context with citations, and carries this track's scorecard against the nine
-rules for a citable benchmark. Its methods appendix, which computes every table
+sets on two tracks, the western United States against ANSS analyst arrivals and
+sequences outside it against the operating network's own, under three threshold
+protocols. It also gives the architecture and training-corpus context with
+citations and this track's scorecard against the nine rules for a benchmark a
+paper can cite. Its methods appendix, which computes every table
 on it, is
 [benchmark_metrics_methods.html](https://seisscoped.org/QuakeScope/benchmark_metrics_methods.html).
 Rebuild the board after any notebook re-runs with

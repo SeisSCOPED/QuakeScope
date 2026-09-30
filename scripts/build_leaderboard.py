@@ -42,6 +42,38 @@ WCOLOR = {"quakescope2026": "#4b2e83", "jma_wc": "#c2571a",
 INK, STONE, LINE, LAV2 = "#2a1a4f", "#6f6890", "#d8d2e8", "#ece8f7"
 SHARED_THR, DETECT_TOL = 0.3, 0.5
 
+# The two benchmark tracks. They answer different questions, and the ranking
+# differs between them, so the board reports them separately.
+TRACKS = {
+    "us": dict(
+        title="Track 1: western United States",
+        lede="The region the QuakeScope campaign catalogues. Mainshock-aftershock "
+             "sequences chosen to vary network, magnitude and era, with analyst arrivals "
+             "pulled from ANSS through the SCEDC and NCEDC event services. This track asks "
+             "whether a weight set serves the catalogue we are building.",
+        studies=("us_sequences", "ridgecrest_aftershocks", "western_reproduction")),
+    "global": dict(
+        title="Track 2: outside the United States",
+        lede="Sequences on other networks, none of them in the curated corpora the weight "
+             "sets were trained on, each with the operator's own reviewed arrivals. This "
+             "track asks which scientific use cases a weight set serves when the region is "
+             "not its own.",
+        studies=("global_sequences",)),
+}
+
+# Sequence settings as the two benchmark notebooks record them. Descriptions, not
+# measurements: every number on the board is read from the result tables.
+SEQ_SETTING = {
+    "Ridgecrest": ("2019-07-06", "7.1", "Eastern California, aftershocks seconds apart"),
+    "San Simeon": ("2003-12-22", "6.5", "Central Coast, 2003 network and instrumentation"),
+    "Monte Cristo": ("2020-05-15", "6.5", "Nevada, Basin and Range, different network"),
+    "Mendocino 2024": ("2024-12-05", "7.0", "Offshore, one-sided geometry, every station 55 km or more"),
+    "Monroe WA": ("2019-07-12", "4.6", "Cascadia, moderate magnitude"),
+    "Kaikoura 2016": ("2016-11-13", "7.8", "New Zealand, GeoNet. Sparse permanent network, most reviewed picks 80 to 120 km out"),
+    "Norcia 2016": ("2016-10-30", "6.5", "Central Italy, INGV. Apennine normal faulting, permanent plus post-Amatrice temporary stations"),
+    "Thessaly 2021": ("2021-03-03", "6.3", "Central Greece, NOA. Normal-faulting doublet, a station 5 km from the epicentre"),
+}
+
 # What each weight set is, in one line, for the board's first column.
 WHAT = {
     "quakescope2026": "Fine-tune of <code>jma_wc</code> on 527k windows, this project, 2026",
@@ -208,6 +240,24 @@ def protocol_table(d: pd.DataFrame) -> pd.DataFrame:
                          "rows": len(g)})
     out = pd.DataFrame(rows)
     out["rank"] = out.groupby("protocol").recall.rank(ascending=False, method="min").astype(int)
+    return out
+
+
+def track_table(d: pd.DataFrame, study: str) -> pd.DataFrame:
+    """One track's ranking, ordered by recall at each weight set's own threshold."""
+    s = d[d.study == study]
+    keys = ["sequence", "phase"]
+    rows = []
+    wins = s.loc[s.groupby(keys).recall_at_best.idxmax()].weights.value_counts()
+    for m in WEIGHTS:
+        g = s[s.weights == m]
+        rows.append({"weights": m, "own": wmean(g, "recall_at_best"),
+                     "shared": wmean(g, "recall_at_03"),
+                     "equal": wmean(g, "recall_at_budget"),
+                     "thr": float(g.best_thr.mean()),
+                     "wins": int(wins.get(m, 0)), "rows": len(g)})
+    out = pd.DataFrame(rows).sort_values("own", ascending=False).reset_index(drop=True)
+    out["rank"] = out.own.rank(ascending=False, method="min").astype(int)
     return out
 
 
@@ -399,6 +449,39 @@ def main() -> None:
     flips = int((r03.idxmax(axis=1) != rbud.idxmax(axis=1)).sum())
 
     ceilings = mx.mean().to_dict()          # mean picks each weight can emit at the floor
+
+    # per-track boards, and the claim that separating them changes the reading
+    tracks = {k: track_table(d, k) for k in TRACKS}
+    us_lead = tracks["us"].weights.iloc[0]
+    gl_lead = tracks["global"].weights.iloc[0]
+    ours = "quakescope2026"
+    us_ours = int(tracks["us"].set_index("weights").loc[ours, "rank"])
+    gl_ours = int(tracks["global"].set_index("weights").loc[ours, "rank"])
+    assert us_ours < gl_ours, ("the prose says our own fine-tune ranks higher on its own "
+                               "region than abroad")
+    track_arrivals = {k: int(d[d.study == k].groupby(["sequence", "phase"]).n_ref.first().sum())
+                      for k in TRACKS}
+    track_rows = {k: d[d.study == k].groupby(["sequence", "phase"]).ngroups for k in TRACKS}
+    # sequences that were picked but carry no manual arrivals, so they cannot be scored
+    all_seq = set(pd.read_csv(RES / "us_sequences" / "model_picks.csv", usecols=["sequence"]).sequence)
+    unscorable = sorted(all_seq - set(d[d.study == "us"].sequence))
+    missing_note = ("" if not unscorable else
+                    (", ".join(unscorable) + (" was" if len(unscorable) == 1 else " were") +
+                     " picked as well, and the operator publishes no manual arrivals for "
+                     + ("it" if len(unscorable) == 1 else "them") + ", so "
+                     + ("it cannot" if len(unscorable) == 1 else "they cannot") + " be scored."))
+    tim_track_raw = (t[t.medae.notna()].merge(
+        d[["study", "sequence", "phase", "weights", "n_ref"]],
+        on=["study", "sequence", "phase", "weights"])
+        .groupby(["study", "weights"])
+        .apply(lambda x: float(np.average(x.medae, weights=x.n)), include_groups=False)
+        .unstack(0))
+    tim_track = tim_track_raw
+    # on track 2 the recall leader is also the least accurate in onset time
+    gl_time_worst = tim_track["global"].idxmax()
+    gl_time_best = tim_track["global"].idxmin()
+    assert gl_time_worst == gl_lead, ("the callout says the out-of-region recall leader is the "
+                                      "least accurate on onset time")
     fig1 = fig_protocols(prot)
     fig2 = fig_curves(sweep, d)
     fig3, cal = fig_reliability(c)
@@ -426,8 +509,8 @@ def main() -> None:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="A leaderboard for deep-learning seismic phase pickers, scored against operator bulletins on {seq_phases} sequence-phases and {arrivals:,} analyst arrivals, with metrics chosen for the goal of building earthquake catalogues.">
-<title>Phase-picker leaderboard &mdash; QuakeScope</title>
+<meta name="description" content="The Board: Seismic Phase Picking. Deep-learning phase pickers scored against analyst arrivals on {seq_phases} sequence-phases and {arrivals:,} arrivals, across a western United States track and an out-of-region track, with metrics chosen for earthquake catalogue building.">
+<title>The Board: Seismic Phase Picking</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -441,20 +524,23 @@ def main() -> None:
       <a class="brand" href="./"><span class="brand-mark">QS</span>
         <span>QuakeScope <span style="opacity:.7;font-weight:600">picker board</span></span></a>
       <div class="nav-links">
-        <a href="#why">Why</a><a href="#board">The board</a><a href="#metrics">Metrics</a>
-        <a href="#standard">Standard</a><a href="#run">Score your picks</a><a href="#refs">References</a>
+        <a href="#board">The board</a><a href="#tracks">Tracks</a>
+        <a href="#protocols">Thresholds</a><a href="#timing">Accuracy</a>
+        <a href="#metrics">Metrics</a><a href="#standard">Standard</a>
+        <a href="#run">Score your picks</a>
       </div>
     </nav>
     <div class="hero-inner">
       <p class="eyebrow">HazEvalHub &middot; catalogue-workflow track &middot; SeisSCOPED</p>
-      <h1>Phase pickers scored on the metrics an earthquake catalogue depends on</h1>
-      <p>Four published sets of PhaseNet weights, ranked on {seq_phases} sequence-phases and
-      {arrivals:,} analyst arrivals from {n_agencies} agencies on two continents, under three
-      threshold protocols, on detection, onset time, confidence calibration and phase
-      identification.</p>
-      <p><strong>The ranking inverts</strong> with the way the operating point is held. Given its
-      own threshold, each of the four reaches a recall within {spreadbest:.3f} of the others, so
-      the protocol carries more of the published difference than the models do.</p>
+      <h1>The Board: Seismic Phase Picking</h1>
+      <p>Four published sets of PhaseNet weights scored against analyst arrivals on
+      {seq_phases} sequence-phases and {arrivals:,} arrivals from {n_agencies} agencies, on
+      detection, onset time, confidence calibration and phase identification. Two tracks: the
+      western United States, where the arrivals come from ANSS, and sequences outside it, where
+      they come from the operating network.</p>
+      <p>The tracks do not agree. <strong>{us_lead}</strong> leads in the western United States
+      and <strong>{gl_lead}</strong> leads outside it, and the ordering also moves with the way
+      each model's threshold is set.</p>
       <div class="hero-actions">
         <a class="button primary" href="#board">See the board</a>
         <a class="button secondary" href="#run">Score your own picks</a>
@@ -469,12 +555,284 @@ def main() -> None:
   <div class="stat"><div class="n">4</div><div class="k">published weight sets scored</div></div>
   <div class="stat"><div class="n">{seq_phases}</div><div class="k">sequence-phases</div></div>
   <div class="stat"><div class="n">{arrivals:,}</div><div class="k">analyst arrivals as reference</div></div>
-  <div class="stat"><div class="n">{n_studies}</div><div class="k">benchmark studies</div></div>
-  <div class="stat"><div class="n">{spread03:.2f}</div><div class="k">recall spread the protocol creates</div></div>
+  <div class="stat"><div class="n">{n_studies}</div><div class="k">studies feeding the tracks</div></div>
+  <div class="stat"><div class="n">2</div><div class="k">tracks, with different winners</div></div>
 </div>
 """)
 
-    # ---------------------------------------------------------------- why
+    # ---------------------------------------------------------------- board
+    A(f"""
+<section id="board">
+  <div class="section-head">
+    <p class="eyebrow">The board</p>
+    <h2>Recall per track at each weight set's own threshold</h2>
+    <p class="lede">Recall is the fraction of analyst arrivals recovered within
+    {DETECT_TOL:g}&thinsp;s on the same station and phase, weighted by the number of reference
+    arrivals, so a sequence with {int(d.n_ref.max())} arrivals counts more than one with
+    {int(d.n_ref.min())}. Each weight set is read at the threshold that maximises its own score
+    on the track, because a confidence of 0.3 from one model and 0.3 from another do not put
+    two models at the same operating point. The columns to the right give the same weight sets
+    under the other two protocols, both defined below the tables.</p>
+  </div>
+""")
+    for study, spec in TRACKS.items():
+        tt = tracks[study]
+        A(f'  <div class="card"><h3>{spec["title"]}</h3>')
+        A(f'  <p style="color:#6f6890;font-size:.94rem">{spec["lede"]}</p>')
+        A(f'  <p style="color:#6f6890;font-size:.88rem">{track_rows[study]} sequence-phases, '
+          f'{track_arrivals[study]:,} reference arrivals.</p>')
+        A('  <div class="table-scroll"><table class="board"><thead><tr>'
+          '<th class="l">#</th><th class="l">weight set</th>'
+          '<th>recall at its own threshold</th><th>threshold used</th>'
+          '<th>sequence-phases led</th><th>recall at a shared 0.3</th>'
+          '<th>recall at an equal pick count</th><th>median onset error (s)</th>'
+          '</tr></thead><tbody>')
+        for _, r in tt.iterrows():
+            lead = ' class="lead"' if r["rank"] == 1 else ""
+            A(f'    <tr><td class="l">{rank_badge(int(r["rank"]))}</td>'
+              f'<td class="l">{chip(r.weights)}</td>'
+              f'<td{lead}><strong>{r.own:.3f}</strong></td><td>{r.thr:.2f}</td>'
+              f'<td>{r.wins} / {int(r.rows)}</td><td>{r.shared:.3f}</td>'
+              f'<td>{r.equal:.3f}</td>'
+              f'<td>{tim_track.loc[r.weights, study]:.3f}</td></tr>')
+        A('  </tbody></table></div></div>')
+
+    # ---------------------------------------------------------------- tracks
+    A(f"""
+<section id="tracks">
+  <div class="section-head">
+    <p class="eyebrow">What is scored</p>
+    <h2>Two tracks answer two different questions</h2>
+    <p class="lede">A picker is chosen for a purpose. One purpose is a regional catalogue, where
+    the network, the instrumentation and the analyst conventions are the ones the picker will
+    meet every day. The other is a sequence somewhere the picker has never been trained, where
+    the question is which scientific use cases it still serves. Those are separate tests and
+    they return different rankings.</p>
+  </div>
+  <div class="table-scroll"><table class="data">
+    <thead><tr><th class="l">track</th><th class="l">sequence</th><th class="l">date</th>
+    <th>M</th><th class="l">setting</th><th>P arrivals</th><th>S arrivals</th></tr></thead>
+    <tbody>""")
+    for study, spec in TRACKS.items():
+        seqs = [s for s in d[d.study == study].sequence.unique()]
+        for k, seq in enumerate(sorted(seqs)):
+            date, mag, setting = SEQ_SETTING.get(seq, ("", "", ""))
+            nref = d[(d.study == study) & (d.sequence == seq)].groupby("phase").n_ref.first()
+            A(f'      <tr><td class="l">{spec["title"].split(":")[0] if k == 0 else ""}</td>'
+              f'<td class="l"><strong>{seq}</strong></td><td class="l">{date}</td>'
+              f'<td>{mag}</td><td class="l" style="color:#6f6890;font-size:.85rem">{setting}</td>'
+              f'<td>{int(nref.get("P", 0))}</td><td>{int(nref.get("S", 0))}</td></tr>')
+    A(f"""    </tbody>
+    <caption>Reference arrivals are manual picks only, from ANSS through the SCEDC and NCEDC
+    event services on track 1 and from the operating network's own event service on track 2.
+    Both tracks score the aftershock window rather than the mainshock, which is where a
+    catalogue is made and lost. Two further studies feed the tracks without appearing in this
+    table: a 30-minute dense-aftershock window at Ridgecrest, and a reproduction of
+    {int(meta['western_reproduction']['totals']['campaign_picks']):,} campaign picks through a
+    second data path. {missing_note}</caption>
+  </table></div>
+  <div class="grid-2" style="margin-top:18px">
+    <div class="card">
+      <h3>Why these sequences</h3>
+      <p>None of them is in the curated corpora the weight sets were trained on. They were
+      selected to vary the network, the magnitude and the era of the recording, and to put the
+      pickers on the sequence types a catalogue has to handle: a mainshock-aftershock cascade
+      with events seconds apart, a doublet, a 2003 network with 2003 instrumentation, and an
+      offshore geometry where every station is more than 55 km away.</p>
+    </div>
+    <div class="card">
+      <h3>What the reference is and is not</h3>
+      <p>An analyst picked what the location needed and stopped. Recall against that reference
+      is exact. A model pick with no analyst counterpart may be a false positive or a real
+      arrival nobody marked, so precision and everything derived from it is a bound, marked
+      <code>_lb</code> throughout{cite('bekker2020')}.</p>
+    </div>
+  </div>
+</section>
+""")
+
+    A(f"""
+  <div class="callout">
+    <h3>The tracks disagree</h3>
+    <p><code>{ours}</code>, the fine-tune this project trained, ranks {us_ours} of
+    {len(WEIGHTS)} in the western United States and {gl_ours} of {len(WEIGHTS)} outside it. A
+    single pooled number hides that, because the out-of-region track carries
+    {track_arrivals['global']:,} of the {arrivals:,} reference arrivals and would set the
+    average on its own. Read the track that matches the catalogue you intend to build.</p>
+    <p>Recall is also not the only axis that decides a choice. On track 2
+    <code>{gl_lead}</code> recovers the most arrivals and is the least accurate on onset time of
+    the four, at {tim_track['global'][gl_time_worst]:.3f}&thinsp;s median error against
+    {tim_track['global'][gl_time_best]:.3f}&thinsp;s for <code>{gl_time_best}</code>. A
+    catalogue built for locations wants onset accuracy. One built for completeness wants
+    recall.</p>
+  </div>
+</section>
+
+<section id="protocols">
+  <div class="section-head">
+    <p class="eyebrow">The board</p>
+    <h2>Three ways to set the threshold give three orderings</h2>
+    <p class="lede">A picker emits a pick when its confidence passes a threshold, and the four
+    weight sets put their confidences on different scales. How that threshold is set therefore
+    decides the ranking. All three settings are reported here, pooled across both tracks.</p>
+  </div>
+""")
+    for col, name, note in (
+        ("recall_at_03", f"Protocol A: one threshold for every model, {SHARED_THR}",
+         "Every model read at confidence &ge; 0.3, which is what most published comparisons "
+         "report. It measures how willing a model is to emit a pick as much as how well it "
+         "picks."),
+        ("recall_at_budget", "Protocol B: every model emitting the same number of picks",
+         f"Each model's threshold is moved until it emits the same number of picks as the "
+         f"others, and recall is read there. No threshold is assumed, but the count all four "
+         f"can reach is capped by the most conservative model. <code>{bind_model}</code> sets "
+         f"that cap in every one of the {bind_tot} sequence-phases where all four limits are "
+         f"measured, so the comparison sits at the low-pick-count end of every curve, where a "
+         f"conservative model looks best."),
+        ("recall_at_best", "Protocol C: each model at its own best threshold",
+         "The threshold that maximises each model's own score on this reference, as the "
+         "cross-domain benchmark does on a development set. There is no held-out split here, "
+         "so the number is an upper bound on what a tuned deployment reaches.")):
+        sub = prot[prot.col == col].sort_values("recall", ascending=False)
+        lastcol = {"recall_at_03": "mean picks emitted",
+                   "recall_at_budget": "most picks it can emit",
+                   "recall_at_best": "mean threshold used"}[col]
+        A(f'  <div class="card"><h3>{name}</h3>\n  <div class="table-scroll">'
+          '<table class="board"><thead><tr><th class="l">#</th><th class="l">weight set</th>'
+          '<th class="l">what it is</th><th>recall</th><th>rows won</th>'
+          f'<th>{lastcol}</th></tr></thead><tbody>')
+        for _, r in sub.iterrows():
+            em = d[d.weights == r.weights]
+            if col == "recall_at_03":
+                emv = f"{em.emitted_at_03.mean():,.0f}"
+            elif col == "recall_at_budget":
+                emv = f"{ceilings[r.weights]:,.0f}"
+            else:
+                emv = f"{em.best_thr.mean():.2f}"
+            A(f'    <tr><td class="l">{rank_badge(int(r["rank"]))}</td>'
+              f'<td class="l">{chip(r.weights)}</td><td class="l" style="color:#6f6890;'
+              f'font-size:.82rem">{WHAT[r.weights]}</td>'
+              f'<td><strong>{r.recall:.3f}</strong></td><td>{r.wins} / {int(r.rows)}</td>'
+              f'<td>{emv}</td></tr>')
+        A(f'  </tbody><caption>{note}</caption></table></div></div>')
+
+    A(f"""
+  <figure>{fig1}
+    <figcaption>Each line is one weight set. The left column is what a single shared threshold
+    publishes. The middle holds every model to the same number of picks, a count the most
+    conservative model caps. The right is what each model reaches on its own threshold.
+    <strong>{lead03}</strong> leads protocol A and comes last in protocol B, and
+    <strong>{leadbud}</strong> does the reverse. Per sequence-phase the leader changes between A
+    and B in {flips} of {seq_phases} rows.</figcaption>
+  </figure>
+
+  <div class="callout warn">
+    <h3>Most of the spread is the protocol</h3>
+    <p>The spread between best and worst weight set is {spread03:.3f} recall under protocol A
+    and {spreadbest:.3f} under protocol C, so {100 * (1 - spreadbest / spread03):.0f}&thinsp;% of
+    the apparent difference between these four models comes from holding the threshold fixed
+    rather than from how they pick. Under protocol C the win counts are
+    {' / '.join(str(int(pbest.loc[m, 'wins'])) for m in pbest.sort_values('recall', ascending=False).index)}
+    across {seq_phases} rows, which is not a ranking. Detection is the axis on which these four
+    weight sets are hardest to separate. The three axes below separate them.</p>
+  </div>
+
+  <figure>{fig2}
+    <figcaption>Recall against picks emitted, six of the {seq_phases} sequence-phases, log x.
+    Filled circles mark each model's operating point at a shared 0.3, the dotted line the
+    equal pick count. Where a curve stops, the model has run out of picks with its threshold on
+    the floor. That is a ceiling rather than a calibration offset, and no threshold recovers
+    it.</figcaption>
+  </figure>
+</section>
+""")
+
+    # ---------------------------------------------------------------- timing
+    A(f"""
+<section id="timing">
+  <div class="section-head">
+    <p class="eyebrow">The board</p>
+    <h2>Onset time, calibration and phase identification</h2>
+    <p class="lede">A bulletin leaves all three of these identifiable. They are also what a
+    location and a magnitude consume, and they separate the four weight sets where detection
+    does not.</p>
+  </div>
+
+  <div class="card"><h3>Onset time</h3>
+  <div class="table-scroll"><table class="board">
+    <thead><tr><th class="l">phase</th><th class="l">weight set</th><th>matched picks</th>
+    <th>MedianAE (s)</th><th>MAE (s)</th><th>median bias (s)</th>
+    <th>within 0.1&thinsp;s</th><th>gross error &gt;{DETECT_TOL:g}&thinsp;s</th></tr></thead><tbody>""")
+    for ph in ("P", "S"):
+        sub = tim[tim.phase == ph].sort_values("medae")
+        for i, (_, r) in enumerate(sub.iterrows()):
+            lead = ' class="lead"' if i == 0 else ""
+            A(f'    <tr><td class="l">{ph if i == 0 else ""}</td><td class="l">{chip(r.weights)}</td>'
+              f'<td>{r.n:,}</td><td{lead}>{r.medae:.3f}</td><td>{r.mae:.3f}</td>'
+              f'<td>{r.bias:+.3f}</td><td>{r.w01:.3f}</td><td>{r.gross:.3f}</td></tr>')
+    A(f"""  </tbody>
+    <caption>Residuals are matched at 2&thinsp;s and detection at {DETECT_TOL:g}&thinsp;s, because
+    matching at the detection tolerance truncates the residual distribution there and makes any
+    outlier rate a statement about the tolerance. MedianAE and MAE are both reported because one
+    is insensitive to outliers and the other is not{cite('munchmeyer2022')}. The 0.1&thinsp;s
+    column is the tolerance PhaseNet was originally scored at{cite('zhu2019')}.
+    <code>{best_time_p}</code> is most accurate on P and <code>{best_time_s}</code> on S.</caption>
+  </table></div></div>
+
+  <div class="card"><h3>Confidence calibration</h3>
+  <p>Every downstream user thresholds on <code>conf</code>, and an associator weights by
+  it{cite('zhu2022','munchmeyer2024')}. Expected calibration error is the mean gap between
+  stated confidence and observed agreement, weighted by bin count{cite('guo2017')}. Against a
+  bulletin the observed rate is a lower bound, so the quantity here is <code>ece_lb</code>. The
+  shape of the curve is what makes one threshold mean different things to different weight
+  sets.</p>
+  <figure>{fig3}
+    <figcaption>Perfect calibration is the dashed diagonal. Every weight set sits below it: a
+    pick labelled 0.8 agrees with the bulletin less often than 80&thinsp;% of the time, partly
+    because the bulletin is incomplete and partly because the models are overconfident.
+    <code>{best_cal}</code> is the best calibrated and <code>{worst_cal}</code> the worst, by a
+    factor of {cal.groupby('weights').ece_lb.mean().max() / cal.groupby('weights').ece_lb.mean().min():.1f}.
+    That is the mechanism behind protocol A's ordering: the worst-calibrated model is the most
+    liberal at any given threshold, so a fixed threshold flatters it.</figcaption>
+  </figure>
+  <div class="table-scroll"><table class="board">
+    <thead><tr><th class="l">weight set</th>""")
+    for st in cal_p.columns:
+        A(f"<th>ECE<sub>lb</sub>, {st}</th>")
+    A("<th>picks scored</th></tr></thead><tbody>")
+    for m in cal.groupby("weights").ece_lb.mean().sort_values().index:
+        A(f'    <tr><td class="l">{chip(m)}</td>')
+        for st in cal_p.columns:
+            v = cal_p.loc[m, st]
+            best = ' class="lead"' if v == cal_p[st].min() else ""
+            A(f"<td{best}>{v:.3f}</td>")
+        A(f'<td>{int(cal[cal.weights == m].n.sum()):,}</td></tr>')
+    A(f"""  </tbody></table></div></div>
+
+  <div class="card"><h3>Phase identification and duplicate picks</h3>
+  <p>A P reported where the analyst marked an S is a different failure from a miss: it survives
+  association and moves a location. Both sides carry a phase label, so this is identifiable
+  where precision is not.</p>
+  <div class="table-scroll"><table class="board">
+    <thead><tr><th class="l">weight set</th><th>P arrivals picked as S</th>
+    <th>S arrivals picked as P</th><th>swap rate</th><th>duplicate rate</th></tr></thead><tbody>""")
+    qs = q.groupby("weights")[["P_swapped_to_S", "S_swapped_to_P", "P_n", "S_n"]].sum()
+    for m in qw.swap.sort_values().index:
+        lead = ' class="lead"' if m == best_swap else ""
+        A(f'    <tr><td class="l">{chip(m)}</td><td>{int(qs.loc[m, "P_swapped_to_S"])} / '
+          f'{int(qs.loc[m, "P_n"])}</td><td>{int(qs.loc[m, "S_swapped_to_P"])} / '
+          f'{int(qs.loc[m, "S_n"])}</td><td{lead}>{qw.loc[m, "swap"]:.4f}</td>'
+          f'<td>{qw.loc[m, "dup"]:.3f}</td></tr>')
+    A(f"""  </tbody>
+    <caption>Swap rates are low for every weight set and differ by a factor of
+    {qw.swap.max() / qw.swap.min():.1f} between <code>{best_swap}</code> and
+    <code>{worst_swap}</code>. No weight set emits duplicate picks on an arrival it already
+    matched, at any threshold tested.</caption>
+  </table></div></div>
+</section>
+""")
+
+    # ---------------------------------------------------------------- context
     A(f"""
 <section id="why">
   <div class="section-head">
@@ -578,178 +936,14 @@ def main() -> None:
 </section>
 """)
 
-    # ---------------------------------------------------------------- board
-    A(f"""
-<section id="board">
-  <div class="section-head">
-    <p class="eyebrow">The board</p>
-    <h2>Three threshold protocols give three orderings</h2>
-    <p class="lede">Recall is the fraction of analyst arrivals recovered within
-    {DETECT_TOL:g}&thinsp;s on the same station and phase. It is the one detection quantity that
-    a non-exhaustive reference leaves identifiable, and it is weighted here by the number of
-    reference arrivals, so a sequence with {int(d.n_ref.max())} arrivals counts more than one
-    with {int(d.n_ref.min())}.</p>
-  </div>
-""")
-    for col, name, note in (
-        ("recall_at_03", f"Protocol A: shared threshold {SHARED_THR}",
-         "What most published comparisons report. It also measures which model is most willing "
-         "to emit a pick."),
-        ("recall_at_budget", "Protocol B: matched pick budget",
-         f"Each model's own curve read at the same number of emitted picks. Threshold-free, but "
-         f"bounded above by the most conservative model: <code>{bind_model}</code>'s ceiling sets "
-         f"the budget in every one of the {bind_tot} rows where all four ceilings are "
-         f"measured, so the comparison happens where a conservative model is strongest."),
-        ("recall_at_best", "Protocol C: each model's own best threshold",
-         "Per-model threshold selection, as the cross-domain benchmark does on a development "
-         "set. With no held-out split here, this is an upper bound on a tuned deployment.")):
-        sub = prot[prot.col == col].sort_values("recall", ascending=False)
-        lastcol = {"recall_at_03": "mean picks emitted",
-                   "recall_at_budget": "mean ceiling (picks at the floor)",
-                   "recall_at_best": "mean threshold used"}[col]
-        A(f'  <div class="card"><h3>{name}</h3>\n  <div class="table-scroll">'
-          '<table class="board"><thead><tr><th class="l">#</th><th class="l">weight set</th>'
-          '<th class="l">what it is</th><th>recall</th><th>rows won</th>'
-          f'<th>{lastcol}</th></tr></thead><tbody>')
-        for _, r in sub.iterrows():
-            em = d[d.weights == r.weights]
-            if col == "recall_at_03":
-                emv = f"{em.emitted_at_03.mean():,.0f}"
-            elif col == "recall_at_budget":
-                emv = f"{ceilings[r.weights]:,.0f}"
-            else:
-                emv = f"{em.best_thr.mean():.2f}"
-            A(f'    <tr><td class="l">{rank_badge(int(r["rank"]))}</td>'
-              f'<td class="l">{chip(r.weights)}</td><td class="l" style="color:#6f6890;'
-              f'font-size:.82rem">{WHAT[r.weights]}</td>'
-              f'<td><strong>{r.recall:.3f}</strong></td><td>{r.wins} / {int(r.rows)}</td>'
-              f'<td>{emv}</td></tr>')
-        A(f'  </tbody><caption>{note}</caption></table></div></div>')
-
-    A(f"""
-  <figure>{fig1}
-    <figcaption>Each line is one weight set. The left column is what a fixed-threshold benchmark
-    publishes. The middle is a threshold-free comparison at a budget the most conservative model
-    bounds. The right is what each model reaches on its own threshold.
-    <strong>{lead03}</strong> leads protocol A and comes last in protocol B, and
-    <strong>{leadbud}</strong> does the reverse. Per sequence-phase the leader changes between A
-    and B in {flips} of {seq_phases} rows.</figcaption>
-  </figure>
-
-  <div class="callout warn">
-    <h3>Most of the spread is the protocol</h3>
-    <p>The spread between best and worst weight set is {spread03:.3f} recall under protocol A
-    and {spreadbest:.3f} under protocol C, so {100 * (1 - spreadbest / spread03):.0f}&thinsp;% of
-    the apparent difference between these four models comes from holding the threshold fixed
-    rather than from how they pick. Under protocol C the win counts are
-    {' / '.join(str(int(pbest.loc[m, 'wins'])) for m in pbest.sort_values('recall', ascending=False).index)}
-    across {seq_phases} rows, which is not a ranking. Detection is the axis on which these four
-    weight sets are hardest to separate. The three axes below separate them.</p>
-  </div>
-
-  <figure>{fig2}
-    <figcaption>Recall against picks emitted, six of the {seq_phases} sequence-phases, log x.
-    Filled circles mark each model's shared-threshold 0.3 operating point, the dotted line the
-    matched budget. Where a curve stops, the model has run out of picks with its threshold on
-    the floor. That is a ceiling rather than a calibration offset, and no threshold recovers
-    it.</figcaption>
-  </figure>
-</section>
-""")
-
-    # ---------------------------------------------------------------- timing
-    A(f"""
-<section id="timing">
-  <div class="section-head">
-    <p class="eyebrow">The board</p>
-    <h2>Onset time, calibration and phase identification</h2>
-    <p class="lede">A bulletin leaves all three of these identifiable. They are also what a
-    location and a magnitude consume, and they separate the four weight sets where detection
-    does not.</p>
-  </div>
-
-  <div class="card"><h3>Onset time</h3>
-  <div class="table-scroll"><table class="board">
-    <thead><tr><th class="l">phase</th><th class="l">weight set</th><th>matched picks</th>
-    <th>MedianAE (s)</th><th>MAE (s)</th><th>median bias (s)</th>
-    <th>within 0.1&thinsp;s</th><th>gross error &gt;{DETECT_TOL:g}&thinsp;s</th></tr></thead><tbody>""")
-    for ph in ("P", "S"):
-        sub = tim[tim.phase == ph].sort_values("medae")
-        for i, (_, r) in enumerate(sub.iterrows()):
-            lead = ' class="lead"' if i == 0 else ""
-            A(f'    <tr><td class="l">{ph if i == 0 else ""}</td><td class="l">{chip(r.weights)}</td>'
-              f'<td>{r.n:,}</td><td{lead}>{r.medae:.3f}</td><td>{r.mae:.3f}</td>'
-              f'<td>{r.bias:+.3f}</td><td>{r.w01:.3f}</td><td>{r.gross:.3f}</td></tr>')
-    A(f"""  </tbody>
-    <caption>Residuals are matched at 2&thinsp;s and detection at {DETECT_TOL:g}&thinsp;s, because
-    matching at the detection tolerance truncates the residual distribution there and makes any
-    outlier rate a statement about the tolerance. MedianAE and MAE are both reported because one
-    is insensitive to outliers and the other is not{cite('munchmeyer2022')}. The 0.1&thinsp;s
-    column is the tolerance PhaseNet was originally scored at{cite('zhu2019')}.
-    <code>{best_time_p}</code> is most accurate on P and <code>{best_time_s}</code> on S.</caption>
-  </table></div></div>
-
-  <div class="card"><h3>Confidence calibration</h3>
-  <p>Every downstream user thresholds on <code>conf</code>, and an associator weights by
-  it{cite('zhu2022','munchmeyer2024')}. Expected calibration error is the mean gap between
-  stated confidence and observed agreement, weighted by bin count{cite('guo2017')}. Against a
-  bulletin the observed rate is a lower bound, so the quantity here is <code>ece_lb</code>. The
-  shape of the curve is what makes one threshold mean different things to different weight
-  sets.</p>
-  <figure>{fig3}
-    <figcaption>Perfect calibration is the dashed diagonal. Every weight set sits below it: a
-    pick labelled 0.8 agrees with the bulletin less often than 80&thinsp;% of the time, partly
-    because the bulletin is incomplete and partly because the models are overconfident.
-    <code>{best_cal}</code> is the best calibrated and <code>{worst_cal}</code> the worst, by a
-    factor of {cal.groupby('weights').ece_lb.mean().max() / cal.groupby('weights').ece_lb.mean().min():.1f}.
-    That is the mechanism behind protocol A's ordering: the worst-calibrated model is the most
-    liberal at any given threshold, so a fixed threshold flatters it.</figcaption>
-  </figure>
-  <div class="table-scroll"><table class="board">
-    <thead><tr><th class="l">weight set</th>""")
-    for st in cal_p.columns:
-        A(f"<th>ECE<sub>lb</sub>, {st}</th>")
-    A("<th>picks scored</th></tr></thead><tbody>")
-    for m in cal.groupby("weights").ece_lb.mean().sort_values().index:
-        A(f'    <tr><td class="l">{chip(m)}</td>')
-        for st in cal_p.columns:
-            v = cal_p.loc[m, st]
-            best = ' class="lead"' if v == cal_p[st].min() else ""
-            A(f"<td{best}>{v:.3f}</td>")
-        A(f'<td>{int(cal[cal.weights == m].n.sum()):,}</td></tr>')
-    A(f"""  </tbody></table></div></div>
-
-  <div class="card"><h3>Phase identification and duplicate picks</h3>
-  <p>A P reported where the analyst marked an S is a different failure from a miss: it survives
-  association and moves a location. Both sides carry a phase label, so this is identifiable
-  where precision is not.</p>
-  <div class="table-scroll"><table class="board">
-    <thead><tr><th class="l">weight set</th><th>P arrivals picked as S</th>
-    <th>S arrivals picked as P</th><th>swap rate</th><th>duplicate rate</th></tr></thead><tbody>""")
-    qs = q.groupby("weights")[["P_swapped_to_S", "S_swapped_to_P", "P_n", "S_n"]].sum()
-    for m in qw.swap.sort_values().index:
-        lead = ' class="lead"' if m == best_swap else ""
-        A(f'    <tr><td class="l">{chip(m)}</td><td>{int(qs.loc[m, "P_swapped_to_S"])} / '
-          f'{int(qs.loc[m, "P_n"])}</td><td>{int(qs.loc[m, "S_swapped_to_P"])} / '
-          f'{int(qs.loc[m, "S_n"])}</td><td{lead}>{qw.loc[m, "swap"]:.4f}</td>'
-          f'<td>{qw.loc[m, "dup"]:.3f}</td></tr>')
-    A(f"""  </tbody>
-    <caption>Swap rates are low for every weight set and differ by a factor of
-    {qw.swap.max() / qw.swap.min():.1f} between <code>{best_swap}</code> and
-    <code>{worst_swap}</code>. No weight set emits duplicate picks on an arrival it already
-    matched, at any threshold tested.</caption>
-  </table></div></div>
-</section>
-""")
-
     # ---------------------------------------------------------------- metrics
     ident = [
         ("Recall", "matched reference arrivals / reference arrivals",
          "exact", cite('munchmeyer2022'), "Reported first. Unaffected by the reference being incomplete."),
         ("Picks emitted", "count above the threshold", "exact", "",
          "Recall alone is gameable by lowering the threshold. Always report both."),
-        ("Recall at matched budget", "each model's curve read at equal emitted picks",
-         "exact", cite('munchmeyer2022'), "Survives a change of threshold. Bounded by the most conservative model's ceiling."),
+        ("Recall at an equal pick count", "each model's curve read where all emit the same number of picks",
+         "exact", cite('munchmeyer2022'), "Survives a change of threshold. Capped by the most conservative model."),
         ("Precision, F1", "matched / emitted, and their harmonic mean",
          "lower bound", cite('bekker2020', 'chicco2020'),
          "An unmatched pick may be an arrival the analyst never marked. Named <code>_lb</code> here. Comparable between models on the same reference, not against a labelled-dataset number."),
@@ -799,25 +993,43 @@ def main() -> None:
 
     # ---------------------------------------------------------------- standard
     rules = [
-        ("R1", "The task is fully specified before submissions open", "partial",
-         "The task, matching rule, tolerances and metrics are frozen in code and published. There is no submission process, so the specification binds only us."),
-        ("R2", "The test set is hidden, and the board says so on every row", "unmet",
-         "Every reference here is a public operator bulletin. This board cannot distinguish generalisation from familiarity with a well-studied sequence."),
+        ("R1", "The scored task is fixed before anyone runs it", "partial",
+         f"Phase, station, a {DETECT_TOL:g}&thinsp;s matching tolerance, greedy nearest one-to-one "
+         "matching and a separate 2&thinsp;s residual tolerance are fixed in code and published. "
+         "Nobody outside the project can submit a run, so the specification currently binds only us."),
+        ("R2", "The reference arrivals are withheld from the models being scored", "unmet",
+         "Every bulletin here was public before these weight sets were trained. A weight set may "
+         "have seen these very arrivals, so the board measures picking skill and familiarity with "
+         "the sequence together and cannot separate them."),
         ("R3", "The scorer is public, deterministic and versioned", "met",
-         "<code>scripts/score_picks.py</code> and <code>sb_catalog/src/benchmark_metrics.py</code>, pinned by " + str(n_tests) + " unit tests, byte-identical output across processes, versioned in git."),
-        ("R4", "A trivial baseline is published first", "unmet",
-         "No STA/LTA floor is published alongside these numbers, so the recall column has no zero point."),
-        ("R5", "A strong published baseline is published alongside", "met",
-         "Three of the four weight sets are published models from other groups, and the fourth is ours."),
-        ("R6", "Contamination is addressed explicitly, in writing, per task", "partial",
-         "Stated per sequence and not quantified. Norcia is in-domain for <code>instance</code>, and the <code>quakescope2026</code> fine-tuning corpus includes INSTANCE and Pacific Northwest data."),
-        ("R7", "Splits are DOI-archived with a datasheet", "unmet",
-         "The reference arrivals are harvested live from agency services, so a bulletin revision changes the board with no record."),
-        ("R8", "The evaluation is separable from the group whose models it scores", "partial",
-         "SeisSCOPED maintains the benchmark and one of the four weight sets is ours. It does not win: <code>quakescope2026</code> ranks "
-         f"{int(pbest.loc['quakescope2026', 'rank'])} of 4 under protocol C and {int(pbud.loc['quakescope2026', 'rank'])} of 4 under protocol B."),
-        ("R9", "Every row carries model version, split, date and cost", "partial",
-         "Weight set, SeisBench version, notebook and execution timestamp are stamped in the footer. Cost per processed station-day is measured for the campaign but is not yet on this board."),
+         "<code>scripts/score_picks.py</code> and <code>sb_catalog/src/benchmark_metrics.py</code>, "
+         f"pinned by {n_tests} unit tests, byte-identical output across processes, versioned in git. "
+         "Anyone can rerun the board on their own picks."),
+        ("R4", "The standard the field already uses is on the board", "met",
+         "The baseline for phase picking is the analyst. Recall is measured directly against "
+         "reviewed analyst arrivals, pulled from ANSS on track 1 and from the operating network on "
+         "track 2, so every row is scored against what a human picker produced for the same events "
+         "on the same stations."),
+        ("R5", "A published model from another group is scored alongside", "met",
+         f"Three of the four weight sets are published models from other groups: "
+         f"<code>original</code>{cite('zhu2019')}, <code>jma_wc</code> and <code>instance</code>, "
+         f"the last trained on INSTANCE{cite('michelini2021')}. The fourth is ours."),
+        ("R6", "Training overlap with the scored regions is stated per sequence", "partial",
+         "Stated and not quantified. Norcia is in-domain for <code>instance</code>, and the "
+         f"<code>{ours}</code> fine-tuning corpus includes INSTANCE and Pacific Northwest "
+         f"data{cite('ni2023')}. Neither overlap has been measured against the scored arrivals."),
+        ("R7", "The reference set is archived so a score can be reproduced", "unmet",
+         "Arrivals are pulled live from the SCEDC, NCEDC, GeoNet, INGV and NOA event services. "
+         "Operators revise bulletins, so a number on this board is not reproducible after a "
+         "revision. The fix is a DOI-archived arrival set with the station list and time windows."),
+        ("R8", "The benchmark is run by people other than those whose model it ranks", "partial",
+         f"SeisSCOPED maintains the board and one of the four weight sets is ours. It does not win "
+         f"outside its own region: <code>{ours}</code> ranks {us_ours} of {len(WEIGHTS)} on track 1 "
+         f"and {gl_ours} of {len(WEIGHTS)} on track 2."),
+        ("R9", "Every row states the model version, the data and the cost", "partial",
+         "Weight set, SeisBench version, notebook and execution time are stamped in the footer, "
+         "and the reference agency is stated per track. Compute cost per station-day is measured "
+         "for the campaign and is not yet a column here."),
     ]
     n_met = sum(1 for r in rules if r[2] == "met")
     n_part = sum(1 for r in rules if r[2] == "partial")
@@ -827,12 +1039,12 @@ def main() -> None:
 <section id="standard">
   <div class="section-head">
     <p class="eyebrow">The standard</p>
-    <h2>Nine rules for a citable benchmark</h2>
+    <h2>Nine rules for a benchmark a paper can cite</h2>
     <p class="lede">The standard
     <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> applies to every evaluation
-    it collects, drawn from the review criteria of the NeurIPS and ICML <i>Datasets and
-    Benchmarks</i> track. Of {len(rules)} rules this board meets {n_met}, meets {n_part} in
-    part, and fails {n_unmet}.</p>
+    it collects. A picker comparison that fails any of these still tells you something, but it
+    does not settle a question. Of {len(rules)} rules this board meets {n_met}, meets {n_part}
+    in part, and fails {n_unmet}.</p>
   </div>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">#</th><th class="l">rule</th><th class="l">status</th>
@@ -845,10 +1057,11 @@ def main() -> None:
     A("""  </tbody></table></div>
   <div class="callout">
     <h3>R2 is the binding limit</h3>
-    <p>Without a reference set drawn from after the training window of every model it scores and
-    labelled independently, this board measures skill and familiarity together and cannot
-    separate them. The work that lifts R2 is a labelling campaign rather than software, and it
-    is the critical path to a citable benchmark result.</p>
+    <p>The reference this board needs is a set of arrivals from sequences that postdate the
+    training window of every weight set it ranks, picked by at least two analysts with a third
+    adjudicating disagreements. Relabelling existing curated data would be cheaper and would
+    measure memorisation. That is an analyst campaign rather than a software task, and it is the
+    critical path to a number a paper can cite.</p>
   </div>
 </section>
 """)
@@ -909,8 +1122,9 @@ python scripts/score_picks.py --demo</code></pre>
     <li>Precision and F1 are bounds, so a model that finds real arrivals the analyst skipped is
     penalised the same as one that invents them. Separating the two requires association, and no
     association step runs here.</li>
-    <li>Protocol B is evaluated at a budget that <code>{bind_model}</code>'s ceiling bounds in
-    all {bind_tot} rows where every ceiling is measured. Protocol C has no held-out split, so it is an upper bound on a tuned deployment.</li>
+    <li>Protocol B compares the models at a pick count that <code>{bind_model}</code> caps in
+    all {bind_tot} sequence-phases where every limit is measured. Protocol C has no held-out
+    split, so it is an upper bound on a tuned deployment.</li>
     <li>Contamination is stated, not measured. Two of the four weight sets have plausible
     exposure to data from the regions scored here.</li>
     <li>Model runtime differs measurably between these weight sets and is absent from the

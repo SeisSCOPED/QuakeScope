@@ -143,25 +143,24 @@
 </a>
 
 <a class="card" href="benchmark_metrics.html">
-  <h3>Phase-picker leaderboard</h3>
-  <p>Four published sets of PhaseNet weights ranked against analyst arrivals
-  from five agencies on two continents, under three threshold protocols, on
-  detection, onset time, confidence calibration and phase identification. The
-  ranking inverts between protocols, and each model given its own threshold
-  reaches a recall indistinguishable from the others. The page carries the
-  architecture and training-corpus context with citations, the metric
-  definitions with sources, and this track's scorecard against the nine rules
-  for a citable benchmark.</p>
+  <h3>The Board: Seismic Phase Picking</h3>
+  <p>Four published sets of PhaseNet weights scored against analyst arrivals on
+  two tracks: the western United States, where the arrivals come from ANSS, and
+  sequences outside it, where they come from the operating network. The tracks
+  return different winners, and the ordering also moves with the way each
+  model's threshold is set. Detection, onset time, confidence calibration and
+  phase identification, with the architecture and training-corpus context, the
+  metric definitions with sources, and this track's scorecard against the nine
+  rules for a benchmark a paper can cite.</p>
   <div class="meta">The catalogue-workflow track of <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> &middot; scorer: <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> &middot; ~6 min</div>
 </a>
 
 <a class="card" href="benchmark_metrics_methods.html">
   <h3>Methods: how the picker board is computed</h3>
-  <p>The executed appendix to the leaderboard. Derives the metric set from the
+  <p>The executed appendix to the board. Derives the metric set from the
   benchmark literature, computes every table the board reads, and verifies that
   the standalone scorer reproduces all of them bit for bit.</p>
   <div class="meta">Executed notebook &middot; definitions in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py">benchmark_metrics.py</a> &middot; ~10 min</div>
-</a> · run it yourself with <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> · ~2 min</div>
 </a>
 
 <a class="card" href="benchmark_summary.html">
