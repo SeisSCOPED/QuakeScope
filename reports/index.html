@@ -58,6 +58,29 @@
   .card h3 { margin: 0 0 5px; font-size: 1.02rem; color: var(--accent); }
   .card p { margin: 0; color: var(--ink-2); font-size: .93rem; }
   .meta { margin-top: 9px; font-size: .8rem; color: var(--ink-3); }
+
+  /* The leaderboard, in the board's own colours so the two pages read as one. */
+  .card.feature {
+    background: linear-gradient(140deg, #2a1a4f 0%, #341f63 55%, #4b2e83 100%);
+    border-color: transparent; color: #fff;
+    padding: 24px 26px; border-radius: 14px; margin-bottom: 14px;
+    box-shadow: 0 12px 30px rgba(42, 26, 79, 0.18);
+  }
+  .card.feature:hover {
+    border-color: transparent; transform: translateY(-2px);
+    box-shadow: 0 16px 38px rgba(42, 26, 79, 0.28);
+  }
+  .card.feature h3 { color: #fff; font-size: 1.24rem; margin-bottom: 8px; letter-spacing: -0.01em; }
+  .card.feature p { color: #ded8f2; font-size: .96rem; }
+  .card.feature .meta { color: #b9aee8; }
+  .card.feature a { color: #fff; }
+  .badge {
+    display: inline-block; font-size: .67rem; font-weight: 700;
+    letter-spacing: .13em; text-transform: uppercase; color: #c3b8f0;
+    border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 999px;
+    padding: 3px 11px; margin-bottom: 11px;
+  }
+  .card.companion { border-left: 3px solid #6d5bd0; }
   table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: 6px 0 4px; }
   th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--border); }
   th:first-child, td:first-child { text-align: left; }
@@ -89,6 +112,29 @@
   classifier ahead of the 2026 re-run. Every figure and table here was produced
   by the notebook linked beside it.</p>
 </header>
+
+<a class="card feature" href="benchmark_metrics.html">
+  <div class="badge">Leaderboard</div>
+  <h3>The Board: Seismic Phase Picking</h3>
+  <p>Four published sets of PhaseNet weights scored against analyst arrivals on
+  two tracks: the western United States, where the arrivals come from ANSS, and
+  sequences outside it, where they come from the operating network. The tracks
+  return different winners, and the ordering also moves with the way each
+  model's threshold is set. Detection, onset time, confidence calibration and
+  phase identification, with the architecture and training-corpus context, the
+  metric definitions with sources, and this track's scorecard against the nine
+  rules for a benchmark a paper can cite.</p>
+  <div class="meta">The catalogue-workflow track of <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> &middot; scorer: <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> &middot; ~6 min</div>
+</a>
+
+<a class="card companion" href="benchmark_metrics_methods.html">
+  <h3>Methods: how the picker board is computed</h3>
+  <p>The executed appendix to the board. Derives the metric set from the
+  benchmark literature, computes every table the board reads, and verifies that
+  the standalone scorer reproduces all of them bit for bit.</p>
+  <div class="meta">Executed notebook &middot; definitions in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py">benchmark_metrics.py</a> &middot; ~10 min</div>
+</a>
+
 
 <h2>Operations</h2>
 
@@ -140,27 +186,6 @@
 <a class="card" href="launch_2026.html">
   <h3>2026 launch briefing</h3>
   <div class="meta">Why we are re-running, what the benchmarks and waveforms show, and what it costs</div>
-</a>
-
-<a class="card" href="benchmark_metrics.html">
-  <h3>The Board: Seismic Phase Picking</h3>
-  <p>Four published sets of PhaseNet weights scored against analyst arrivals on
-  two tracks: the western United States, where the arrivals come from ANSS, and
-  sequences outside it, where they come from the operating network. The tracks
-  return different winners, and the ordering also moves with the way each
-  model's threshold is set. Detection, onset time, confidence calibration and
-  phase identification, with the architecture and training-corpus context, the
-  metric definitions with sources, and this track's scorecard against the nine
-  rules for a benchmark a paper can cite.</p>
-  <div class="meta">The catalogue-workflow track of <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> &middot; scorer: <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py">score_picks.py</a> &middot; ~6 min</div>
-</a>
-
-<a class="card" href="benchmark_metrics_methods.html">
-  <h3>Methods: how the picker board is computed</h3>
-  <p>The executed appendix to the board. Derives the metric set from the
-  benchmark literature, computes every table the board reads, and verifies that
-  the standalone scorer reproduces all of them bit for bit.</p>
-  <div class="meta">Executed notebook &middot; definitions in <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py">benchmark_metrics.py</a> &middot; ~10 min</div>
 </a>
 
 <a class="card" href="benchmark_summary.html">
