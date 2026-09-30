@@ -1,0 +1,33 @@
+study,sequence,weights,P_swapped_to_S,P_n,S_swapped_to_P,S_n,swap_rate,duplicate_rate
+us,Ridgecrest,quakescope2026,3,347,3,298,0.009302325581395349,0.0
+us,Ridgecrest,jma_wc,2,347,3,298,0.007751937984496124,0.0
+us,Ridgecrest,original,5,347,6,298,0.017054263565891473,0.0
+us,Ridgecrest,instance,1,347,0,298,0.0015503875968992248,0.0
+us,San Simeon,quakescope2026,0,62,0,16,0.0,0.0
+us,San Simeon,jma_wc,0,62,0,16,0.0,0.0
+us,San Simeon,original,0,62,0,16,0.0,0.0
+us,San Simeon,instance,0,62,0,16,0.0,0.0
+us,Monte Cristo,quakescope2026,0,16,0,12,0.0,0.0
+us,Monte Cristo,jma_wc,0,16,0,12,0.0,0.0
+us,Monte Cristo,original,0,16,0,12,0.0,0.0
+us,Monte Cristo,instance,0,16,0,12,0.0,0.0
+us,Mendocino 2024,quakescope2026,0,200,1,113,0.003194888178913738,0.0
+us,Mendocino 2024,jma_wc,0,200,2,113,0.006389776357827476,0.0
+us,Mendocino 2024,original,0,200,2,113,0.006389776357827476,0.0
+us,Mendocino 2024,instance,0,200,2,113,0.006389776357827476,0.0
+us,Monroe WA,quakescope2026,0,0,0,0,0.0,0.0
+us,Monroe WA,jma_wc,0,0,0,0,0.0,0.0
+us,Monroe WA,original,0,0,0,0,0.0,0.0
+us,Monroe WA,instance,0,0,0,0,0.0,0.0
+global,Kaikoura 2016,quakescope2026,10,357,3,458,0.015950920245398775,0.0
+global,Kaikoura 2016,jma_wc,5,357,3,458,0.0098159509202454,0.0
+global,Kaikoura 2016,original,12,357,3,458,0.018404907975460124,0.0
+global,Kaikoura 2016,instance,6,357,3,458,0.011042944785276074,0.0
+global,Norcia 2016,quakescope2026,3,701,6,656,0.006632277081798084,0.0
+global,Norcia 2016,jma_wc,3,701,7,656,0.007369196757553427,0.0
+global,Norcia 2016,original,5,701,10,656,0.01105379513633014,0.0
+global,Norcia 2016,instance,0,701,2,656,0.0014738393515106854,0.0
+global,Thessaly 2021,quakescope2026,1,395,0,331,0.0013774104683195593,0.0
+global,Thessaly 2021,jma_wc,1,395,0,331,0.0013774104683195593,0.0
+global,Thessaly 2021,original,2,395,0,331,0.0027548209366391185,0.0
+global,Thessaly 2021,instance,0,395,0,331,0.0,0.0

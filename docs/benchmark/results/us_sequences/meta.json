@@ -1,6 +1,6 @@
 {
  "notebook": "phasenet_sequence_comparison.ipynb",
- "executed": "2026-09-16T19:41:46+00:00",
+ "executed": "2026-09-30T01:22:58+00:00",
  "seisbench": "0.12.3",
  "weights": [
   "quakescope2026",

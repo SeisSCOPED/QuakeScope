@@ -8731,7 +8731,7 @@ Monroe WA (M4.6, Cascadia, moderate magnitude - no analyst arrivals published, s
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=888475e3">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=a5fd914c">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -9546,7 +9546,7 @@ S@0.02 is the ceiling: what the model finds with the threshold on the floor.
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=4470b85b">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=57138bfc">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -9556,7 +9556,7 @@ S@0.02 is the ceiling: what the model finds with the threshold on the floor.
 </div>
 </div>
 </div>
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell" id="cell-id=57883522">
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell" id="cell-id=d39a395f">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -9584,6 +9584,33 @@ S@0.02 is the ceiling: what the model finds with the threshold on the floor.
 <span class="n">_export</span><span class="p">(</span><span class="s2">"recall_at_threshold"</span><span class="p">,</span> <span class="n">bench</span><span class="p">)</span>
 <span class="n">_export</span><span class="p">(</span><span class="s2">"threshold_sweep"</span><span class="p">,</span> <span class="n">sweep</span><span class="p">)</span>
 <span class="n">_export</span><span class="p">(</span><span class="s2">"saturation"</span><span class="p">,</span> <span class="n">sat</span><span class="p">)</span>
+<span class="c1"># Raw picks, so every metric can be recomputed without re-running inference.</span>
+<span class="c1"># One row per model pick at the detection floor with its peak confidence, and</span>
+<span class="c1"># one per reference arrival. docs/benchmark/README.md scores these with</span>
+<span class="c1"># sb_catalog.src.benchmark_metrics; keeping them means a new metric costs a</span>
+<span class="c1"># read rather than twenty-five minutes of inference.</span>
+<span class="n">_rows</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_label</span><span class="p">,</span> <span class="n">_res</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="k">for</span> <span class="n">_name</span><span class="p">,</span> <span class="n">_store</span> <span class="ow">in</span> <span class="n">_res</span><span class="p">[</span><span class="s2">"picks"</span><span class="p">]</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">_sta</span><span class="p">,</span> <span class="n">_pha</span><span class="p">),</span> <span class="n">_v</span> <span class="ow">in</span> <span class="n">_store</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">for</span> <span class="n">_t</span><span class="p">,</span> <span class="n">_q</span> <span class="ow">in</span> <span class="n">_v</span><span class="p">:</span>
+                <span class="n">_rows</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">dict</span><span class="p">(</span><span class="n">sequence</span><span class="o">=</span><span class="n">_label</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="n">_name</span><span class="p">,</span> <span class="n">station</span><span class="o">=</span><span class="n">_sta</span><span class="p">,</span> <span class="n">phase</span><span class="o">=</span><span class="n">_pha</span><span class="p">,</span>
+                                  <span class="n">time</span><span class="o">=</span><span class="n">pd</span><span class="o">.</span><span class="n">Timestamp</span><span class="p">(</span><span class="n">_t</span><span class="o">.</span><span class="n">datetime</span><span class="p">),</span> <span class="n">conf</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">_q</span><span class="p">)))</span>
+<span class="n">_picks</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">_rows</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"model_picks"</span><span class="p">,</span> <span class="n">_picks</span><span class="p">)</span>
+
+<span class="n">_rows</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">_label</span><span class="p">,</span> <span class="n">_res</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="c1"># A sequence with no published arrivals (Monroe WA) is scored on model</span>
+    <span class="c1"># agreement only and carries no reference.</span>
+    <span class="k">for</span> <span class="p">(</span><span class="n">_sta</span><span class="p">,</span> <span class="n">_pha</span><span class="p">),</span> <span class="n">_v</span> <span class="ow">in</span> <span class="p">(</span><span class="n">_res</span><span class="p">[</span><span class="s2">"reference"</span><span class="p">]</span> <span class="ow">or</span> <span class="p">{})</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">for</span> <span class="n">_t</span> <span class="ow">in</span> <span class="n">_v</span><span class="p">:</span>
+            <span class="n">_rows</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">dict</span><span class="p">(</span><span class="n">sequence</span><span class="o">=</span><span class="n">_label</span><span class="p">,</span> <span class="n">station</span><span class="o">=</span><span class="n">_sta</span><span class="p">,</span> <span class="n">phase</span><span class="o">=</span><span class="n">_pha</span><span class="p">,</span>
+                              <span class="n">time</span><span class="o">=</span><span class="n">pd</span><span class="o">.</span><span class="n">Timestamp</span><span class="p">(</span><span class="n">_t</span><span class="o">.</span><span class="n">datetime</span><span class="p">)))</span>
+<span class="n">_ref</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">_rows</span><span class="p">)</span>
+<span class="n">_export</span><span class="p">(</span><span class="s2">"reference_picks"</span><span class="p">,</span> <span class="n">_ref</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"exported </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">_picks</span><span class="p">)</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2"> model picks at the </span><span class="si">{</span><span class="n">DETECT_FLOOR</span><span class="si">}</span><span class="s2"> floor and </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">_ref</span><span class="p">)</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2"> reference arrivals"</span><span class="p">)</span>
+
 <span class="n">_meta</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">notebook</span><span class="o">=</span><span class="s2">"phasenet_sequence_comparison.ipynb"</span><span class="p">,</span>
              <span class="n">executed</span><span class="o">=</span><span class="n">_dt</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">_dt</span><span class="o">.</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">isoformat</span><span class="p">(</span><span class="n">timespec</span><span class="o">=</span><span class="s2">"seconds"</span><span class="p">),</span>
              <span class="n">seisbench</span><span class="o">=</span><span class="n">_sb</span><span class="o">.</span><span class="n">__version__</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="n">WEIGHTS</span><span class="p">,</span> <span class="n">report_threshold</span><span class="o">=</span><span class="n">REPORT_THRESHOLD</span><span class="p">,</span>
@@ -9607,7 +9634,8 @@ S@0.02 is the ceiling: what the model finds with the threshold on the floor.
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre>wrote recall_at_threshold, threshold_sweep, saturation, meta to ../docs/benchmark/results/us_sequences
+<pre>exported 41,579 model picks at the 0.02 floor and 1,064 reference arrivals
+wrote recall_at_threshold, threshold_sweep, saturation, model_picks, reference_picks, meta to ../docs/benchmark/results/us_sequences
 </pre>
 </div>
 </div>

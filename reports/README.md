@@ -26,6 +26,7 @@ pixi run -e tutorials jupyter nbconvert --to html --template lab \
 | [western_pick_validation.html](western_pick_validation.html) | Do the western campaign's stored picks reproduce when re-picked live from FDSN, and what is missing from them? | ~90 min |
 | [phasenet_global_sequences.html](phasenet_global_sequences.html) | Does the fine-tune hold up outside the United States? Kaikōura, Norcia and Thessaly against the operators' analyst picks | ~15 min cold, ~5 min with the cached harvest |
 | [read_the_catalogue.html](read_the_catalogue.html) | First contact with the public catalogue: mirror a month of `western`, plot it, check picks on FDSN waveforms, read at scale | ~5 min, anonymous |
+| [benchmark_metrics.html](benchmark_metrics.html) | Every metric for every benchmark: detection at three threshold treatments, onset-time statistics, calibration, phase swaps, duplicates, and which of them are identifiable against a non-exhaustive reference | ~2 min, no inference |
 | [benchmark_summary.html](benchmark_summary.html) | All five benchmarks in one place from their exported tables: recall at a shared threshold and at matched budgets, timing, ocean bottom, reproduction. Re-execute after any benchmark notebook | ~1 min, no inference |
 | [download_the_catalogue.html](download_the_catalogue.html) | A region and a period: select stations, mirror the partitions across the three western eras, query, check coverage from the manifests, export for an associator | ~10 min, anonymous |
 
