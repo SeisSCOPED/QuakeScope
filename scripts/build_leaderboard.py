@@ -447,15 +447,14 @@ def main() -> None:
     </nav>
     <div class="hero-inner">
       <p class="eyebrow">HazEvalHub &middot; catalogue-workflow track &middot; SeisSCOPED</p>
-      <h1>A leaderboard for phase pickers, scored on what an earthquake catalogue needs</h1>
-      <p>Deep learning replaced the first stage of earthquake catalogue production faster than
-      the field agreed on how to score it. Four published sets of PhaseNet weights are ranked
-      here on {seq_phases} sequence-phases and {arrivals:,} analyst arrivals from {n_agencies} agencies on
-      two continents, under three threshold protocols, on detection, onset time, confidence
-      calibration and phase identification.</p>
-      <p>The headline result is about benchmarking, not about a winner: <strong>the ranking
-      inverts</strong> depending on how the operating point is held, and when each model is
-      allowed its own threshold the four are within {spreadbest:.3f} recall of each other.</p>
+      <h1>Phase pickers scored on the metrics an earthquake catalogue depends on</h1>
+      <p>Four published sets of PhaseNet weights, ranked on {seq_phases} sequence-phases and
+      {arrivals:,} analyst arrivals from {n_agencies} agencies on two continents, under three
+      threshold protocols, on detection, onset time, confidence calibration and phase
+      identification.</p>
+      <p><strong>The ranking inverts</strong> with the way the operating point is held. Given its
+      own threshold, each of the four reaches a recall within {spreadbest:.3f} of the others, so
+      the protocol carries more of the published difference than the models do.</p>
       <div class="hero-actions">
         <a class="button primary" href="#board">See the board</a>
         <a class="button secondary" href="#run">Score your own picks</a>
@@ -480,31 +479,31 @@ def main() -> None:
 <section id="why">
   <div class="section-head">
     <p class="eyebrow">Why this board exists</p>
-    <h2>The picker is now the first stage of most new earthquake catalogues</h2>
-    <p class="lede">A catalogue is the product that seismology hands to everyone else: to fault
-    studies, to hazard models, to the people who have to decide whether a swarm matters. Since
-    2018 the stage that produces it has been a neural network, and the catalogues that followed
-    changed what is known about fault structure in southern California{cite('ross2019')}, about
-    the 2016-2017 central Italy sequence{cite('tan2021')} and about magma transport beneath
-    Hawai'i{cite('wilding2023')}. One runs in real time at the National Earthquake Information
-    Center{cite('yeck2020')}. Choosing the picker is therefore a scientific decision with a
-    measurable consequence, and it is usually made by reading a number off a benchmark.</p>
+    <h2>The picker is the first stage of most new earthquake catalogues</h2>
+    <p class="lede">A catalogue is what seismology hands to fault studies, to hazard models and
+    to whoever has to decide whether a swarm matters. Neural-network pickers built the
+    catalogues that revised fault structure in southern California{cite('ross2019')}, the
+    2016-2017 central Italy sequence{cite('tan2021')} and magma transport beneath
+    Hawai'i{cite('wilding2023')}, and one runs in real time at the National Earthquake
+    Information Center{cite('yeck2020')}. The choice of picker therefore has a measurable
+    consequence for the catalogue, and it is usually made by reading a number off a
+    benchmark.</p>
   </div>
 
-  <h3>Architectures diverged</h3>
-  <p>The models being compared are not variations on one design. They make different assumptions
-  about what a seismogram is, and those assumptions show up in how they fail.</p>
+  <h3>Architecture families</h3>
+  <p>These models are not variations on one design. Each treats a different property of the
+  seismogram as evidence, and that choice sets how it fails.</p>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">Family</th><th class="l">Idea</th><th class="l">Examples</th></tr></thead>
     <tbody>
       <tr><td class="l">Fully convolutional, encoder-decoder</td>
-          <td class="l">Predict a probability time series per phase over a window; picks are its peaks</td>
+          <td class="l">Predict a probability time series per phase over a window. Picks are its peaks</td>
           <td class="l">PhaseNet{cite('zhu2019')}</td></tr>
       <tr><td class="l">Window classifier</td>
           <td class="l">Slide a short window and classify it P, S or noise</td>
           <td class="l">GPD{cite('ross2018')}, ConvNetQuake{cite('perol2018')}, CNN phase classifiers{cite('woollam2019')}</td></tr>
       <tr><td class="l">Recurrent, with attention</td>
-          <td class="l">Detect the event first, then pick inside it; explicit sequence memory</td>
+          <td class="l">Detect the event first, then pick inside it, with explicit sequence memory</td>
           <td class="l">EQTransformer{cite('mousavi2020')}, DeepPhasePick{cite('soto2021')}</td></tr>
       <tr><td class="l">Transformer</td>
           <td class="l">Self-attention over the trace in place of recurrence</td>
@@ -512,25 +511,24 @@ def main() -> None:
       <tr><td class="l">Multi-station and operator learning</td>
           <td class="l">Pick a network jointly, so one station's noise is another's context</td>
           <td class="l">EdgePhase{cite('feng2022')}, phase neural operator{cite('sun2023')}</td></tr>
-      <tr><td class="l">Pre-trained backbones</td>
+      <tr><td class="l">Pretrained backbones</td>
           <td class="l">One self-supervised model, fine-tuned per task</td>
           <td class="l">SeisLM{cite('liu2024seislm')}</td></tr>
     </tbody>
-    <caption>A picker's architecture determines what it can use as evidence. A window classifier
-    cannot exploit the shape of a coda; a multi-station model can be defeated by one clock
-    error. Reviews of the wider field: {cite('mousavi2023')}.</caption>
+    <caption>A window classifier cannot use the shape of a coda. A multi-station model can be
+    defeated by one clock error. Review of the wider field: {cite('mousavi2023')}.</caption>
   </table></div>
 
-  <h3>Curated datasets diverged with them</h3>
-  <p>Each of these models was trained on a labelled corpus assembled by a different network, with
-  its own instrumentation, noise, depth distribution and analyst conventions. That is what makes
-  a single benchmark number hard to read: a picker evaluated near its training distribution is
-  being asked an easier question than the same picker deployed elsewhere.</p>
+  <h3>Training corpora</h3>
+  <p>Each model is trained on a labelled corpus from a different network, with its own
+  instrumentation, noise, depth distribution and analyst conventions. A picker evaluated near
+  its training distribution is answering an easier question than the same picker deployed
+  elsewhere, which is what makes a single benchmark number hard to read.</p>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">Corpus</th><th class="l">Source network</th><th class="l">Used here</th></tr></thead>
     <tbody>
       <tr><td class="l">STEAD{cite('mousavi2019stead')}</td><td class="l">Global, mostly regional distances</td><td class="l">upstream of several weight sets</td></tr>
-      <tr><td class="l">INSTANCE{cite('michelini2021')}</td><td class="l">Italian national network</td><td class="l">trains <code>instance</code>; Norcia is in-domain for it</td></tr>
+      <tr><td class="l">INSTANCE{cite('michelini2021')}</td><td class="l">Italian national network</td><td class="l">trains <code>instance</code>. Norcia is in-domain for it</td></tr>
       <tr><td class="l">DiTing{cite('zhao2023')}</td><td class="l">China</td><td class="l">not scored here</td></tr>
       <tr><td class="l">PNW{cite('ni2023')}</td><td class="l">Pacific Northwest, incl. surface events</td><td class="l">in the <code>quakescope2026</code> fine-tune corpus</td></tr>
       <tr><td class="l">CREW{cite('aguilar2024')}</td><td class="l">Regional, continental US</td><td class="l">not scored here</td></tr>
@@ -538,19 +536,19 @@ def main() -> None:
       <tr><td class="l">LEN-DB{cite('magrini2020')}</td><td class="l">Global, local events</td><td class="l">not scored here</td></tr>
       <tr><td class="l">OBS corpora{cite('bornstein2024','niksejel2024')}</td><td class="l">Ocean-bottom deployments</td><td class="l">offshore track only</td></tr>
     </tbody>
-    <caption>SeisBench{cite('woollam2022')} made these corpora and the models interchangeable in
-    code. That is what made systematic comparison possible, and also what made it easy to
-    compare a model against whichever corpus was nearest to hand.</caption>
+    <caption>SeisBench{cite('woollam2022')} exposes these corpora and models through one
+    interface. That is what allows a comparison across them, and also what makes it easy to
+    score a model against the corpus nearest to hand.</caption>
   </table></div>
 
-  <h3>The evaluation did not keep up</h3>
-  <p>The reference study is M&uuml;nchmeyer et al.{cite('munchmeyer2022')}, which scored pickers
-  across regions on labelled datasets and established the cross-domain result: a picker
-  transfers between regions with mild degradation, and does not transfer from regional to
-  teleseismic distances. Parametric work on single models has since shown how strongly a
-  reported score depends on the thresholds chosen{cite('pita2023')}.</p>
-  <p>What a person deploying a picker faces differs from a labelled-dataset benchmark in three
-  ways, and each one changes the answer:</p>
+  <h3>Scoring against an operator bulletin</h3>
+  <p>M&uuml;nchmeyer et al.{cite('munchmeyer2022')} score pickers across regions on labelled
+  datasets and report the cross-domain result: a picker transfers between regions with mild
+  degradation and does not transfer from regional to teleseismic distances. Parametric tests of
+  a single model show how strongly a reported score depends on the thresholds
+  chosen{cite('pita2023')}.</p>
+  <p>A deployment differs from a labelled-dataset benchmark in three ways, each of which changes
+  the answer:</p>
   <ol>
     <li><strong>The reference is an operator bulletin, not a labelled set.</strong> An analyst
     picked what a location needed and stopped. An unmatched model pick is a mixture of a false
@@ -561,9 +559,9 @@ def main() -> None:
     probabilities on different scales, so at a shared 0.3 they emit between
     {int(d.groupby('weights').emitted_at_03.mean().min())} and
     {int(d.groupby('weights').emitted_at_03.mean().max())} picks per sequence-phase on average.
-    Recall at a shared threshold measures liberality as much as skill. This is the benchmark
-    lottery{cite('dehghani2021')} in a domain that can check it: the protocol, not the model,
-    decides the winner.</li>
+    Recall at a shared threshold measures liberality as much as skill. The protocol decides the
+    winner, which is the benchmark lottery{cite('dehghani2021')} in a domain where it can be
+    measured.</li>
     <li><strong>The deployment is the experiment.</strong> Picking 114 million station-days
     exposes failure modes a windowed benchmark cannot: resumed jobs overwriting their own
     output, station metadata that truncates epochs, archive listings that fail silently. Each of
@@ -571,12 +569,11 @@ def main() -> None:
     below, and the quantity a catalogue user actually cares about is completeness{cite('woessner2005')}.</li>
   </ol>
   <div class="callout">
-    <h3>What this board is, and is not</h3>
-    <p>It is a scored comparison with a public, deterministic scorer, run on public bulletins,
-    reported under three protocols at once. It is not yet a benchmark with a hidden test set
-    that a result could be cited from. The <a href="#standard">standard below</a> scores this
-    track against nine rules for a citable benchmark and records where it fails, which is the
-    part of a benchmark that readers are usually not given{cite('raji2021')}.</p>
+    <h3>Scope</h3>
+    <p>This is a scored comparison on public bulletins with a public, deterministic scorer,
+    reported under three protocols at once. It has no hidden test set, so a result here is not
+    yet citable as a benchmark result. The <a href="#standard">standard below</a> scores the
+    track against nine rules and records where it fails{cite('raji2021')}.</p>
   </div>
 </section>
 """)
@@ -586,7 +583,7 @@ def main() -> None:
 <section id="board">
   <div class="section-head">
     <p class="eyebrow">The board</p>
-    <h2>Detection: three protocols, three orderings</h2>
+    <h2>Three threshold protocols give three orderings</h2>
     <p class="lede">Recall is the fraction of analyst arrivals recovered within
     {DETECT_TOL:g}&thinsp;s on the same station and phase. It is the one detection quantity that
     a non-exhaustive reference leaves identifiable, and it is weighted here by the number of
@@ -595,17 +592,17 @@ def main() -> None:
   </div>
 """)
     for col, name, note in (
-        ("recall_at_03", f"Protocol A &mdash; shared threshold {SHARED_THR}",
-         "What almost every published comparison reports. It also measures which model is most "
-         "willing to emit a pick."),
-        ("recall_at_budget", "Protocol B &mdash; matched pick budget",
+        ("recall_at_03", f"Protocol A: shared threshold {SHARED_THR}",
+         "What most published comparisons report. It also measures which model is most willing "
+         "to emit a pick."),
+        ("recall_at_budget", "Protocol B: matched pick budget",
          f"Each model's own curve read at the same number of emitted picks. Threshold-free, but "
          f"bounded above by the most conservative model: <code>{bind_model}</code>'s ceiling sets "
          f"the budget in every one of the {bind_tot} rows where all four ceilings are "
          f"measured, so the comparison happens where a conservative model is strongest."),
-        ("recall_at_best", "Protocol C &mdash; each model's own best threshold",
+        ("recall_at_best", "Protocol C: each model's own best threshold",
          "Per-model threshold selection, as the cross-domain benchmark does on a development "
-         "set. With no held-out split here this is an upper bound on a tuned deployment.")):
+         "set. With no held-out split here, this is an upper bound on a tuned deployment.")):
         sub = prot[prot.col == col].sort_values("recall", ascending=False)
         lastcol = {"recall_at_03": "mean picks emitted",
                    "recall_at_budget": "mean ceiling (picks at the floor)",
@@ -631,30 +628,31 @@ def main() -> None:
 
     A(f"""
   <figure>{fig1}
-    <figcaption>Each line is one weight set. The order at the left is the order a fixed-threshold
-    benchmark would publish; the order in the middle is what a threshold-free comparison gives at
-    a budget the most conservative model bounds; the right is what each model reaches when it is
-    allowed its own threshold. <strong>{lead03}</strong> leads protocol A and comes last in
-    protocol B; <strong>{leadbud}</strong> does the reverse. Per sequence-phase, the leader
-    changes between A and B in {flips} of {seq_phases} rows.</figcaption>
+    <figcaption>Each line is one weight set. The left column is what a fixed-threshold benchmark
+    publishes. The middle is a threshold-free comparison at a budget the most conservative model
+    bounds. The right is what each model reaches on its own threshold.
+    <strong>{lead03}</strong> leads protocol A and comes last in protocol B, and
+    <strong>{leadbud}</strong> does the reverse. Per sequence-phase the leader changes between A
+    and B in {flips} of {seq_phases} rows.</figcaption>
   </figure>
 
   <div class="callout warn">
-    <h3>Read this before quoting a rank</h3>
+    <h3>Most of the spread is the protocol</h3>
     <p>The spread between best and worst weight set is {spread03:.3f} recall under protocol A
     and {spreadbest:.3f} under protocol C, so {100 * (1 - spreadbest / spread03):.0f}&thinsp;% of
     the apparent difference between these four models comes from holding the threshold fixed
     rather than from how they pick. Under protocol C the win counts are
     {' / '.join(str(int(pbest.loc[m, 'wins'])) for m in pbest.sort_values('recall', ascending=False).index)}
-    across {seq_phases} rows, which is not a ranking. Detection is where these weight sets are
-    hardest to separate. The axes below separate them.</p>
+    across {seq_phases} rows, which is not a ranking. Detection is the axis on which these four
+    weight sets are hardest to separate. The three axes below separate them.</p>
   </div>
 
   <figure>{fig2}
     <figcaption>Recall against picks emitted, six of the {seq_phases} sequence-phases, log x.
     Filled circles mark each model's shared-threshold 0.3 operating point, the dotted line the
-    matched budget. Where a curve stops, the model has run out of picks with its threshold on the
-    floor: that is a ceiling, not a calibration offset, and no threshold recovers it.</figcaption>
+    matched budget. Where a curve stops, the model has run out of picks with its threshold on
+    the floor. That is a ceiling rather than a calibration offset, and no threshold recovers
+    it.</figcaption>
   </figure>
 </section>
 """)
@@ -663,11 +661,11 @@ def main() -> None:
     A(f"""
 <section id="timing">
   <div class="section-head">
-    <p class="eyebrow">The board, continued</p>
-    <h2>Onset time, calibration, and phase identification</h2>
-    <p class="lede">These three axes are identifiable against a bulletin, they are what a
-    location and a magnitude actually consume, and unlike detection they separate the four
-    weight sets.</p>
+    <p class="eyebrow">The board</p>
+    <h2>Onset time, calibration and phase identification</h2>
+    <p class="lede">A bulletin leaves all three of these identifiable. They are also what a
+    location and a magnitude consume, and they separate the four weight sets where detection
+    does not.</p>
   </div>
 
   <div class="card"><h3>Onset time</h3>
@@ -686,21 +684,22 @@ def main() -> None:
     <caption>Residuals are matched at 2&thinsp;s and detection at {DETECT_TOL:g}&thinsp;s, because
     matching at the detection tolerance truncates the residual distribution there and makes any
     outlier rate a statement about the tolerance. MedianAE and MAE are both reported because one
-    is insensitive to outliers and the other is not{cite('munchmeyer2022')}; the 0.1&thinsp;s
+    is insensitive to outliers and the other is not{cite('munchmeyer2022')}. The 0.1&thinsp;s
     column is the tolerance PhaseNet was originally scored at{cite('zhu2019')}.
     <code>{best_time_p}</code> is most accurate on P and <code>{best_time_s}</code> on S.</caption>
   </table></div></div>
 
-  <div class="card"><h3>Is the confidence a probability?</h3>
+  <div class="card"><h3>Confidence calibration</h3>
   <p>Every downstream user thresholds on <code>conf</code>, and an associator weights by
-  it{cite('zhu2022','munchmeyer2024')}. Expected calibration error is the mean gap between stated
-  confidence and observed agreement, weighted by bin count{cite('guo2017')}. Against a bulletin
-  the observed rate is a lower bound, so this is <code>ece_lb</code>; the shape still explains why
-  one threshold means different things to different weight sets.</p>
+  it{cite('zhu2022','munchmeyer2024')}. Expected calibration error is the mean gap between
+  stated confidence and observed agreement, weighted by bin count{cite('guo2017')}. Against a
+  bulletin the observed rate is a lower bound, so the quantity here is <code>ece_lb</code>. The
+  shape of the curve is what makes one threshold mean different things to different weight
+  sets.</p>
   <figure>{fig3}
     <figcaption>Perfect calibration is the dashed diagonal. Every weight set sits below it: a
     pick labelled 0.8 agrees with the bulletin less often than 80&thinsp;% of the time, partly
-    because the bulletin is not exhaustive and partly because the models are overconfident.
+    because the bulletin is incomplete and partly because the models are overconfident.
     <code>{best_cal}</code> is the best calibrated and <code>{worst_cal}</code> the worst, by a
     factor of {cal.groupby('weights').ece_lb.mean().max() / cal.groupby('weights').ece_lb.mean().min():.1f}.
     That is the mechanism behind protocol A's ordering: the worst-calibrated model is the most
@@ -722,8 +721,8 @@ def main() -> None:
 
   <div class="card"><h3>Phase identification and duplicate picks</h3>
   <p>A P reported where the analyst marked an S is a different failure from a miss: it survives
-  association and moves a location. Both sides of the comparison carry a phase label, so unlike
-  precision this is identifiable.</p>
+  association and moves a location. Both sides carry a phase label, so this is identifiable
+  where precision is not.</p>
   <div class="table-scroll"><table class="board">
     <thead><tr><th class="l">weight set</th><th>P arrivals picked as S</th>
     <th>S arrivals picked as P</th><th>swap rate</th><th>duplicate rate</th></tr></thead><tbody>""")
@@ -746,48 +745,48 @@ def main() -> None:
     # ---------------------------------------------------------------- metrics
     ident = [
         ("Recall", "matched reference arrivals / reference arrivals",
-         "exact", cite('munchmeyer2022'), "The primary metric. Unaffected by the reference being incomplete."),
+         "exact", cite('munchmeyer2022'), "Reported first. Unaffected by the reference being incomplete."),
         ("Picks emitted", "count above the threshold", "exact", "",
          "Recall alone is gameable by lowering the threshold. Always report both."),
         ("Recall at matched budget", "each model's curve read at equal emitted picks",
-         "exact", cite('munchmeyer2022'), "The comparison that survives a change of threshold, bounded by the most conservative model's ceiling."),
+         "exact", cite('munchmeyer2022'), "Survives a change of threshold. Bounded by the most conservative model's ceiling."),
         ("Precision, F1", "matched / emitted, and their harmonic mean",
          "lower bound", cite('bekker2020', 'chicco2020'),
-         "An unmatched pick may be an arrival the analyst never marked. Named <code>_lb</code> here; comparable between models on the same reference, not with a labelled-dataset number."),
+         "An unmatched pick may be an arrival the analyst never marked. Named <code>_lb</code> here. Comparable between models on the same reference, not against a labelled-dataset number."),
         ("MCC", "Matthews correlation coefficient", "not computable", cite('chicco2020'),
          "Needs true negatives, which a continuous record with an incomplete reference does not define."),
         ("MAE, RMSE", "mean absolute and root-mean-square residual", "exact", cite('munchmeyer2022'),
          "Report both: RMSE responds to outliers, MAE does not."),
-        ("MedianAE, median bias", "robust scatter, and systematic earliness or lateness",
+        ("MedianAE, median bias", "outlier-insensitive scatter, and systematic earliness or lateness",
          "exact", cite('munchmeyer2022', 'pita2023'),
          "Separates a picker that is consistently late from one that is noisy."),
         ("Gross-error rate", f"fraction of wide-matched residuals beyond {DETECT_TOL:g}&thinsp;s",
          "exact", cite('munchmeyer2022'),
          "Must be computed from residuals matched wider than the detection tolerance, or it describes the tolerance."),
         ("Fraction within 0.1&thinsp;s", "share of matched picks inside 0.1&thinsp;s", "exact",
-         cite('zhu2019'), "The tolerance the original PhaseNet paper scored at; comparable to older literature."),
+         cite('zhu2019'), "The tolerance the original PhaseNet paper scored at, so it is comparable to older literature."),
         ("Reliability curve, ECE", "observed agreement per confidence bin, and its mean gap",
          "lower bound", cite('guo2017'), "Tells you whether a threshold transfers between models. It usually does not."),
         ("Phase swap rate", "arrivals matched by a pick of the other phase", "exact",
          cite('munchmeyer2022'), "Survives association and moves a location."),
         ("Duplicate rate", "extra picks within tolerance of an already-matched arrival",
-         "exact", cite('zhu2022', 'munchmeyer2024'), "Invisible in recall; costs an associator work."),
+         "exact", cite('zhu2022', 'munchmeyer2024'), "Invisible in recall. Costs an associator work."),
         ("Catalogue completeness", "magnitude above which the catalogue is complete",
          "downstream", cite('woessner2005'),
-         "The quantity a catalogue user cares about. Not yet on this board; it needs association and location, not picks alone."),
+         "The quantity a catalogue user cares about. Absent from this board, which needs association and location as well as picks."),
     ]
     A("""
 <section id="metrics">
   <div class="section-head">
     <p class="eyebrow">What the board measures</p>
-    <h2>Every metric, what it is for, and whether a bulletin lets you compute it</h2>
-    <p class="lede">The column that matters to anyone building an evaluation is the third one. A
-    metric that is standard in machine learning is not automatically available here, and saying
-    which are and which are not is most of the methodological work.</p>
+    <h2>The metrics on this board</h2>
+    <p class="lede">The third column is the one that matters to anyone building an evaluation. A
+    metric that is standard in machine learning is not automatically available against an
+    incomplete reference, and marking which are and which are not is most of the method.</p>
   </div>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">metric</th><th class="l">definition</th><th class="l">against a bulletin</th>
-    <th class="l">source</th><th class="l">why it earns a column</th></tr></thead><tbody>""")
+    <th class="l">source</th><th class="l">reason</th></tr></thead><tbody>""")
     for name, defn, status, src, why in ident:
         cls = {"exact": "exact", "lower bound": "bound", "not computable": "unmet",
                "downstream": ""}[status]
@@ -801,7 +800,7 @@ def main() -> None:
     # ---------------------------------------------------------------- standard
     rules = [
         ("R1", "The task is fully specified before submissions open", "partial",
-         "The task, matching rule, tolerances and metrics are frozen in code and published. There is no submission process, so nobody can yet submit to a specification they did not write."),
+         "The task, matching rule, tolerances and metrics are frozen in code and published. There is no submission process, so the specification binds only us."),
         ("R2", "The test set is hidden, and the board says so on every row", "unmet",
          "Every reference here is a public operator bulletin. This board cannot distinguish generalisation from familiarity with a well-studied sequence."),
         ("R3", "The scorer is public, deterministic and versioned", "met",
@@ -809,13 +808,13 @@ def main() -> None:
         ("R4", "A trivial baseline is published first", "unmet",
          "No STA/LTA floor is published alongside these numbers, so the recall column has no zero point."),
         ("R5", "A strong published baseline is published alongside", "met",
-         "Three of the four weight sets are published models from other groups; the fourth is ours."),
+         "Three of the four weight sets are published models from other groups, and the fourth is ours."),
         ("R6", "Contamination is addressed explicitly, in writing, per task", "partial",
-         "Stated per sequence and not quantified: Norcia is in-domain for <code>instance</code>, and the <code>quakescope2026</code> fine-tuning corpus includes INSTANCE and Pacific Northwest data."),
+         "Stated per sequence and not quantified. Norcia is in-domain for <code>instance</code>, and the <code>quakescope2026</code> fine-tuning corpus includes INSTANCE and Pacific Northwest data."),
         ("R7", "Splits are DOI-archived with a datasheet", "unmet",
          "The reference arrivals are harvested live from agency services, so a bulletin revision changes the board with no record."),
         ("R8", "The evaluation is separable from the group whose models it scores", "partial",
-         "SeisSCOPED maintains the benchmark, and one of the four weight sets is ours. It does not win: <code>quakescope2026</code> ranks "
+         "SeisSCOPED maintains the benchmark and one of the four weight sets is ours. It does not win: <code>quakescope2026</code> ranks "
          f"{int(pbest.loc['quakescope2026', 'rank'])} of 4 under protocol C and {int(pbud.loc['quakescope2026', 'rank'])} of 4 under protocol B."),
         ("R9", "Every row carries model version, split, date and cost", "partial",
          "Weight set, SeisBench version, notebook and execution timestamp are stamped in the footer. Cost per processed station-day is measured for the campaign but is not yet on this board."),
@@ -828,16 +827,16 @@ def main() -> None:
 <section id="standard">
   <div class="section-head">
     <p class="eyebrow">The standard</p>
-    <h2>Nine rules for a citable benchmark, and where this track stands</h2>
-    <p class="lede">Adapted from the questions reviewers ask on the NeurIPS and ICML
-    <i>Datasets and Benchmarks</i> track, and recorded on the
-    <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> hub page for every
-    evaluation the project runs. The right-hand column is a scorecard, not an aspiration:
-    of {len(rules)} rules, {n_met} met, {n_part} partly met, {n_unmet} not met.</p>
+    <h2>Nine rules for a citable benchmark</h2>
+    <p class="lede">The standard
+    <a href="https://gaia-hazlab.github.io/hazevalhub">HazEvalHub</a> applies to every evaluation
+    it collects, drawn from the review criteria of the NeurIPS and ICML <i>Datasets and
+    Benchmarks</i> track. Of {len(rules)} rules this board meets {n_met}, meets {n_part} in
+    part, and fails {n_unmet}.</p>
   </div>
   <div class="table-scroll"><table class="data">
     <thead><tr><th class="l">#</th><th class="l">rule</th><th class="l">status</th>
-    <th class="l">where this board stands</th></tr></thead><tbody>""")
+    <th class="l">this board</th></tr></thead><tbody>""")
     for num, rule, status, note in rules:
         label = {"met": "met", "partial": "partly", "unmet": "not met"}[status]
         A(f'    <tr><td class="l"><strong>{num}</strong></td><td class="l">{rule}</td>'
@@ -845,11 +844,11 @@ def main() -> None:
           f'<td class="l" style="color:#6f6890">{note}</td></tr>')
     A("""  </tbody></table></div>
   <div class="callout">
-    <h3>The one that matters most</h3>
-    <p>R2. Until there is a reference set drawn from after the training window of every model it
-    scores, and labelled independently, this board measures skill and familiarity together and
-    cannot separate them. That is a labelling campaign, not a software task, and it is the
-    critical path for turning this page into a benchmark a paper could cite.</p>
+    <h3>R2 is the binding limit</h3>
+    <p>Without a reference set drawn from after the training window of every model it scores and
+    labelled independently, this board measures skill and familiarity together and cannot
+    separate them. The work that lifts R2 is a labelling campaign rather than software, and it
+    is the critical path to a citable benchmark result.</p>
   </div>
 </section>
 """)
@@ -859,9 +858,9 @@ def main() -> None:
 <section id="run">
   <div class="section-head">
     <p class="eyebrow">Score your own picks</p>
-    <h2>One script, two CSV files</h2>
-    <p class="lede">The scorer behind every number above is public and takes anybody's picks. It
-    imports nothing but <code>numpy</code> and <code>pandas</code>.</p>
+    <h2>The scorer takes two CSV files</h2>
+    <p class="lede">The scorer behind every number above is public and runs on anybody's picks.
+    It imports nothing but <code>numpy</code> and <code>pandas</code>.</p>
   </div>
   <div class="card">
 <pre><code># the arrivals you trust:   station,phase,time
@@ -870,10 +869,10 @@ python scripts/score_picks.py --reference arrivals.csv --picks mypicks.csv --out
 
 # see it work on synthetic picks with known properties, no data needed
 python scripts/score_picks.py --demo</code></pre>
-    <p style="margin-top:14px">Run your model <strong>once at a low confidence floor</strong> and
-    keep every pick, so each threshold above is a filter over one file rather than another pass
-    over the waveforms. Optional <code>dataset</code> and <code>model</code> columns score several
-    sequences or models in one run; the column names our exports and SeisBench already use
+    <p style="margin-top:14px">Run your model <strong>once at a low confidence floor</strong>
+    and keep every pick. Each threshold above is then a filter over one file rather than another
+    pass over the waveforms. Optional <code>dataset</code> and <code>model</code> columns score
+    several sequences or models in one run, and the column names our exports and SeisBench use
     (<code>sequence</code>, <code>weights</code>, <code>probability</code>,
     <code>pick_time</code>) are accepted without renaming. Output is
     <code>detection.csv</code>, <code>timing.csv</code>, <code>calibration.csv</code>,
@@ -891,9 +890,9 @@ python scripts/score_picks.py --demo</code></pre>
     </div>
     <div class="card">
       <h3>What would move a rank</h3>
-      <p>A held-out sequence nobody has looked at; an STA/LTA baseline for the recall floor;
-      association and location, so completeness{cite('woessner2005')} can replace recall as the
-      headline; and cost per station-day on every row.</p>
+      <p>A held-out sequence nobody has looked at. An STA/LTA baseline for the recall floor.
+      Association and location, so that completeness{cite('woessner2005')} replaces recall as
+      the headline metric. Cost per station-day on every row.</p>
     </div>
   </div>
 </section>
@@ -906,17 +905,17 @@ python scripts/score_picks.py --demo</code></pre>
   <ul>
     <li>Sample sizes differ by an order of magnitude between sequences, from
     {int(d.n_ref.min())} to {int(d.n_ref.max())} reference arrivals. The board weights by
-    arrivals; a per-sequence reading is in the methods notebook.</li>
+    arrivals. The per-sequence reading is in the methods notebook.</li>
     <li>Precision and F1 are bounds, so a model that finds real arrivals the analyst skipped is
-    penalised exactly like one that hallucinates. Only association can separate those two, and
-    no association step runs here.</li>
+    penalised the same as one that invents them. Separating the two requires association, and no
+    association step runs here.</li>
     <li>Protocol B is evaluated at a budget that <code>{bind_model}</code>'s ceiling bounds in
     all {bind_tot} rows where every ceiling is measured. Protocol C has no held-out split, so it is an upper bound on a tuned deployment.</li>
     <li>Contamination is stated, not measured. Two of the four weight sets have plausible
     exposure to data from the regions scored here.</li>
-    <li>Model runtime differs measurably between these weight sets and is not on the board. A
-    model that cannot be run across a fifteen-year archive cannot be deployed, whatever its
-    recall.</li>
+    <li>Model runtime differs measurably between these weight sets and is absent from the
+    board. A model too slow to run across a fifteen-year archive cannot be deployed, whatever
+    its recall.</li>
   </ul>
 </section>
 
