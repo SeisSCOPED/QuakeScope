@@ -863,10 +863,10 @@ def main() -> None:
 <section id="timing">
   <div class="section-head">
     <p class="eyebrow">The board</p>
-    <h2>Onset time, calibration and phase identification</h2>
+    <h2>Onset time, calibration and phase association</h2>
     <p class="lede">A bulletin leaves all three of these identifiable. They are also what a
     location and a magnitude consume, and they separate the four weight sets where detection
-    does not.</p>
+    does not. Phase association here means the P and S labelling, scored as the swap rate.</p>
   </div>
 
   <div class="card"><h3>Onset time</h3>
@@ -925,10 +925,12 @@ def main() -> None:
         A(f'<td>{int(cal[cal.weights == m].n.sum()):,}</td></tr>')
     A(f"""  </tbody></table></div></div>
 
-  <div class="card"><h3>Phase identification and duplicate picks</h3>
-  <p>A P reported where the analyst marked an S is a different failure from a miss: it survives
-  association and moves a location. Both sides carry a phase label, so this is identifiable
-  where precision is not.</p>
+  <div class="card"><h3>Phase association and duplicate picks</h3>
+  <p>This is the association axis the leaderboard scores. A P reported where the analyst marked
+  an S survives into the event and moves the location, which is a different failure from a
+  miss. Both sides carry a phase label, so the swap is identifiable where precision is not.
+  Grouping picks into events, the other sense of association, needs an
+  associator{cite('zhu2022', 'munchmeyer2024')} and is not scored here.</p>
   <div class="table-scroll"><table class="board">
     <thead><tr><th class="l">weight set</th><th>P arrivals picked as S</th>
     <th>S arrivals picked as P</th><th>swap rate</th><th>duplicate rate</th></tr></thead><tbody>""")
@@ -1196,7 +1198,8 @@ def main() -> None:
         ("Reliability curve, ECE", "observed agreement per confidence bin, and its mean gap",
          "lower bound", cite('guo2017'), "Tells you whether a threshold transfers between models. It usually does not."),
         ("Phase swap rate", "arrivals matched by a pick of the other phase", "exact",
-         cite('munchmeyer2022'), "Survives association and moves a location."),
+         cite('munchmeyer2022'),
+         "The association axis: a P labelled S survives into the event and moves the location."),
         ("Duplicate rate", "extra picks within tolerance of an already-matched arrival",
          "exact", cite('zhu2022', 'munchmeyer2024'), "Invisible in recall. Costs an associator work."),
         ("Model time, memory, cost", "seconds and MB per station-day, and USD per 1,000 "
