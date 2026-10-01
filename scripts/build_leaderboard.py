@@ -627,8 +627,8 @@ def main() -> None:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="The Board: Seismic Phase Picking. Deep-learning phase pickers scored against analyst arrivals on {seq_phases} sequence-phases and {arrivals:,} arrivals, across a western United States track and an out-of-region track, with metrics chosen for earthquake catalogue building.">
-<title>The Board: Seismic Phase Picking</title>
+<meta name="description" content="A public leaderboard for phase picking and association for P and S waves from seismic waveform data, with a United States benchmark track and a global track, and the data and code to reproduce every number.">
+<title>Seismic Phase Picking Leaderboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -650,19 +650,18 @@ def main() -> None:
     </nav>
     <div class="hero-inner">
       <p class="eyebrow">HazEvalHub &middot; catalogue-workflow track &middot; SeisSCOPED</p>
-      <h1>The Board: Seismic Phase Picking</h1>
-      <p>Four published sets of PhaseNet weights scored against analyst arrivals on
-      {seq_phases} sequence-phases and {arrivals:,} arrivals from {n_agencies} agencies, on
-      detection, onset time, confidence calibration and phase identification. Two tracks: the
-      western United States, where the arrivals come from ANSS, and sequences outside it, where
-      they come from the operating network.</p>
-      <p>The tracks do not agree. <strong>{us_lead}</strong> leads in the western United States
-      and <strong>{gl_lead}</strong> leads outside it, and the ordering also moves with the way
-      each model's threshold is set.</p>
+      <h1>Seismic Phase Picking Leaderboard</h1>
+      <p>A public leaderboard for phase picking and association for P and S waves from seismic
+      waveform data. The evaluation gathers the metrics the community has used to judge a
+      picker. The benchmark runs on two tracks of data sets: a United States benchmark set, and
+      a global benchmark set covering several types of earthquake sequence.</p>
+      <p>Every pick on both sides of every comparison downloads from
+      <a href="#data">the data section</a>, with the code to fetch the matching waveforms and
+      plot them.</p>
       <div class="hero-actions">
         <a class="button primary" href="#board">See the board</a>
-        <a class="button secondary" href="#run">Score your own picks</a>
-        <a class="button secondary" href="benchmark_metrics_methods.html">Methods notebook</a>
+        <a class="button secondary" href="#data">Download the data</a>
+        <a class="button secondary" href="benchmark_data.html">Code to fetch waveforms</a>
       </div>
     </div>
   </div>
@@ -1341,11 +1340,16 @@ def main() -> None:
   <div class="grid-2" style="margin-top:18px">
     <div class="card">
       <h3>Waveforms</h3>
-      <p>The records behind the examples above download individually as MiniSEED. The full set
-      is not hosted here: the benchmark reads it from the SCEDC and NCEDC public buckets and
-      from the GeoNet, INGV and NOA event services at run time, and
-      <code>scripts/build_examples.py</code> shows the exact path for a given station and
-      window. Every scored window can be refetched that way without an account.</p>
+      <p>The archives serve the waveforms openly, so they are fetched rather than republished:
+      the SCEDC and NCEDC public buckets for the western United States track, the operator's
+      FDSN service for the global track. <a href="benchmark_data.html">Downloading the benchmark
+      data</a> is an executed notebook that pulls the picks, fetches a window from each archive
+      and plots the record with every weight set's pick on it. The records behind the examples
+      above also download individually as MiniSEED.</p>
+<pre><code>fs = S3FileSystem(anon=True)   # western US, no account
+prefix = f"scedc-pds/continuous_waveforms/{{year}}/{{year}}_{{doy:03d}}/"
+
+Client("GEONET").get_waveforms("NZ", "KHZ", "*", "HH?", t0, t1)   # global track</code></pre>
     </div>
     <div class="card">
       <h3>Citing a number from this page</h3>

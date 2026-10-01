@@ -88,7 +88,7 @@ the others' counts with its threshold on the floor, that is reported as a
 ceiling.
 
 **The leaderboard.** These results are published as a scored board,
-[The Board: Seismic Phase Picking](https://seisscoped.org/QuakeScope/benchmark_metrics.html),
+[the Seismic Phase Picking Leaderboard](https://seisscoped.org/QuakeScope/benchmark_metrics.html),
 the catalogue-workflow track of
 [HazEvalHub](https://gaia-hazlab.github.io/hazevalhub). It ranks the four weight
 sets on two tracks, the western United States against ANSS analyst arrivals and
@@ -97,7 +97,9 @@ protocols. It also gives the architecture and training-corpus context with
 citations and this track's scorecard against the nine rules for a benchmark a
 paper can cite. Its methods appendix, which computes every table
 on it, is
-[benchmark_metrics_methods.html](https://seisscoped.org/QuakeScope/benchmark_metrics_methods.html).
+[benchmark_metrics_methods.html](https://seisscoped.org/QuakeScope/benchmark_metrics_methods.html),
+and the picks it scores, with the code to fetch the matching waveforms, are at
+[benchmark_data.html](https://seisscoped.org/QuakeScope/benchmark_data.html).
 Rebuild the board after any notebook re-runs with
 
     pixi run -e dev python scripts/build_leaderboard.py
