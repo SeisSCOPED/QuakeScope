@@ -98,6 +98,7 @@ WCOLOR = {"quakescope2026": "#4b2e83", "jma_wc": "#c2571a",
           "original": "#1b7f79", "instance": "#2f6fb2"}
 INK, STONE, LINE, LAV2 = "#2a1a4f", "#6f6890", "#d8d2e8", "#ece8f7"
 SHARED_THR, DETECT_TOL = 0.3, 0.5
+DETECT_FLOOR = 0.02        # the confidence floor the exported inference runs were kept at
 
 # The two benchmark tracks. They answer different questions, and the ranking
 # differs between them, so the board reports them separately.
@@ -274,6 +275,37 @@ def cite(*keys: str) -> str:
 
 
 # ---------------------------------------------------------------- data
+# Published for download next to the board. The copy under reports/data/ is made
+# from docs/benchmark/results/ on every build, so the files served are the files
+# the numbers were computed from.
+DATA_FILES = [
+    ("us_sequences/model_picks.csv",
+     "Every pick the four weight sets emitted on the western US sequences, with confidences"),
+    ("us_sequences/reference_picks.csv", "The analyst arrivals those were scored against"),
+    ("global_sequences/model_picks.csv",
+     "The same, for the sequences outside the United States"),
+    ("global_sequences/reference_picks.csv", "The operators' reviewed arrivals"),
+    ("detection_full.csv", "Recall, precision and F1 bounds per sequence, phase and weight set"),
+    ("timing_full.csv", "Onset-time statistics per sequence, phase and weight set"),
+    ("calibration_full.csv", "Expected calibration error per study and weight set"),
+    ("phase_quality_full.csv", "Phase swaps and duplicate picks per sequence"),
+    ("summary_matched_budget.csv", "Recall read at an equal pick count"),
+]
+
+
+def publish_data() -> None:
+    """Copy the result tables the board reads into the published directory."""
+    dest = ROOT / "reports" / "data"
+    for rel, _ in DATA_FILES:
+        src = RES / rel
+        if not src.exists():
+            print(f"  warning: {rel} missing, not published")
+            continue
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(src.read_bytes())
+
+
 def load():
     d = pd.read_csv(RES / "detection_full.csv")
     d = d[d.n_ref > 0].copy()
@@ -499,6 +531,7 @@ def fmt(v, nd=3, dash="&mdash;"):
 
 def main() -> None:
     d, t, q, c, sweep, meta = load()
+    publish_data()
     prot = protocol_table(d)
     tim = timing_table(d, t)
     seq_phases = d.groupby(["study", "sequence", "phase"]).ngroups
@@ -610,9 +643,9 @@ def main() -> None:
         <span>QuakeScope <span style="opacity:.7;font-weight:600">picker board</span></span></a>
       <div class="nav-links">
         <a href="#board">The board</a><a href="#tracks">Tracks</a>
-        <a href="#protocols">Thresholds</a><a href="#timing">Accuracy</a>
-        <a href="#metrics">Metrics</a><a href="#standard">Standard</a>
-        <a href="#run">Score your picks</a>
+        <a href="#protocols">Thresholds</a><a href="#examples">Examples</a>
+        <a href="#metrics">Metrics</a><a href="#data">Data</a>
+        <a href="#standard">Standard</a><a href="#run">Score your picks</a>
       </div>
     </nav>
     <div class="hero-inner">
@@ -737,20 +770,14 @@ def main() -> None:
 """)
 
     A(f"""
-  <div class="callout">
-    <h3>The tracks disagree</h3>
-    <p><code>{ours}</code>, the fine-tune this project trained, ranks {us_ours} of
-    {len(WEIGHTS)} in the western United States and {gl_ours} of {len(WEIGHTS)} outside it. A
-    single pooled number hides that, because the out-of-region track carries
-    {track_arrivals['global']:,} of the {arrivals:,} reference arrivals and would set the
-    average on its own. Read the track that matches the catalogue you intend to build.</p>
-    <p>Recall is also not the only axis that decides a choice. On track 2
-    <code>{gl_lead}</code> recovers the most arrivals and is the least accurate on onset time of
-    the four, at {tim_track['global'][gl_time_worst]:.3f}&thinsp;s median error against
-    {tim_track['global'][gl_time_best]:.3f}&thinsp;s for <code>{gl_time_best}</code>. A
-    catalogue built for locations wants onset accuracy. One built for completeness wants
-    recall.</p>
-  </div>
+  <p style="color:#6f6890;font-size:.93rem;max-width:88ch">
+    <code>{ours}</code>, the fine-tune this project trained, ranks {us_ours} of {len(WEIGHTS)}
+    in the western United States and {gl_ours} of {len(WEIGHTS)} outside it, so the track
+    matters more than the pooled average: track 2 carries {track_arrivals['global']:,} of the
+    {arrivals:,} reference arrivals and would set a single number on its own. On track 2 the
+    recall leader <code>{gl_lead}</code> is also the least accurate on onset time,
+    {tim_track['global'][gl_time_worst]:.3f}&thinsp;s median error against
+    {tim_track['global'][gl_time_best]:.3f}&thinsp;s for <code>{gl_time_best}</code>.</p>
 </section>
 
 <section id="protocols">
@@ -1085,6 +1112,65 @@ def main() -> None:
 </section>
 """)
 
+    # ---------------------------------------------------------------- examples
+    ex_path = ROOT / "reports" / "examples" / "examples.json"
+    examples = json.loads(ex_path.read_text()) if ex_path.exists() else []
+    if examples:
+        A(f"""
+<section id="examples">
+  <div class="section-head">
+    <p class="eyebrow">On the record</p>
+    <h2>What the weight sets did on individual arrivals</h2>
+    <p class="lede">Every number above is a count over thousands of arrivals. These are
+    {len(examples)} of them, one record at a time: the waveform the benchmark read, the analyst
+    pick in black, and each weight set's pick where it made one. The cases are chosen by what
+    the models did rather than by hand, so they move only when the picks move. Each record
+    downloads as MiniSEED.</p>
+  </div>
+  <div class="card">
+    <div class="filters" id="example-tabs">""")
+        for k, e in enumerate(examples):
+            A(f'      <button class="chip" type="button" data-ex="{e["id"]}" '
+              f'aria-pressed="{"true" if k == 0 else "false"}">{e["sequence"]} '
+              f'{e["station"].split(".")[1]} {e["phase"]}</button>')
+        A("    </div>")
+        for k, e in enumerate(examples):
+            hid = "" if k == 0 else ' hidden'
+            res = e["residuals_ms"]
+            got = " &middot; ".join(
+                f'<span style="color:{WCOLOR[w]}">{w} {res[w]:+.0f}&thinsp;ms, conf {e["conf"][w]:.2f}</span>'
+                for w in WEIGHTS if w in res)
+            missed = (" &middot; ".join(f'<span style="color:#6f6890">{w} no pick</span>'
+                                        for w in e["missed"]))
+            A(f'    <div class="example" id="ex-{e["id"]}"{hid}>')
+            A(f'      <img src="{e["svg"]}" alt="{e["sequence"]} {e["station"]} {e["phase"]}: '
+              f'waveform with the analyst pick and each weight set\'s pick" loading="lazy">')
+            A(f'      <p class="ex-note"><strong>{e["sequence"]} &middot; {e["station"]} &middot; '
+              f'{e["phase"]}</strong>, {e["time"][:19]} UTC &middot; chosen because {e["why"]}.</p>')
+            A(f'      <p class="ex-note">{got}{" &middot; " + missed if missed else ""}</p>')
+            A(f'      <p class="ex-note"><a href="{e["mseed"]}">download this record</a> '
+              f'({"/".join(e["channels"])}, {e["sampling_rate"]:g}&thinsp;Hz, MiniSEED) &middot; '
+              f'picks for the whole sequence are in the data below</p>')
+            A("    </div>")
+        A("""  </div>
+</section>
+<script>
+(function () {
+  var tabs = document.getElementById("example-tabs");
+  if (!tabs) return;
+  tabs.addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-ex]");
+    if (!b) return;
+    tabs.querySelectorAll("button[data-ex]").forEach(function (o) {
+      o.setAttribute("aria-pressed", String(o === b));
+    });
+    document.querySelectorAll(".example").forEach(function (d) {
+      d.hidden = d.id !== "ex-" + b.dataset.ex;
+    });
+  });
+})();
+</script>""")
+
     # ---------------------------------------------------------------- metrics
     ident = [
         ("Recall", "matched reference arrivals / reference arrivals",
@@ -1219,6 +1305,54 @@ def main() -> None:
     adjudicating disagreements. Relabelling existing curated data would be cheaper and would
     measure memorisation. That is an analyst campaign rather than a software task, and it is the
     critical path to a number a paper can cite.</p>
+  </div>
+</section>
+""")
+
+    # ---------------------------------------------------------------- data
+    A(f"""
+<section id="data">
+  <div class="section-head">
+    <p class="eyebrow">Data</p>
+    <h2>Download what the board is computed from</h2>
+    <p class="lede">Every pick on both sides of every comparison, as CSV, plus the metric tables
+    the page reads. Nothing here needs an account.</p>
+  </div>
+  <div class="table-scroll"><table class="data">
+    <thead><tr><th class="l">file</th><th class="l">what is in it</th><th>rows</th>
+    <th>size</th></tr></thead><tbody>""")
+    for rel, what in DATA_FILES:
+        f = ROOT / "reports" / "data" / rel
+        if not f.exists():
+            continue
+        rows = sum(1 for _ in f.open()) - 1
+        n_bytes = f.stat().st_size
+        size = (f"{n_bytes / 1e6:.1f}&thinsp;MB" if n_bytes >= 1e6
+                else f"{n_bytes / 1e3:.0f}&thinsp;kB")
+        A(f'      <tr><td class="l"><a href="data/{rel}">{rel}</a></td>'
+          f'<td class="l" style="color:#6f6890">{what}</td><td>{rows:,}</td>'
+          f'<td>{size}</td></tr>')
+    A(f"""    </tbody>
+    <caption>The model-pick files are the whole inference run at a {DETECT_FLOOR} confidence
+    floor, not the picks above a threshold, which is what lets any threshold on this page be
+    recomputed without running a model. Column names are the ones
+    <code>scripts/score_picks.py</code> reads.</caption>
+  </table></div>
+  <div class="grid-2" style="margin-top:18px">
+    <div class="card">
+      <h3>Waveforms</h3>
+      <p>The records behind the examples above download individually as MiniSEED. The full set
+      is not hosted here: the benchmark reads it from the SCEDC and NCEDC public buckets and
+      from the GeoNet, INGV and NOA event services at run time, and
+      <code>scripts/build_examples.py</code> shows the exact path for a given station and
+      window. Every scored window can be refetched that way without an account.</p>
+    </div>
+    <div class="card">
+      <h3>Citing a number from this page</h3>
+      <p>Quote the weight set, the track, the protocol and the tolerance, because a recall
+      without those four is not reproducible. The footer carries the notebook, the execution
+      time and the SeisBench version behind every table.</p>
+    </div>
   </div>
 </section>
 """)

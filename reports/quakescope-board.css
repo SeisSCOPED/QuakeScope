@@ -278,3 +278,16 @@ sup.c a { text-decoration: none; }
   .card { padding: 16px 14px; }
   table.board, table.data { font-size: 0.78rem; }
 }
+
+/* ---------- waveform examples ---------- */
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.chip {
+  font-size: 0.8rem; font-weight: 600; padding: 6px 13px; border-radius: 999px;
+  background: var(--lav-2); color: var(--purple); border: 1px solid var(--line);
+  cursor: pointer; font-family: inherit;
+}
+.chip:hover { border-color: var(--peri); }
+.chip[aria-pressed="true"] { background: var(--purple); color: #fff; border-color: var(--purple); }
+.example img { width: 100%; height: auto; display: block; }
+.ex-note { color: var(--stone); font-size: 0.85rem; margin-top: 8px; max-width: 92ch; }
+.ex-note strong { color: var(--ink); }

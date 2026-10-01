@@ -1,0 +1,178 @@
+[
+ {
+  "id": "us-ridgecrest-CICLC-P",
+  "study": "us",
+  "sequence": "Ridgecrest",
+  "station": "CI.CLC",
+  "phase": "P",
+  "time": "2019-07-06 03:40:06.980000",
+  "why": "every weight set recovered this arrival",
+  "channels": [
+   "HHE",
+   "HHN",
+   "HHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "quakescope2026": -11.7,
+   "jma_wc": -11.7,
+   "original": 8.3,
+   "instance": 8.3
+  },
+  "conf": {
+   "quakescope2026": 0.855,
+   "jma_wc": 0.899,
+   "original": 0.926,
+   "instance": 0.453
+  },
+  "missed": [],
+  "mseed": "examples/us-ridgecrest-CICLC-P.mseed",
+  "svg": "examples/us-ridgecrest-CICLC-P.svg"
+ },
+ {
+  "id": "us-mendocino2024-BKRBOW-S",
+  "study": "us",
+  "sequence": "Mendocino 2024",
+  "station": "BK.RBOW",
+  "phase": "S",
+  "time": "2024-12-05 20:00:34.360000",
+  "why": "instance, original, quakescope2026 did not recover this arrival at a 0.3 threshold",
+  "channels": [
+   "HHE",
+   "HHN",
+   "HHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "jma_wc": 200.0
+  },
+  "conf": {
+   "jma_wc": 0.314
+  },
+  "missed": [
+   "instance",
+   "original",
+   "quakescope2026"
+  ],
+  "mseed": "examples/us-mendocino2024-BKRBOW-S.mseed",
+  "svg": "examples/us-mendocino2024-BKRBOW-S.svg"
+ },
+ {
+  "id": "us-ridgecrest-CIWRC2-S",
+  "study": "us",
+  "sequence": "Ridgecrest",
+  "station": "CI.WRC2",
+  "phase": "S",
+  "time": "2019-07-06 03:57:55.040000",
+  "why": "the weight sets disagree by 800 ms on the same arrival",
+  "channels": [
+   "HHE",
+   "HHN",
+   "HHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "quakescope2026": -331.7,
+   "jma_wc": -371.7,
+   "instance": 428.3
+  },
+  "conf": {
+   "quakescope2026": 0.306,
+   "jma_wc": 0.356,
+   "instance": 0.583
+  },
+  "missed": [
+   "original"
+  ],
+  "mseed": "examples/us-ridgecrest-CIWRC2-S.mseed",
+  "svg": "examples/us-ridgecrest-CIWRC2-S.svg"
+ },
+ {
+  "id": "global-thessaly2021-HTTYRN-P",
+  "study": "global",
+  "sequence": "Thessaly 2021",
+  "station": "HT.TYRN",
+  "phase": "P",
+  "time": "2021-03-03 12:20:11.415285",
+  "why": "every weight set recovered this arrival",
+  "channels": [
+   "HHE",
+   "HHN",
+   "HHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "quakescope2026": 114.7,
+   "jma_wc": 114.7,
+   "original": 124.7,
+   "instance": 114.7
+  },
+  "conf": {
+   "quakescope2026": 0.968,
+   "jma_wc": 0.961,
+   "original": 0.982,
+   "instance": 0.989
+  },
+  "missed": [],
+  "mseed": "examples/global-thessaly2021-HTTYRN-P.mseed",
+  "svg": "examples/global-thessaly2021-HTTYRN-P.svg"
+ },
+ {
+  "id": "global-kaikoura2016-NZBSWZ-P",
+  "study": "global",
+  "sequence": "Kaikoura 2016",
+  "station": "NZ.BSWZ",
+  "phase": "P",
+  "time": "2016-11-13 11:22:04.882991",
+  "why": "instance, jma_wc, original did not recover this arrival at a 0.3 threshold",
+  "channels": [
+   "EHE",
+   "EHN",
+   "EHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "quakescope2026": 85.4
+  },
+  "conf": {
+   "quakescope2026": 0.336
+  },
+  "missed": [
+   "instance",
+   "jma_wc",
+   "original"
+  ],
+  "mseed": "examples/global-kaikoura2016-NZBSWZ-P.mseed",
+  "svg": "examples/global-kaikoura2016-NZBSWZ-P.svg"
+ },
+ {
+  "id": "global-norcia2016-IVRM33-S",
+  "study": "global",
+  "sequence": "Norcia 2016",
+  "station": "IV.RM33",
+  "phase": "S",
+  "time": "2016-10-30 07:37:34.440000",
+  "why": "the weight sets disagree by 850 ms on the same arrival",
+  "channels": [
+   "EHE",
+   "EHN",
+   "EHZ"
+  ],
+  "sampling_rate": 100.0,
+  "residuals_ms": {
+   "quakescope2026": -499.8,
+   "jma_wc": -489.8,
+   "original": 350.2,
+   "instance": -99.8
+  },
+  "conf": {
+   "quakescope2026": 0.331,
+   "jma_wc": 0.321,
+   "original": 0.502,
+   "instance": 0.373
+  },
+  "missed": [],
+  "mseed": "examples/global-norcia2016-IVRM33-S.mseed",
+  "svg": "examples/global-norcia2016-IVRM33-S.svg"
+ }
+]
