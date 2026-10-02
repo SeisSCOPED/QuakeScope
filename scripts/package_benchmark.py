@@ -375,7 +375,7 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="dist")
     ap.add_argument("--push", action="store_true", help="upload to Hugging Face")
-    ap.add_argument("--repo", default="gaiahazlab/quakescope-eval-v1")
+    ap.add_argument("--repo", default="gaia-hazlab/quakescope-eval-v1")
     ap.add_argument("--private", action="store_true",
                     help="create the dataset private; make it public when you are ready")
     a = ap.parse_args()
@@ -484,7 +484,7 @@ analyst's arrivals you recover within 0.5 s on the same station and phase.
 
 ```python
 from datasets import load_dataset
-arrivals = load_dataset("gaiahazlab/quakescope-eval-v1", "track2-swarm")["reference"]
+arrivals = load_dataset("gaia-hazlab/quakescope-eval-v1", "track2-swarm")["reference"]
 ```
 
 Waveforms are MiniSEED beside each track, readable with
