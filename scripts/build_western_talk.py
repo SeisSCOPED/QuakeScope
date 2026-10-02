@@ -38,6 +38,7 @@ BASEMAP = ROOT / "scripts" / "data" / "basemap.json"
 WEIGHTS = ["quakescope2026", "jma_wc", "original", "instance"]
 WCOLOR = {"quakescope2026": "#4b2e83", "jma_wc": "#c2571a",
           "original": "#1b7f79", "instance": "#2f6fb2"}
+DETECT_TOL = 0.5          # s, the board's detection tolerance
 
 
 def load():
@@ -63,6 +64,8 @@ def load():
     d["roster"] = pd.read_csv(r) if r.exists() else None
     b = RES / "seisbench_manifest.csv"
     d["sb"] = pd.read_csv(b) if b.exists() else None
+    q = RES / "regime_sequences.csv"
+    d["seq"] = pd.read_csv(q) if q.exists() else None
     return d
 
 
@@ -114,6 +117,80 @@ def station_map(mp: pd.DataFrame, w=1180, h=620) -> str:
         out.append(f'<circle cx="10" cy="{i * 26 + 10}" r="{rad:.1f}" fill="#4b2e83" '
                    f'fill-opacity="{0.18 + 0.5 * frac:.2f}" stroke="#fff" stroke-width="0.35"/>')
         out.append(f'<text x="28" y="{i * 26 + 14}">{n:,} picks</text>')
+    out.append("</g></svg>")
+    return "".join(out)
+
+
+REGIME_COLOUR = {"mainshock-aftershock": "#4b2e83",
+                 "volcano-tectonic": "#c2571a",
+                 "fluid-driven swarm": "#1b7f79"}
+
+
+def world_map(seq, w=1180, h=520) -> str:
+    """The benchmark sequences on one equirectangular frame, coloured by regime.
+
+    Filled markers are scorable today, hollow ones are waiting on their
+    reference. Longitude is shifted so the Pacific sequences do not fall off
+    both edges at once.
+    """
+    # the frame follows the data, with room for the labels; a hardcoded extent
+    # dropped Kaikoura at longitude 173 off the right edge
+    x0, x1 = float(seq.lon.min()) - 12, float(seq.lon.max()) + 12
+    y0, y1 = float(seq.lat.min()) - 14, float(seq.lat.max()) + 10
+    pad = 8
+
+    def sx(lo):
+        return pad + (lo - x0) / (x1 - x0) * (w - 2 * pad)
+
+    def sy(la):
+        return h - pad - (la - y0) / (y1 - y0) * (h - 2 * pad)
+
+    out = [f'<svg viewBox="0 0 {w} {h}" class="map" role="img" '
+           f'aria-label="Benchmark sequences by tectonic context">']
+    try:
+        bm = json.loads(BASEMAP.read_text())
+        for key, cls in (("coast", "coast"), ("states", "border")):
+            for line in bm.get(key, []):
+                run = []
+                for lo, la in line:
+                    if x0 <= lo <= x1 and y0 <= la <= y1:
+                        run.append(f"{sx(lo):.1f},{sy(la):.1f}")
+                    else:
+                        if len(run) > 1:
+                            out.append(f'<polyline class="{cls}" points="{" ".join(run)}"/>')
+                        run = []
+                if len(run) > 1:
+                    out.append(f'<polyline class="{cls}" points="{" ".join(run)}"/>')
+    except Exception:                                              # noqa: BLE001
+        pass
+
+    # labels are placed by hand only where two sequences would overprint
+    NUDGE = {"Fagradalsfjall 2021": (0, -13), "Reykjanes 2023 dike": (0, 11),
+             "Noto swarm 2023": (0, 12), "Noto 2024": (0, -11),
+             "Campi Flegrei 2023": (6, 12), "Etna 2022-2024": (0, 13),
+             "Adriatic 2022": (0, -11), "Norcia 2016": (10, 10),
+             "Samos 2020": (12, 10), "Thessaly 2021": (-6, -11),
+             "Santorini-Amorgos 2025": (14, 12), "Corinth-Thiva 2020-2021": (-18, 12)}
+    for _, r in seq.sort_values("regime_name").iterrows():
+        c = REGIME_COLOUR.get(r.regime_name, "#6f6890")
+        x, y = sx(r.lon), sy(r.lat)
+        if bool(r.scorable):
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{c}" '
+                       f'fill-opacity=".85" stroke="#fff" stroke-width="1.3"/>')
+        else:
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.5" fill="none" '
+                       f'stroke="{c}" stroke-width="2" stroke-dasharray="2.5 2"/>')
+        dx, dy = NUDGE.get(r.label, (0, -10))
+        out.append(f'<text class="seqlab" x="{x + dx:.1f}" y="{y + dy:.1f}" '
+                   f'fill="{c}">{r.label}</text>')
+
+    out.append(f'<g class="maplegend" transform="translate({pad + 10},{h - 96})">')
+    for i, (name, col) in enumerate(REGIME_COLOUR.items()):
+        n = int((seq.regime_name == name).sum())
+        out.append(f'<circle cx="8" cy="{i * 20 + 8}" r="6" fill="{col}" fill-opacity=".85"/>'
+                   f'<text x="22" y="{i * 20 + 12}">{name} ({n})</text>')
+    out.append('<circle cx="8" cy="68" r="5.5" fill="none" stroke="#6f6890" stroke-width="2" '
+               'stroke-dasharray="2.5 2"/><text x="22" y="72">waiting on its reference</text>')
     out.append("</g></svg>")
     return "".join(out)
 
@@ -209,7 +286,7 @@ def main() -> None:
     S.append(f"""
 <section class="slide title">
   <p class="eyebrow">QuakeScope &middot; SeisSCOPED</p>
-  <h1>The western-states deployment, and what we benchmark next</h1>
+  <h1>The western-states deployment</h1>
   <p class="lede">{catalogue:,} phase picks from {stations_with:,} stations, what the
   campaign did not pick and why, how we score it, and the case for a benchmark organised
   by earthquake-sequence regime instead of by place.</p>
@@ -338,7 +415,7 @@ def main() -> None:
     else:
         slide5 = f"""
 <section class="slide">
-  <h2>Manifests against the Parquet, every object counted</h2>
+  <h2>Manifests against the Parquet</h2>
   <div class="cols">
     <div>
       <table class="t big">
@@ -406,46 +483,78 @@ def main() -> None:
 </section>""")
 
     # ---------------------------------------------------------------- 7
+    METRICS = [
+        ("Recall", "matched reference arrivals / reference arrivals", "exact",
+         "The headline number. Unaffected by the reference being incomplete, because a "
+         "missing analyst pick cannot turn a recovered arrival into a missed one."),
+        ("Picks emitted", "count above the threshold", "exact",
+         "Recall alone is gameable by lowering the threshold. Reported beside it always."),
+        ("Recall at an equal pick count", "each model's curve read where all emit the same "
+         "number of picks", "exact",
+         "The only detection comparison that survives a change of threshold. Capped by the "
+         "most conservative model, so it is read with the other two protocols."),
+        ("Precision, F1", "matched / emitted, and their harmonic mean", "lower bound",
+         "An unmatched pick may be a false positive or an arrival the analyst never marked. "
+         "Comparable between models on the same reference, and not comparable with a number "
+         "from a labelled-dataset paper."),
+        ("MCC", "Matthews correlation coefficient", "not computable",
+         "Needs true negatives. A continuous record with an incomplete reference does not "
+         "define them, so a published MCC against a bulletin is not meaningful."),
+        ("MAE and RMSE", "mean absolute and root-mean-square onset residual", "exact",
+         "Reported together because RMSE responds to outliers and MAE does not. One without "
+         "the other hides either a systematic error or a tail."),
+        ("MedianAE", "median absolute residual", "exact",
+         "Outlier-insensitive scatter. It is what a location code feels when most picks are good and a "
+         "few are badly wrong."),
+        ("Median bias", "median signed residual", "exact",
+         "Separates a picker that is consistently late from one that is merely noisy. A "
+         "systematic 0.15 s is invisible in MAE and moves every depth."),
+        ("Gross-error rate", f"fraction of residuals beyond {DETECT_TOL:g}&thinsp;s", "exact",
+         "Computed from residuals matched wider than the detection tolerance. Matched at "
+         "the detection tolerance it would describe the tolerance rather than the picker."),
+        ("Fraction within 0.1&thinsp;s", "share of matched picks inside 0.1&thinsp;s", "exact",
+         "The tolerance PhaseNet was originally scored at, so it is the column that "
+         "compares with the older literature."),
+        ("Reliability curve and ECE", "observed agreement per confidence bin, and its mean gap",
+         "lower bound",
+         "Whether a threshold transfers between models. It usually does not: the four weight "
+         "sets differ by a factor of two in calibration error."),
+        ("Phase swap rate", "arrivals matched by a pick of the other phase", "exact",
+         "The association axis. A P labelled S survives into the event and moves the "
+         "location, which is a different failure from a miss."),
+        ("Duplicate rate", "extra picks within tolerance of an already-matched arrival",
+         "exact", "Invisible in recall, and work for the associator."),
+        ("Model time, memory, cost", "s and MB per station-day, USD per 1,000 station-days",
+         "protocol set", "A model too slow or too large to run across the archive cannot "
+         "build the catalogue. Protocol fixed, no per-weight numbers yet."),
+        ("Pick uncertainty", "a stated error on the arrival time", "not yet scored",
+         "The peak height of a segmentation picker is neither the detection probability nor "
+         "the timing probability, so a model that reports the two separately needs its own "
+         "column."),
+    ]
+    CLS = {"exact": "ok", "lower bound": "warn2", "not computable": "bad",
+           "protocol set": "warn2", "not yet scored": "warn2"}
+    mrows = "".join(
+        f'<tr><td class="l"><strong>{m}</strong></td><td class="l">{defn}</td>'
+        f'<td class="l {CLS[st]}">{st}</td><td class="l rsn">{why}</td></tr>'
+        for m, defn, st, why in METRICS)
     S.append(f"""
-<section class="slide">
+<section class="slide wide">
   <h2>What we score a picker on</h2>
   <p class="lede">Our reference is an operator bulletin, not a labelled test set. An analyst
   picked what a location needed and stopped, so an unmatched model pick may be a false
-  positive or a real arrival nobody marked. That one fact decides which metrics mean
-  anything.</p>
-  <div class="cols">
-    <div>
-      <table class="t">
-        <thead><tr><th>metric</th><th>against a bulletin</th></tr></thead><tbody>
-          <tr><td>Recall</td><td class="ok">exact</td></tr>
-          <tr><td>Picks emitted</td><td class="ok">exact</td></tr>
-          <tr><td>Onset MAE, RMSE, MedianAE, bias</td><td class="ok">exact</td></tr>
-          <tr><td>Gross-error rate</td><td class="ok">exact</td></tr>
-          <tr><td>P/S swap rate (association)</td><td class="ok">exact</td></tr>
-          <tr><td>Duplicate picks</td><td class="ok">exact</td></tr>
-          <tr><td>Precision, F1</td><td class="warn2">lower bound</td></tr>
-          <tr><td>Calibration, ECE</td><td class="warn2">lower bound</td></tr>
-          <tr><td>MCC</td><td class="bad">not computable</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div>
-      <h3>Three ways to set the threshold</h3>
-      <p>A confidence of 0.3 from one model and 0.3 from another are not the same operating
-      point, so the protocol decides the ranking:</p>
-      <ul>
-        <li><strong>One shared threshold.</strong> What most comparisons report. It measures
-        how willing a model is to emit a pick as much as how well it picks.</li>
-        <li><strong>Equal pick count.</strong> Threshold-free, but the count all models can
-        reach is capped by the most conservative one.</li>
-        <li><strong>Each model's own threshold.</strong> What a tuned deployment would run.
-        No held-out split, so it is an upper bound.</li>
-      </ul>
-      <p class="cap">Residuals are matched at 2&thinsp;s and detection at 0.5&thinsp;s:
-      matching at the detection tolerance truncates the residual distribution and makes an
-      outlier rate a statement about the tolerance.</p>
-    </div>
-  </div>
+  positive or a real arrival nobody marked. That one fact decides which of these means
+  anything, and the third column says which.</p>
+  <table class="t metrics">
+    <thead><tr><th class="l">metric</th><th class="l">what it is</th>
+    <th class="l">against a bulletin</th><th class="l">why we report it</th></tr></thead>
+    <tbody>{mrows}</tbody>
+  </table>
+  <p class="cap">Detection is matched at {DETECT_TOL:g}&thinsp;s and residuals at
+  2&thinsp;s. Three threshold protocols are reported together, because a confidence of 0.3
+  from one model and 0.3 from another are not the same operating point: one shared
+  threshold, an equal pick count, and each model at its own best threshold. They disagree,
+  and the disagreement is the result.</p>
 </section>""")
 
     # ---------------------------------------------------------------- 8
@@ -472,7 +581,7 @@ def main() -> None:
     ours_gl = [w for w, _ in tracks["Track 2, outside the United States"]].index("quakescope2026") + 1
     S.append(f"""
 <section class="slide">
-  <h2>The leaderboard, and why one number is not enough</h2>
+  <h2>The leaderboard inverts between tracks</h2>
   <div class="cols">
     <div>{panel_us}</div>
     <div>{panel_gl}</div>
@@ -486,42 +595,38 @@ def main() -> None:
 </section>""")
 
     # ---------------------------------------------------------------- 9
-    S.append("""
-<section class="slide">
-  <h2>Place-based benchmarks run out</h2>
-  <div class="cols">
+    seq = d["seq"]
+    S.append(f"""
+<section class="slide wide">
+  <h2>Where the benchmark sequences are</h2>
+  {world_map(seq)}
+  <div class="cols3" style="margin-top:10px">
     <div>
-      <p class="big-claim">Every sequence we score is a place, and the training corpora are
-      places too.</p>
-      <ul>
-        <li>INSTANCE holds Etna and Campi Flegrei from 2005 to 2020. VCSEIS holds Alaska,
-        Hawaii, northern California and the Cascades. CREW is global at regional distance.
-        A benchmark drawn from the same places measures memory of a place.</li>
-        <li>Holding out a <em>time window</em> at a known place leaves that place's earlier
-        years in training. Volcanoes and swarms recur at the same place, so for those the
-        hold-out has to be the place itself, at all times, and the cost in training data has
-        to be accepted.</li>
-        <li>Our sequences are also all mainshock-aftershock. Seven of eight on the current
-        board are a cascade or a doublet. A picker that handles an aftershock cascade has
-        not been shown to handle a swarm migrating for months.</li>
-      </ul>
+      <h3>Mainshock-aftershock</h3>
+      <p class="cap">Events seconds apart, overlapping codas, a network that saturates in
+      the first hours. The regime every published picker benchmark already covers.</p>
     </div>
     <div>
-      <h3>What a catalogue actually has to survive</h3>
-      <table class="t">
-        <thead><tr><th>regime</th><th>what breaks</th></tr></thead><tbody>
-          <tr><td>Mainshock-aftershock</td><td>events seconds apart, overlapping codas, a
-          saturating network</td></tr>
-          <tr><td>Volcano-tectonic</td><td>emergent onsets, low magnitudes, long-period
-          events a picker was never trained on</td></tr>
-          <tr><td>Fluid-driven swarm</td><td>months of elevated rate, no mainshock, shallow
-          sources and a dense local array</td></tr>
-        </tbody>
-      </table>
-      <p class="cap">These are different failure modes, not different places. Scoring by
-      regime is what tells a deployment which one it is buying.</p>
+      <h3>Volcano-tectonic</h3>
+      <p class="cap">Emergent onsets, low magnitudes, event types a picker trained on
+      tectonic earthquakes has never seen. Held out as places rather than time windows,
+      because a volcano recurs where it is and the curated corpora already hold its earlier
+      years.</p>
+    </div>
+    <div>
+      <h3>Fluid-driven swarm</h3>
+      <p class="cap">Months of elevated rate with no mainshock, shallow sources, a dense
+      local array. Includes the two induced sequences, Salton Sea and Jones-Guthrie, where
+      the driver is injection rather than magma.</p>
     </div>
   </div>
+  <p class="cap">{len(seq)} sequences, from {seq.loc[seq.lat.idxmax(), 'label']} in the
+  north to {seq.loc[seq.lat.idxmin(), 'label']} in the south.
+  {int(seq.scorable.sum())} are scorable today; the hollow markers are waiting on their
+  reference, not on a model. Spreading a benchmark across tectonic context rather than
+  across places is what lets it speak to generalisation. These three regimes fail a picker
+  in different ways, and a model that handles an aftershock cascade has not been shown to
+  handle a swarm that migrates for months.</p>
 </section>""")
 
     # ---------------------------------------------------------------- 10
@@ -559,7 +664,7 @@ def main() -> None:
         if regime == "fluid-driven swarm":
             ready |= NEW
             total += len(NEW)
-        return (f'<h3>{title} &mdash; {len(ready)} ready of {total}</h3>'
+        return (f'<h3>{title} ({len(ready)} ready of {total})</h3>'
                 f'<table class="t"><thead><tr><th class="l">sequence</th><th>P</th><th>S</th>'
                 f'<th class="l">status</th></tr></thead><tbody>{rows}</tbody></table>'
                 f'<p class="cap">{note}</p>')
@@ -581,7 +686,7 @@ def main() -> None:
                        for _, r in sb.head(5).iterrows()) if sb is not None else ""
     S.append(f"""
 <section class="slide wide">
-  <h2>The next benchmark: three regimes, none of it SeisBench-curated</h2>
+  <h2>The next benchmark scores three regimes</h2>
   <div class="cols3">
     <div>{msas}</div>
     <div>{vt}</div>
@@ -669,6 +774,8 @@ table.t th{{text-align:right;padding:7px 10px;color:var(--purple);font-size:.72r
 table.t td{{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line)}}
 table.t th:first-child,table.t td:first-child,table.t td.l{{text-align:left}}
 table.t.big td{{font-size:1.05rem;padding:10px}}
+table.t.metrics{{font-size:.78rem}} table.t.metrics td{{padding:5px 9px;white-space:normal;vertical-align:top}}
+table.t.metrics td.rsn{{color:var(--stone);max-width:46ch}}
 td.lead{{font-weight:700;background:rgba(109,91,208,.12)}}
 td.ok,.ok{{color:var(--good);font-weight:600}}
 td.warn2{{color:var(--warn);font-weight:600}}
@@ -684,6 +791,8 @@ svg.map{{width:100%;height:auto;background:var(--paper);border:1px solid var(--l
 .coast{{fill:none;stroke:#b9b4cc;stroke-width:.8}}
 .border{{fill:none;stroke:#d8d4e4;stroke-width:.6}}
 .key text{{font-size:11px;fill:var(--stone);font-family:Manrope,sans-serif}}
+.seqlab{{font-size:10.5px;font-weight:600;font-family:Manrope,sans-serif;text-anchor:middle;paint-order:stroke;stroke:#fff;stroke-width:3px}}
+.maplegend text{{font-size:11.5px;fill:var(--ink);font-family:Manrope,sans-serif}}
 .nav{{position:fixed;left:0;right:0;bottom:0;display:flex;gap:7px;justify-content:center;
   padding:14px;background:linear-gradient(transparent,var(--lav) 42%);z-index:9}}
 .nav button{{width:26px;height:5px;border:0;border-radius:3px;background:var(--line);cursor:pointer}}

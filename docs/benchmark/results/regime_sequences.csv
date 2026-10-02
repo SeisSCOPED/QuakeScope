@@ -1,0 +1,22 @@
+key,label,regime,lat,lon,mag,role,scorable,ref_rm_covered_P,ref_rm_covered_S,regime_name
+kaikoura_2016,Kaikoura 2016,msas,-42.69,173.02,7.8,regression,True,357,458,mainshock-aftershock
+norcia_2016,Norcia 2016,msas,42.83,13.11,6.5,regression,True,701,656,mainshock-aftershock
+thessaly_2021,Thessaly 2021,msas,39.75,22.2,6.3,regression,True,395,331,mainshock-aftershock
+kahramanmaras_2023,Kahramanmaras 2023,msas,37.23,37.01,7.8,acceptance,False,101,37,mainshock-aftershock
+noto_2024,Noto 2024,msas,37.5,137.27,7.5,acceptance,False,49,23,mainshock-aftershock
+hualien_2024,Hualien 2024,msas,23.82,121.56,7.4,acceptance,False,38,15,mainshock-aftershock
+petrinja_2020,Petrinja 2020,msas,45.42,16.26,6.4,acceptance,True,152,142,mainshock-aftershock
+samos_2020,Samos 2020,msas,37.9,26.79,7.0,dev,False,34,24,mainshock-aftershock
+adriatic_2022,Adriatic 2022,msas,43.96,13.32,5.5,dev,True,400,357,mainshock-aftershock
+reykjanes_2023,Reykjanes 2023 dike,vt,63.87,-22.38,,acceptance,False,25,18,volcano-tectonic
+fagradalsfjall_2021,Fagradalsfjall 2021,vt,63.9,-22.27,,acceptance,False,16,8,volcano-tectonic
+la_palma_2021,La Palma 2021,vt,28.61,-17.87,,acceptance,True,940,951,volcano-tectonic
+santorini_2025,Santorini-Amorgos 2025,vt,36.6,25.6,,acceptance,True,1132,1067,volcano-tectonic
+etna_2022_2024,Etna 2022-2024,vt,37.75,15.0,,dev,True,597,395,volcano-tectonic
+west_bohemia_2018,West Bohemia 2018,swarm,50.24,12.45,,rebuilt,True,1208,1353,fluid-driven swarm
+maurienne_2017,Maurienne 2017-2019,swarm,45.3,6.3,,rebuilt,True,706,724,fluid-driven swarm
+noto_swarm_2023,Noto swarm 2023,swarm,37.5,137.27,6.5,acceptance,False,0,0,fluid-driven swarm
+campi_flegrei_2023,Campi Flegrei 2023,swarm,40.83,14.14,,acceptance,False,30,26,fluid-driven swarm
+corinth_thiva_2020,Corinth-Thiva 2020-2021,swarm,38.2,23.1,,dev,False,108,87,fluid-driven swarm
+salton_sea_2016,Salton Sea 2016,swarm,33.28,-115.6,,new,True,641,580,fluid-driven swarm
+jones_guthrie_2014,Jones-Guthrie 2014-2015,swarm,35.8,-97.3,,new,True,276,126,fluid-driven swarm
