@@ -93,29 +93,29 @@ svg.map{width:100%;height:auto;background:var(--paper);border:1px solid var(--li
 <section class="slide title">
   <p class="eyebrow">QuakeScope &middot; SeisSCOPED</p>
   <h1>The western-states deployment</h1>
-  <p class="lede">1,306,587,886 phase picks from 12,697 stations, what the
+  <p class="lede">1,806,866,911 phase picks from 12,697 stations, what the
   campaign did not pick and why, how we score it, and the case for a benchmark organised
   by earthquake-sequence regime instead of by place.</p>
   <p class="meta">2026-10-02 &middot; built from the campaign's own manifests and Parquet
-  footers &middot; <code>07223c1</code></p>
+  footers &middot; <code>e8f2c00</code></p>
 </section>
 <section class="slide">
   <h2>What the western campaign produced</h2>
   <div class="stats4">
-    <div class="stat"><div class="n">1.31B+</div><div class="k">picks in the catalogue (floor)</div></div>
-    <div class="stat"><div class="n">675M</div><div class="k">P arrivals (51.7%)</div></div>
-    <div class="stat"><div class="n">631M</div><div class="k">S arrivals (48.3%)</div></div>
+    <div class="stat"><div class="n">1.81B</div><div class="k">picks in the catalogue</div></div>
+    <div class="stat"><div class="n">934M</div><div class="k">P arrivals (51.7%)</div></div>
+    <div class="stat"><div class="n">873M</div><div class="k">S arrivals (48.3%)</div></div>
     <div class="stat"><div class="n">12,697</div><div class="k">stations with picks</div></div>
   </div>
   <div class="cols">
     <div>
       <h3>How these are counted</h3>
       <ul>
-        <li>The pick total is read from the footers of 276,741 of the 488,937 Parquet objects that exist, so it is a floor rather than the total. The remaining 212,196 are being counted now.</li>
+        <li>The pick total is read from the footer of every one of the 488,937 Parquet objects. No sampling, no estimate.</li>
         <li>The P and S split is measured on 15,704,001 picks read from
         2,616 files stratified across every network, 1.20%
         of the catalogue, with no failed reads. Applied to the exact total it gives
-        675,392,574 P and 631,195,312 S.</li>
+        933,993,425 P and 872,873,486 S.</li>
         <li>101,005 shard manifests record 14,103,780 station-days of work,
         24,008 station epochs were in scope across 119 networks.</li>
         <li><strong>Every pick here was made by PhaseNet with the <code>original</code>
@@ -174,34 +174,35 @@ svg.map{width:100%;height:auto;background:var(--paper);border:1px solid var(--li
   </div>
 </section>
 <section class="slide">
-  <h2>Do the manifests and the Parquet agree?</h2>
+  <h2>Manifests against the Parquet</h2>
   <div class="cols">
     <div>
       <table class="t big">
         <tbody>
           <tr><td>manifests say workers wrote</td><td>1,737,169,720</td></tr>
-          <tr><td>Parquet footers read so far</td><td>1,306,587,886</td></tr>
-          <tr><td>objects counted</td><td>276,741 of 488,937</td></tr>
+          <tr><td>Parquet footers hold</td><td>1,806,866,911</td></tr>
+          <tr><td class="bad">difference</td>
+              <td class="bad">-69,697,191 (-4.0%)</td></tr>
         </tbody>
       </table>
-      <p class="big-claim">These two are not yet comparable. The manifests cover the whole
-      campaign; the footers cover 57% of the objects. The count is
-      running and the answer belongs on this slide, not an estimate.</p>
+      <p>Both sides now cover the same thing: all 488,937 objects in
+      <code>western/picks/</code> and all 101,005 shard manifests.</p>
+      <p>Repair campaigns re-processing station-days would explain a manifest surplus, and
+      they do not: of 14,103,780 manifest records, 14,102,013
+      are distinct station-days and only 1,673 were processed more
+      than once.</p>
     </div>
     <div>
-      <h3>What the comparison is for</h3>
+      <h3>What it means</h3>
       <ul>
-        <li>The manifests are what the workers reported writing. The footers are what is
-        actually in the bucket. A gap in either direction is a defect: picks that never
-        landed, or manifests that over-report.</li>
-        <li>We have found four ways a station-day can be reported as done without its
-        output surviving. The largest, resumed shards overwriting their own output, cost
-        25.3M picks before it was fixed. This comparison is how we would see a fifth.</li>
-        <li>The dashboard's cached footer count stops on the clock each run, so it holds
-        276,741 of 488,937 objects and its headline should not be quoted as the
-        catalogue size.</li>
-        <li>Whatever the answer, it does not move a benchmark result: those are scored on
-        waveforms re-picked from the archive, not on the catalogue.</li>
+        <li>
+        A footer surplus means the manifests under-report, most likely work whose worker was preempted after writing Parquet and before writing its manifest.
+        </li>
+        <li>The dashboard's cached count covers 276,741 of 488,937 objects
+        because it stops on the clock, so its headline is an undercount that catches up.
+        This slide does not use it.</li>
+        <li>No benchmark result depends on this: they are scored on waveforms re-picked
+        from the archive, not on the catalogue.</li>
       </ul>
     </div>
   </div>
