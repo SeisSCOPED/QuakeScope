@@ -436,6 +436,7 @@ def gather(s3, b, campaigns):
     per_station_month = defaultdict(lambda: defaultdict(dict))
     camp_rows, total_picks, total_bytes, total_files = [], 0, 0, 0
     sampled = []
+    uncounted = 0      # Parquet objects whose footers this run did not reach
     unreadable = []
 
     # One catalogue may be fed by several queues (western by western-early,
@@ -502,6 +503,7 @@ def gather(s3, b, campaigns):
             per_station_month[str(tid)][name][int(ym)] = int(n)
         if ps["sampled"]:
             sampled.append((name,) + ps["sampled"])
+        uncounted += int(ps.get("partial") or 0)
         if ps.get("partial"):
             # Counted, but not all of it. Say so - a number short by a known
             # amount is useful; the same number presented as complete is not.
@@ -629,7 +631,7 @@ def gather(s3, b, campaigns):
 
     return dict(spend_doc=spend_doc, per_station=per_station, per_day=per_day,
                 per_station_month=per_station_month, camps=camp_rows,
-                sampled=sampled, unreadable=unreadable,
+                sampled=sampled, unreadable=unreadable, uncounted=uncounted,
                 picks=total_picks, bytes=total_bytes, files=total_files,
                 coords=coords, vcpu_now=vcpu_now, vcpu_hours=vcpu_hours,
                 status=status, vcpu_partial=truncated[0])
@@ -1084,9 +1086,14 @@ def render(g, examples):
                          "a list rate, not a bill"))
     spend = g["vcpu_hours"] * _rate
     tiles = [
-        ("Picks in the catalogue", f"{g['picks']:,}",
-         "counted from the Parquet footers - exact, including work whose "
-         "worker was preempted before it wrote a manifest"),
+        ("Picks in the catalogue",
+         ("\u2265 " if g.get("uncounted") else "") + f"{g['picks']:,}",
+         (f"a FLOOR: {g['uncounted']:,} of {g['files']:,} Parquet objects were not reached "
+          f"this run, so the catalogue holds more than this. The count catches up as the "
+          f"cache fills"
+          if g.get("uncounted") else
+          "counted from the footer of every Parquet object - exact, including work whose "
+          "worker was preempted before it wrote a manifest")),
         ("Shards complete", f"{done:,} / {planned:,}", f"{pct:.2f}% of the queue"),
         ("Catalogue size", human(g["bytes"]),
          f"{g['files']:,} Parquet object" + ("" if g["files"] == 1 else "s")),

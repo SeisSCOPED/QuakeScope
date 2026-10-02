@@ -39,6 +39,7 @@ WEIGHTS = ["quakescope2026", "jma_wc", "original", "instance"]
 WCOLOR = {"quakescope2026": "#4b2e83", "jma_wc": "#c2571a",
           "original": "#1b7f79", "instance": "#2f6fb2"}
 DETECT_TOL = 0.5          # s, the board's detection tolerance
+BUCKET_HTTP = "https://quakescope-picks-2026.s3.us-east-2.amazonaws.com"
 
 
 def load():
@@ -66,6 +67,8 @@ def load():
     d["sb"] = pd.read_csv(b) if b.exists() else None
     q = RES / "regime_sequences.csv"
     d["seq"] = pd.read_csv(q) if q.exists() else None
+    f = SP / "station_table_fix.json"
+    d["fix"] = json.loads(f.read_text()) if f.exists() else None
     return d
 
 
@@ -236,6 +239,15 @@ def main() -> None:
     n_p, n_s = round(catalogue * p_frac), round(catalogue * s_frac)
     gap = manifest_picks - catalogue
 
+    fix = d["fix"]
+    fixnote = ""
+    if fix:
+        fixnote = (f" The station table was completed on "
+                   f"{fix['fixed_on'][:4]}-{fix['fixed_on'][4:6]}-{fix['fixed_on'][6:8]}: it "
+                   f"listed {fix['before']:,} stations and the catalogue held picks on "
+                   f"{fix['added_with_picks']:,} that were not in it, carrying "
+                   f"{fix['added_picks']:,} picks. It now lists {fix['after']:,}. Anyone who "
+                   f"pulled it before that date should pull it again.")
     with_coords = int(mp.latitude.notna().sum())
     topn = (mp[mp.latitude.notna() & (mp.picks > 0)]
             .sort_values("picks", ascending=False).head(20))
@@ -339,13 +351,19 @@ def main() -> None:
   <h2>Where the picks came from</h2>
   {station_map(mp)}
   <p class="cap"><strong>Western campaign only, PhaseNet <code>original</code> weights at a
-  0.2 threshold.</strong> {with_coords:,} of the {stations_seen:,} stations the campaign processed
-  carry coordinates in the campaign station table and produced at least one pick. Circle
+  0.2 threshold.</strong> {stations_with:,} of the {stations_seen:,} stations the campaign
+  processed produced at least one pick, and all {with_coords:,} now carry coordinates in the
+  station table. Circle
   area follows pick count. The heaviest producers are {top_blurb}. Borehole instruments
   dominate the top of the list: {pb_share:.0f}% of the twenty largest counts are
   Plate&nbsp;Boundary&nbsp;Observatory stations, which sit in quiet holes and detect far
   more than a surface sensor beside them. Coastline and state borders from Natural
   Earth.</p>
+  <p class="cap src">Station coordinates:
+  <a href="{BUCKET_HTTP}/western/stations.parquet">{BUCKET_HTTP}/western/stations.parquet</a>
+  &middot; which stations produced picks, and how many:
+  <a href="{BUCKET_HTTP}/western/manifests/">{BUCKET_HTTP}/western/manifests/</a>
+  &middot; both public-read, no account.{fixnote}</p>
 </section>""")
 
     # ---------------------------------------------------------------- 4
@@ -786,7 +804,8 @@ td.warn2{{color:var(--warn);font-weight:600}}
 td.bad,.bad{{color:var(--bad);font-weight:600}}
 td.src{{font-size:.76rem;color:var(--stone);text-align:left}}
 .dot{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}}
-.cap{{color:var(--stone);font-size:1rem;max-width:104ch;margin-top:8px}}
+.cap.src{{font-size:.86rem;word-break:break-all}}
+  .cap{{color:var(--stone);font-size:1rem;max-width:104ch;margin-top:8px}}
 code{{font-family:ui-monospace,Menlo,monospace;font-size:.86em;background:rgba(75,46,131,.09);
   padding:1px 5px;border-radius:4px;color:var(--deep)}}
 a{{color:var(--peri)}}
