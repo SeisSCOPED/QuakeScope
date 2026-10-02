@@ -443,26 +443,51 @@ def stage_waveforms() -> None:
 
 # ------------------------------------------------------------------ stage 3
 def stage_models() -> None:
+    """Run each weight set over the stored windows, checkpointing as it goes.
+
+    264 station-runs take longer than a background slot, and writing only at the
+    end loses everything when one is cut short. Completed (weight, file) pairs
+    are appended to a part file and skipped on restart.
+    """
     import seisbench.models as sbm
     sta = pd.read_csv(OUT / "stations.csv")
-    rows = []
+    part = OUT / "model_picks.part.csv"
+    done: set[tuple[str, str]] = set()
+    if part.exists():
+        prev = pd.read_csv(part)
+        done = set(zip(prev.weights, prev.file))
+        log(f"  resuming: {len(done)} (weight, window) pairs already scored, "
+            f"{len(prev):,} picks")
+    header = not part.exists()
+
     for name in WEIGHTS:
-        log(f"  {name}")
-        model = sbm.PhaseNet.from_pretrained(name)
-        model.eval()
+        model = None
         for _, r in sta.iterrows():
+            if (name, r.file) in done:
+                continue
             path = CACHE / r.file
             if not path.exists():
                 continue
+            if model is None:                      # load only when there is work
+                log(f"  {name}")
+                model = sbm.PhaseNet.from_pretrained(name)
+                model.eval()
             st = obspy.read(str(path))
             picks = model.classify(st, P_threshold=DETECT_FLOOR,
                                    S_threshold=DETECT_FLOOR).picks
-            for p in picks:
-                rows.append(dict(sequence=r.sequence, weights=name, station=r.station,
-                                 phase=p.phase[:1].upper(), time=p.peak_time.datetime,
-                                 conf=float(p.peak_value)))
+            rows = [dict(sequence=r.sequence, weights=name, station=r.station,
+                         file=r.file, phase=p.phase[:1].upper(),
+                         time=p.peak_time.datetime, conf=float(p.peak_value))
+                    for p in picks]
+            pd.DataFrame(rows or [dict(sequence=r.sequence, weights=name, station=r.station,
+                                       file=r.file, phase="", time=pd.NaT, conf=float("nan"))]
+                         ).to_csv(part, mode="a", header=header, index=False)
+            header = False
             log(f"    {r.station:12s} w{r.window} {len(picks):5d} picks")
-    out = pd.DataFrame(rows).sort_values(["sequence", "weights", "station", "time"])
+
+    out = pd.read_csv(part).dropna(subset=["phase"])
+    out = out[out.phase != ""].drop(columns=["file"])
+    out = out.sort_values(["sequence", "weights", "station", "time"])
     out.to_csv(OUT / "model_picks.csv", index=False)
     log(f"\n  {len(out):,} model picks -> {(OUT / 'model_picks.csv').relative_to(ROOT)}")
     log(out[out.conf >= 0.3].groupby(["sequence", "weights"]).size()
