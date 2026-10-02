@@ -67,60 +67,144 @@ def load():
     d["sb"] = pd.read_csv(b) if b.exists() else None
     q = RES / "regime_sequences.csv"
     d["seq"] = pd.read_csv(q) if q.exists() else None
+    o = SP / "obs_station_map.parquet"
+    d["obs"] = pd.read_parquet(o) if o.exists() else None
+    om = SP / "obs_meta.json"
+    d["obs_meta"] = json.loads(om.read_text()) if om.exists() else None
     f = SP / "station_table_fix.json"
     d["fix"] = json.loads(f.read_text()) if f.exists() else None
     return d
 
 
 # ------------------------------------------------------------------ map
-def station_map(mp: pd.DataFrame, w=1180, h=620) -> str:
-    """Stations that produced picks, sized by how many."""
-    g = mp[mp.latitude.notna() & (mp.picks > 0)].copy()
-    x0, x1 = float(g.longitude.min()) - 1.0, float(g.longitude.max()) + 1.0
-    y0, y1 = float(g.latitude.min()) - 1.0, float(g.latitude.max()) + 1.0
-    pad = 46
+WEIGHT_COLOUR = {"original": "#4b2e83", "obs": "#c2571a"}
+WEIGHT_WHAT = {"original": "land, PhaseNet <code>original</code>",
+               "obs": "ocean bottom, PhaseNet <code>obs</code> (PickBlue)"}
+
+
+def station_map(mp, obs=None, w=1180, h=620) -> str:
+    """Western and ocean-bottom stations on one pannable, zoomable frame.
+
+    Colour is the weight set that produced the picks, which is the honest
+    grouping: the two campaigns ran different models and their numbers are not
+    interchangeable. The frame opens on the western states and the Cascadia
+    margin; the ocean-bottom campaign reaches the whole globe, so the control
+    to fit everything is there rather than making that the default view.
+    """
+    land = mp[mp.latitude.notna() & (mp.picks > 0)].copy()
+    land["w"] = "original"
+    parts = [land[["picks", "latitude", "longitude", "w"]]]
+    if obs is not None:
+        sea = obs[obs.latitude.notna() & (obs.picks > 0)].copy()
+        sea["w"] = "obs"
+        parts.append(sea[["picks", "latitude", "longitude", "w"]])
+    pts = pd.concat(parts, ignore_index=True)
+
+    # one world-wide linear projection; zoom is a transform on top of it, so a
+    # marker never has to be re-projected in the browser
+    X0, X1, Y0, Y1 = -180.0, 180.0, -85.0, 85.0
+    SCALE = 12.0                       # internal units per degree of longitude
 
     def sx(lo):
-        return pad + (lo - x0) / (x1 - x0) * (w - 2 * pad)
+        return (lo - X0) * SCALE
 
     def sy(la):
-        return h - pad - (la - y0) / (y1 - y0) * (h - 2 * pad)
+        return (Y1 - la) * SCALE
 
-    out = [f'<svg viewBox="0 0 {w} {h}" class="map" role="img" '
-           f'aria-label="Stations that produced picks in the western campaign">']
+    world_w, world_h = (X1 - X0) * SCALE, (Y1 - Y0) * SCALE
+    opening = (-128.0, -103.0, 30.0, 52.0)      # the western states and the margin
+
+    def fit(x0, x1, y0, y1):
+        bw, bh = (x1 - x0) * SCALE, (y1 - y0) * SCALE
+        k = min(w / bw, h / bh)
+        return k, (w - bw * k) / 2 - sx(x0) * k, (h - bh * k) / 2 - sy(y1) * k
+
+    k0, tx0, ty0 = fit(*opening)
+    kw, twx, twy = fit(X0, X1, Y0, Y1)
+
+    out = [f'<div class="mapwrap"><div class="mapbtns">'
+           f'<button type="button" data-view="west">western states</button>'
+           f'<button type="button" data-view="world">fit everything</button>'
+           f'<span class="hint">scroll to zoom, drag to pan</span></div>'
+           f'<svg viewBox="0 0 {w} {h}" class="map zoomable" role="img" '
+           f'aria-label="Stations that produced picks, coloured by the weight set">'
+           f'<rect width="{w}" height="{h}" fill="transparent"/>'
+           f'<g id="panzoom" transform="translate({tx0:.2f},{ty0:.2f}) scale({k0:.4f})">']
     try:
         bm = json.loads(BASEMAP.read_text())
         for key, cls in (("coast", "coast"), ("states", "border")):
             for line in bm.get(key, []):
-                run = []
-                for lo, la in line:
-                    if x0 <= lo <= x1 and y0 <= la <= y1:
-                        run.append(f"{sx(lo):.1f},{sy(la):.1f}")
-                    else:
-                        if len(run) > 1:
-                            out.append(f'<polyline class="{cls}" points="{" ".join(run)}"/>')
-                        run = []
-                if len(run) > 1:
-                    out.append(f'<polyline class="{cls}" points="{" ".join(run)}"/>')
+                pt = " ".join(f"{sx(lo):.1f},{sy(la):.1f}" for lo, la in line)
+                if pt:
+                    out.append(f'<polyline class="{cls}" points="{pt}"/>')
     except Exception:                                              # noqa: BLE001
         pass
 
-    big = g.picks.max()
-    for _, r in g.sort_values("picks").iterrows():
-        frac = (r.picks / big) ** 0.33
-        rad = 1.6 + 7.5 * frac
-        out.append(f'<circle cx="{sx(r.longitude):.1f}" cy="{sy(r.latitude):.1f}" '
-                   f'r="{rad:.1f}" fill="#4b2e83" fill-opacity="{0.18 + 0.5 * frac:.2f}" '
-                   f'stroke="#fff" stroke-width="0.35"/>')
-    # a size key, drawn from the data rather than invented
-    out.append(f'<g class="key" transform="translate({pad + 6},{pad + 4})">')
-    for i, n in enumerate([1_000, 100_000, 5_000_000]):
-        frac = (n / big) ** 0.33
-        rad = 1.6 + 7.5 * frac
-        out.append(f'<circle cx="10" cy="{i * 26 + 10}" r="{rad:.1f}" fill="#4b2e83" '
-                   f'fill-opacity="{0.18 + 0.5 * frac:.2f}" stroke="#fff" stroke-width="0.35"/>')
-        out.append(f'<text x="28" y="{i * 26 + 14}">{n:,} picks</text>')
-    out.append("</g></svg>")
+    big = float(pts.picks.max())
+    for wname in ("original", "obs"):                 # ocean bottom drawn last
+        g = pts[pts.w == wname]
+        c = WEIGHT_COLOUR[wname]
+        for _, r in g.sort_values("picks").iterrows():
+            frac = (r.picks / big) ** 0.33
+            out.append(f'<circle class="stn" cx="{sx(r.longitude):.1f}" '
+                       f'cy="{sy(r.latitude):.1f}" r="{(1.4 + 7.0 * frac) / k0:.2f}" '
+                       f'fill="{c}" fill-opacity="{0.2 + 0.5 * frac:.2f}" '
+                       f'stroke="#fff" stroke-width="{0.4 / k0:.2f}"/>')
+    out.append("</g>")
+
+    out.append(f'<g class="maplegend" transform="translate(16,{h - 76})">')
+    for i, wname in enumerate(("original", "obs")):
+        g = pts[pts.w == wname]
+        out.append(f'<circle cx="9" cy="{i * 24 + 9}" r="7" fill="{WEIGHT_COLOUR[wname]}" '
+                   f'fill-opacity=".75"/>'
+                   f'<text x="26" y="{i * 24 + 14}">{wname}: {len(g):,} stations, '
+                   f'{int(g.picks.sum()):,} picks</text>')
+    out.append("</g></svg></div>")
+    out.append(f"""<script>
+(function () {{
+  var g = document.getElementById("panzoom");
+  if (!g) return;
+  var svg = g.closest("svg");
+  var views = {{west: [{k0:.4f}, {tx0:.2f}, {ty0:.2f}],
+                world: [{kw:.4f}, {twx:.2f}, {twy:.2f}]}};
+  var k = views.west[0], tx = views.west[1], ty = views.west[2];
+  function apply() {{
+    g.setAttribute("transform", "translate(" + tx + "," + ty + ") scale(" + k + ")");
+    // keep markers a constant size on screen as the frame zooms
+    var r0 = {k0:.4f} / k;
+    g.querySelectorAll(".stn").forEach(function (c) {{
+      if (!c.dataset.r) {{ c.dataset.r = c.getAttribute("r"); c.dataset.s = c.getAttribute("stroke-width"); }}
+      c.setAttribute("r", c.dataset.r * r0);
+      c.setAttribute("stroke-width", c.dataset.s * r0);
+    }});
+  }}
+  function pt(ev) {{
+    var b = svg.getBoundingClientRect();
+    return [(ev.clientX - b.left) / b.width * {w}, (ev.clientY - b.top) / b.height * {h}];
+  }}
+  svg.addEventListener("wheel", function (ev) {{
+    ev.preventDefault();
+    var p = pt(ev), f = Math.exp(-ev.deltaY * 0.0015), nk = Math.min(400, Math.max({kw:.4f} * 0.9, k * f));
+    tx = p[0] - (p[0] - tx) * (nk / k);
+    ty = p[1] - (p[1] - ty) * (nk / k);
+    k = nk; apply();
+  }}, {{passive: false}});
+  var drag = null;
+  svg.addEventListener("pointerdown", function (ev) {{ drag = pt(ev); svg.setPointerCapture(ev.pointerId); }});
+  svg.addEventListener("pointermove", function (ev) {{
+    if (!drag) return;
+    var p = pt(ev); tx += p[0] - drag[0]; ty += p[1] - drag[1]; drag = p; apply();
+  }});
+  svg.addEventListener("pointerup", function (ev) {{ drag = null; svg.releasePointerCapture(ev.pointerId); }});
+  document.querySelectorAll(".mapbtns button").forEach(function (b) {{
+    b.addEventListener("click", function (ev) {{
+      ev.stopPropagation();
+      var v = views[b.dataset.view]; k = v[0]; tx = v[1]; ty = v[2]; apply();
+    }});
+  }});
+  apply();
+}})();
+</script>""")
     return "".join(out)
 
 
@@ -239,6 +323,12 @@ def main() -> None:
     n_p, n_s = round(catalogue * p_frac), round(catalogue * s_frac)
     gap = manifest_picks - catalogue
 
+    obs_df = d["obs"]
+    obs_stations = obs_picks = obs_near = 0
+    if obs_df is not None:
+        og = obs_df[obs_df.latitude.notna() & (obs_df.picks > 0)]
+        obs_stations, obs_picks = len(og), int(og.picks.sum())
+        obs_near = int(((og.longitude.between(-140, -115)) & (og.latitude.between(38, 52))).sum())
     fix = d["fix"]
     fixnote = ""
     if fix:
@@ -349,11 +439,16 @@ def main() -> None:
     S.append(f"""
 <section class="slide">
   <h2>Where the picks came from</h2>
-  {station_map(mp)}
-  <p class="cap"><strong>Western campaign only, PhaseNet <code>original</code> weights at a
-  0.2 threshold.</strong> {stations_with:,} of the {stations_seen:,} stations the campaign
-  processed produced at least one pick, and all {with_coords:,} now carry coordinates in the
-  station table. Circle
+  {station_map(mp, d['obs'])}
+  <p class="cap"><strong>Colour is the weight set that made the picks.</strong> Purple is the
+  land campaign, PhaseNet <code>original</code> at a 0.2 threshold: {stations_with:,} of the
+  {stations_seen:,} stations it processed produced a pick, and all {with_coords:,} now carry
+  coordinates. Orange is the ocean-bottom campaign, PhaseNet <code>obs</code> (PickBlue) at
+  the same threshold: {obs_stations:,} stations and {obs_picks:,} picks, of which
+  {obs_near:,} stations sit on the Cascadia margin and the rest are deployments elsewhere in
+  the world. The two ran different models, so their counts are not interchangeable. Open on
+  the western states, scroll to zoom, drag to pan, or fit everything to see the whole
+  ocean-bottom set. Circle
   area follows pick count. The heaviest producers are {top_blurb}. Borehole instruments
   dominate the top of the list: {pb_share:.0f}% of the twenty largest counts are
   Plate&nbsp;Boundary&nbsp;Observatory stations, which sit in quiet holes and detect far
@@ -811,6 +906,12 @@ code{{font-family:ui-monospace,Menlo,monospace;font-size:.86em;background:rgba(7
 a{{color:var(--peri)}}
 svg.map{{width:100%;height:auto;background:var(--paper);border:1px solid var(--line);
   border-radius:14px}}
+.mapwrap{{position:relative}}
+.mapbtns{{display:flex;gap:8px;align-items:center;margin-bottom:8px}}
+.mapbtns button{{font:600 .86rem Manrope,sans-serif;padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--lav2);color:var(--purple);cursor:pointer}}
+.mapbtns button:hover{{border-color:var(--peri)}}
+.mapbtns .hint{{color:var(--stone);font-size:.84rem}}
+svg.zoomable{{cursor:grab;touch-action:none}} svg.zoomable:active{{cursor:grabbing}}
 .coast{{fill:none;stroke:#b9b4cc;stroke-width:.8}}
 .border{{fill:none;stroke:#d8d4e4;stroke-width:.6}}
 .key text{{font-size:15px;fill:var(--stone);font-family:Manrope,sans-serif}}
