@@ -63,6 +63,8 @@ pytorch-cuda = "==11.8"
 pytest = ">=7.0"
 black = ">=23.0"
 ruff = ">=0.1.0"
+# publishing the evaluation set to Hugging Face
+huggingface_hub = ">=0.25"
 
 [environments]
 tutorials = ["cpu"]

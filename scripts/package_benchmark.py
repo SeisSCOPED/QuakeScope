@@ -7,8 +7,12 @@ the scorer that produced our published numbers is in the bundle rather than
 somewhere else. A baseline result is included so a newcomer can tell whether
 their run is working before they trust it.
 
-    pixi run -e dev python scripts/package_benchmark.py --set swarm --out dist/
-    pixi run -e dev python scripts/package_benchmark.py --set swarm --out dist/ --upload
+    pixi run -e dev python scripts/package_benchmark.py --out dist/
+    pixi run -e dev python scripts/package_benchmark.py --out dist/ --push --private
+
+The push needs a Hugging Face login with write access to the organisation:
+`hf auth login`, or HF_TOKEN in the environment. Nothing in this script asks for
+a token or stores one.
 
 What is deliberately NOT here: the held-out split. See HOLDOUT in this file and
 the datasheet it writes.
@@ -370,7 +374,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="dist")
-    ap.add_argument("--upload", action="store_true")
+    ap.add_argument("--push", action="store_true", help="upload to Hugging Face")
+    ap.add_argument("--repo", default="gaiahazlab/quakescope-eval-v1")
+    ap.add_argument("--private", action="store_true",
+                    help="create the dataset private; make it public when you are ready")
     a = ap.parse_args()
 
     name = "quakescope-eval-v1"
@@ -402,36 +409,90 @@ def main() -> None:
         {"name": name, "files": len(manifest), "bytes": total, "entries": manifest}, indent=1))
     print(f"\n{out}: {len(manifest):,} files, {total / 1e6:.0f} MB")
 
-    if not a.upload:
-        print("  not uploaded. Pass --upload to publish.")
+    if not a.push:
+        print("  not pushed. Pass --push to upload to Hugging Face.")
+        print(f"  repo would be: https://huggingface.co/datasets/{a.repo}")
         return
-    import boto3
-    from botocore.config import Config
-    s3 = boto3.client("s3", config=Config(region_name=REGION, max_pool_connections=32))
-    TYPES = {".json": "application/json", ".csv": "text/csv", ".md": "text/markdown",
-             ".py": "text/x-python", ".txt": "text/plain"}
-    for p in files + [out / "MANIFEST.json"]:
-        s3.put_object(Bucket=BUCKET, Key=f"benchmark/{name}/{p.relative_to(out)}",
-                      Body=p.read_bytes(),
-                      ContentType=TYPES.get(p.suffix, "application/octet-stream"))
-    print(f"  uploaded to {HTTP}/benchmark/{name}/")
 
+    from huggingface_hub import HfApi
+    api = HfApi()
+    try:
+        who = api.whoami()
+    except Exception:                                              # noqa: BLE001
+        raise SystemExit(
+            "Not logged in to Hugging Face. Run `hf auth login` (or set HF_TOKEN) with an\n"
+            "account that can write to the target organisation, then run this again.")
+    print(f"  logged in as {who.get('name')}")
+    api.create_repo(a.repo, repo_type="dataset", exist_ok=True, private=a.private)
+    api.upload_folder(folder_path=str(out), repo_id=a.repo, repo_type="dataset",
+                      commit_message=f"QuakeScope evaluation set v1, built from {commit}")
+    print(f"  https://huggingface.co/datasets/{a.repo}")
 
 
 def readme(tasks: list, built: str, commit: str) -> str:
+    """A Hugging Face dataset card: YAML frontmatter, then the prose.
+
+    The `configs` block makes every track's arrivals loadable with
+    `load_dataset(repo, "track2-swarm")`, which is the two-line start a
+    newcomer needs. The waveforms stay as MiniSEED files alongside, because
+    there is no honest way to put a three-component seismogram in a table.
+    """
+    cfgs = "\n".join(
+        f"  - config_name: {t['track']}\n"
+        f"    data_files:\n"
+        f"      - split: reference\n"
+        f"        path: {t['track']}/reference_picks.csv" for t in tasks)
     rows = "\n".join(
         f"| `{t['track']}` | {t['regime']} | {t['counts']['sequences']} | "
         f"{t['counts']['arrivals']:,} | {t['counts']['P']:,} | {t['counts']['S']:,} | "
         f"{t['counts']['waveform_files']} |" for t in tasks)
-    return f"""# QuakeScope evaluation set, v1
+    total = sum(t["counts"]["arrivals"] for t in tasks)
+    return f"""---
+pretty_name: QuakeScope phase-picking evaluation set
+license: cc-by-4.0
+language:
+  - en
+tags:
+  - seismology
+  - earthquake
+  - phase-picking
+  - time-series
+  - benchmark
+  - geoscience
+task_categories:
+  - time-series-forecasting
+size_categories:
+  - 10K<n<100K
+configs:
+{cfgs}
+---
 
-A development set for evaluating seismic phase pickers. Waveforms, the arrivals
-to recover, the scorer that produced our published numbers, and a machine-readable
-statement of the task in `tasks.json`.
+# QuakeScope phase-picking evaluation set, v1
 
-Built for someone who does not work in seismology: nothing here assumes you know
-what an operator bulletin is, and the one thing you do have to understand is in
-the next section.
+Seismic waveforms, the phase arrivals a human analyst picked on them, and the
+scorer that turns one into a number. {total:,} arrivals across four tracks.
+
+Built for people who build models rather than catalogues. Nothing here assumes
+you know what an operator bulletin is, and the one thing you do have to
+understand is two sections down.
+
+## The task
+
+Given three-component seismic waveforms, output the arrival time of every P and
+S phase, each with a confidence in [0, 1]. You are scored on how many of the
+analyst's arrivals you recover within 0.5 s on the same station and phase.
+
+```python
+from datasets import load_dataset
+arrivals = load_dataset("gaiahazlab/quakescope-eval-v1", "track2-swarm")["reference"]
+```
+
+Waveforms are MiniSEED beside each track, readable with
+[ObsPy](https://docs.obspy.org): `obspy.read("track2-swarm/waveforms/*.mseed")`.
+
+`tasks.json` states the task, the inputs, the target, the scoring command, both
+tolerances and the matching rule in a form your code can read rather than your
+reader having to notice.
 
 ## The tracks
 
@@ -440,33 +501,39 @@ the next section.
 {rows}
 
 Track 1 asks whether a picker serves the catalogue this project builds. Track 2
-asks whether it generalises, and splits by what actually breaks a picker:
-mainshock-aftershock cascades, volcano-tectonic seismicity, and fluid-driven
-swarms. Those are different failure modes, not different places.
+asks whether it generalises, split by what actually breaks a picker:
+mainshock-aftershock cascades, volcano-tectonic seismicity, fluid-driven swarms.
+Those are different failure modes, not different places, which is the point of
+organising a benchmark this way.
 
 ## The reference is not a labelled test set
 
-Read this before taking any number from the set.
+**Read this before taking any number from the set.**
 
 The arrivals come from operator bulletins and published analyst catalogues. An
 analyst picked what a location needed and then stopped. In a dense sequence most
 real arrivals are never marked, so a model pick with no analyst counterpart is a
 mixture of a false positive and a real arrival nobody had time to write down.
 
-**Recall is exact and is the primary metric. Precision, F1 and calibration are
-lower bounds. MCC is not computable at all**, because a continuous record with an
-incomplete reference does not define true negatives. `tasks.json` carries this as
-a field so your code can respect it rather than your reader having to notice it.
+| metric | against this reference |
+|---|---|
+| recall, picks emitted, MAE, RMSE, MedianAE, median bias, gross-error rate, phase swap rate, duplicate rate | **exact** |
+| precision, F1, calibration, ECE | **lower bound** |
+| MCC | **not computable** |
 
-## Run it
+MCC needs true negatives, and a continuous record with an incomplete reference
+does not define them. A published MCC against a bulletin is not meaningful.
+`tasks.json` carries this as a field so your code can branch on it.
+
+## Score your picks
 
 ```sh
 pip install -r score/requirements.txt
-python score/score_picks.py --demo                      # synthetic, no data needed
+python score/score_picks.py --demo                     # synthetic, no data needed
 python score/score_picks.py \\
     --reference track2-swarm/reference_picks.csv \\
     --picks     your_picks.csv \\
-    --out scores/
+    --out       scores/
 ```
 
 Your picks need `station, phase, time, conf`, with optional `sequence`. Run your
@@ -482,39 +549,44 @@ your own.
 This is a development set. Twelve further sequences across the same three
 regimes are held back and scored on submission.
 
-The underlying data cannot be hidden: every reference arrival here comes from a
-public service and anyone can re-harvest it. What is withheld is the
-**selection** — which sequences, which windows, which stations, and the assembled
-reference for them. That is the part that carries the evaluation, and the part
-somebody would otherwise tune against.
+The underlying data cannot be hidden: every arrival here comes from a public
+service and anyone can re-harvest it. What is withheld is the **selection** —
+which sequences, which windows, which stations, and the assembled reference for
+them. That is the part that carries the evaluation and the part a model would
+otherwise be tuned against.
 
-## Caveats that affect how you read a score
+## Caveats that change how you read a score
 
-- **Sample sizes differ by an order of magnitude** between sequences. Weight by
-  arrivals or report per sequence; do not average them.
+- **Sample sizes differ by an order of magnitude.** Weight by arrivals or report
+  per sequence; do not average the tracks.
+- **Some sequences are deliberately thin and their recall is not
+  interpretable.** Monte Cristo has 16 P and 12 S on one station. Monroe WA is a
+  normal moderate earthquake whose 784 arrivals spread over seven days of small
+  aftershocks, so almost none fall in the scored window. Both are in for network
+  and era coverage. A recall of zero on either is an empty reference, not a model
+  failure.
 - **Station selection is constrained by instrument.** A three-component picker
   cannot use a vertical-only short-period station, and regional networks are full
-  of them, so the stations here are not simply the ones with the most arrivals.
-- **Some sequences are deliberately thin, and their recall is not
-  interpretable.** Monte Cristo has 16 P and 12 S on one station. Monroe WA is a
-  normal moderate earthquake rather than a dense cascade: its 784 analyst
-  arrivals are spread evenly over seven days of small aftershocks, so the
-  busiest two-hour window holds 80 of them and almost none fall in the scored
-  window. Both are included for network, magnitude and era coverage. A recall of
-  zero on either is an empty reference, not a model failure. Weight by arrivals,
-  or read them per sequence and ignore the rows with single-digit counts.
+  of them, so these are not simply the stations with the most arrivals.
 - **Contamination is stated, not measured.** None of these sequences is in the
   curated corpora we know of, but we have not diffed them trace by trace against
   every training set a submitter might use.
 - **No association step.** Picks are scored as picks.
 
-## Licence
+## Provenance and licence
 
-Waveforms are redistributed from open archives and remain their operators'. Code
-in `score/` is MIT, as the rest of
-[SeisSCOPED/QuakeScope](https://github.com/SeisSCOPED/QuakeScope). If you report
-a number, state the track, the protocol and the tolerance: a recall without those
-three is not reproducible.
+Waveforms are redistributed from open archives and remain their operators':
+SCEDC, NCEDC, PNSN, GeoNet, INGV, NOA, RESIF/EPOS-France, EarthScope and WEBNET.
+Reference arrivals come from those services, the ISC bulletin and the USGS
+phase-data product. Cite the operators when you use the waveforms.
+
+Code in `score/` is MIT, from
+[SeisSCOPED/QuakeScope](https://github.com/SeisSCOPED/QuakeScope). The board
+these numbers feed is at
+[seisscoped.org/QuakeScope/benchmark_metrics.html](https://seisscoped.org/QuakeScope/benchmark_metrics.html).
+
+If you report a number, state the track, the protocol and the tolerance. A
+recall without those three is not reproducible.
 
 Built {built} from `{commit}`.
 """
