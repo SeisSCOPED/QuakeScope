@@ -20,6 +20,7 @@ Arrow keys or click to move. The deck prints one slide per page.
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -58,6 +59,10 @@ def load():
     d["swarm"] = pd.read_csv(sw / "reference_picks.csv") if (sw / "reference_picks.csv").exists() else None
     d["swarm_prov"] = pd.read_csv(sw / "provenance.csv") if (sw / "provenance.csv").exists() else None
     d["swarm_win"] = pd.read_csv(sw / "windows.csv") if (sw / "windows.csv").exists() else None
+    r = RES / "regime_roster.csv"
+    d["roster"] = pd.read_csv(r) if r.exists() else None
+    b = RES / "seisbench_manifest.csv"
+    d["sb"] = pd.read_csv(b) if b.exists() else None
     return d
 
 
@@ -520,50 +525,89 @@ def main() -> None:
 </section>""")
 
     # ---------------------------------------------------------------- 10
-    sw_rows = ""
-    if swt is not None:
-        prov = swp.set_index("sequence") if swp is not None else None
-        for seq in swt.index:
-            src = ""
-            if prov is not None and seq in prov.index:
-                try:
-                    src = ", ".join(k for k, _ in json.loads(prov.loc[seq, "sources"]))
-                except Exception:                                   # noqa: BLE001
-                    src = str(prov.loc[seq, "source"])
-            sw_rows += (f'<tr><td>{seq}</td><td>{int(swt.loc[seq, "P"]):,}</td>'
-                        f'<td>{int(swt.loc[seq, "S"]):,}</td><td class="src">{src}</td></tr>')
-    total_sw = int(swt.values.sum()) if swt is not None else 0
+    rost, sb = d["roster"], d["sb"]
+    REBUILT = {"West Bohemia 2018", "Maurienne 2017-2019"}   # registry cases repaired here
+    NEW = {"Salton Sea 2016", "Jones-Guthrie 2014-2015"}     # added here
+
+    def regime_block(regime, title, note):
+        sub = rost[rost.regime_name == regime].copy()
+        rows = ""
+        for _, r in sub.iterrows():
+            lab = r.label
+            if lab in REBUILT and swt is not None and lab in swt.index:
+                pp, ss = int(swt.loc[lab, "P"]), int(swt.loc[lab, "S"])
+                state, cls = "rebuilt here", "ok"
+            elif r.scorable:
+                pp, ss = int(r.ref_rm_covered_P), int(r.ref_rm_covered_S)
+                state, cls = "ready", "ok"
+            else:
+                pp, ss = int(r.ref_rm_covered_P), int(r.ref_rm_covered_S)
+                # the reason text carries "<", which would open a tag if left raw
+                state = _html.escape(str(r.pick_scoring_reason).replace("_", " "))
+                cls = "warn2"
+            rows += (f'<tr><td class="l">{lab}</td><td>{pp:,}</td><td>{ss:,}</td>'
+                     f'<td class="{cls} l">{state}</td></tr>')
+        if regime == "fluid-driven swarm" and swt is not None:
+            for lab in sorted(NEW):
+                if lab in swt.index:
+                    rows += (f'<tr><td class="l">{lab}</td><td>{int(swt.loc[lab, "P"]):,}</td>'
+                             f'<td>{int(swt.loc[lab, "S"]):,}</td>'
+                             f'<td class="ok l">new, built here</td></tr>')
+        # a set, not a sum: a rebuilt case may already have counted as scorable
+        ready = set(sub[sub.scorable].label) | (REBUILT & set(sub.label))
+        total = len(sub)
+        if regime == "fluid-driven swarm":
+            ready |= NEW
+            total += len(NEW)
+        return (f'<h3>{title} &mdash; {len(ready)} ready of {total}</h3>'
+                f'<table class="t"><thead><tr><th class="l">sequence</th><th>P</th><th>S</th>'
+                f'<th class="l">status</th></tr></thead><tbody>{rows}</tbody></table>'
+                f'<p class="cap">{note}</p>')
+
+    msas = regime_block("mainshock-aftershock", "Mainshock-aftershock",
+                        "Events seconds apart, overlapping codas, a saturating network. "
+                        "Four of the ready cases are already on the board.")
+    vt = regime_block("volcano-tectonic", "Volcano-tectonic",
+                      "Emergent onsets, low magnitudes, event types a picker was never "
+                      "trained on. Held out as places rather than time windows, because a "
+                      "volcano recurs where it is.")
+    swarm = regime_block("fluid-driven swarm", "Fluid-driven swarm",
+                         "Months of elevated rate, no mainshock, shallow sources on a dense "
+                         "local array. This arm had no scorable case until this week.")
+    ready_all = len(set(rost[rost.scorable].label) | REBUILT | NEW)
+    sb_total = int(sb.windows.sum()) if sb is not None else 0
+    sb_n = len(sb) if sb is not None else 0
+    sb_top = ", ".join(f"{r.dataset} {int(r.windows):,}"
+                       for _, r in sb.head(5).iterrows()) if sb is not None else ""
     S.append(f"""
-<section class="slide">
-  <h2>The next benchmark: three regimes, not three places</h2>
-  <div class="cols">
+<section class="slide wide">
+  <h2>The next benchmark: three regimes, none of it SeisBench-curated</h2>
+  <div class="cols3">
+    <div>{msas}</div>
+    <div>{vt}</div>
+    <div>{swarm}</div>
+  </div>
+  <div class="cols" style="margin-top:12px">
     <div>
-      <h3>Built and ready to score</h3>
-      <table class="t">
-        <thead><tr><th>fluid-driven swarm</th><th>P</th><th>S</th><th>reference</th></tr></thead>
-        <tbody>{sw_rows}</tbody>
-      </table>
-      <p class="cap">{total_sw:,} analyst arrivals on the stations and windows we will
-      score, from the ISC bulletin, the USGS phase-data product and BCSF-RENASS. Two
-      sources per sequence where one under-collected; duplicate readings between services
-      are collapsed on station, phase and time.</p>
+      <h3>Why not reuse the curated sets</h3>
+      <p>The benchmark we have is {sb_total:,} single-arrival windows from {sb_n} SeisBench
+      datasets ({sb_top}, and {sb_n - 5} more). One pick per window, no sequence context,
+      and <strong>every one of those datasets is in the fine-tune's training
+      manifest</strong>. It measures timing on isolated arrivals and cannot measure
+      generalisation, so it stays as a unit test.</p>
     </div>
     <div>
-      <h3>What this changes</h3>
-      <ul>
-        <li>Nineteen sequences are specified across the three regimes, all built. Nine are
-        scorable today; the swarm arm was the one that had none until this week.</li>
-        <li>The reference problem is the work, not the model. Every swarm failure was a
-        station-code mismatch or a bulletin that under-collected, and each was found by
-        measuring the reference before fetching waveforms.</li>
-        <li><strong>Open question for this group:</strong> a sequence that postdates the
-        training window of every model it scores, labelled independently. That is an analyst
-        campaign, and it is the only thing that turns this from a report into a benchmark a
-        paper can cite.</li>
-      </ul>
+      <h3>What the regime set is instead</h3>
+      <p>Continuous data scored at the event level against picks an operator or a published
+      study made by hand, on sequences drawn from bulletins rather than from any curated
+      corpus. {ready_all} of {len(rost) + len(NEW)} are scorable now. The rest fail on the
+      reference, not the model: a bulletin that under-collects, or station codes that
+      resolve to one station. <strong>Still missing: a sequence that postdates the training
+      window of every model it scores, labelled independently.</strong></p>
     </div>
   </div>
 </section>""")
+
 
     nav = "".join(f'<button data-go="{i}" aria-label="slide {i + 1}"></button>'
                   for i in range(len(S)))
@@ -604,6 +648,9 @@ h3{{font-size:1rem;font-weight:700;color:var(--purple);margin:0 0 10px}}
 .title code{{background:rgba(255,255,255,.14);color:#fff}}
 .lede{{color:var(--stone);font-size:1.02rem;max-width:88ch;margin-bottom:18px}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:34px;align-items:start}}
+.cols3{{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;align-items:start}}
+.cols3 table.t{{font-size:.76rem}} .cols3 .cap{{font-size:.75rem}}
+.slide.wide{{max-width:1500px}}
 .stats4{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}}
 .stats2{{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px}}
 .stat{{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px 18px}}
@@ -647,7 +694,7 @@ svg.map{{width:100%;height:auto;background:var(--paper);border:1px solid var(--l
   .slide{{display:flex!important;page-break-after:always;min-height:auto;padding:28px}}
   .nav,.count{{display:none}} body{{background:#fff}}
 }}
-@media (max-width:900px){{.cols,.stats4,.stats2{{grid-template-columns:1fr}}
+@media (max-width:900px){{.cols,.cols3,.stats4,.stats2{{grid-template-columns:1fr}}
   .slide{{padding:28px 20px 72px}}}}
 </style>
 </head>

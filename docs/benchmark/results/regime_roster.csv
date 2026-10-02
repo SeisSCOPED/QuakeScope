@@ -1,0 +1,20 @@
+key,label,regime,role,tier,pick_scoring_eligible,ref_rm_covered_P,ref_rm_covered_S,pick_scoring_reason,verdict,scorable,regime_name
+norcia_2016,Norcia 2016,msas,regression,1,True,701,656,P 701 and S 656 >= 100 on 6 stations,both,True,mainshock-aftershock
+adriatic_2022,Adriatic 2022,msas,dev,1,True,400,357,P 400 and S 357 >= 100 on 6 stations,both,True,mainshock-aftershock
+thessaly_2021,Thessaly 2021,msas,regression,1,True,395,331,P 395 and S 331 >= 100 on 6 stations,both,True,mainshock-aftershock
+kaikoura_2016,Kaikoura 2016,msas,regression,1,True,357,458,P 357 and S 458 >= 100 on 6 stations,both,True,mainshock-aftershock
+petrinja_2020,Petrinja 2020,msas,acceptance,1,True,152,142,P 152 and S 142 >= 100 on 6 stations,both,True,mainshock-aftershock
+kahramanmaras_2023,Kahramanmaras 2023,msas,acceptance,1,False,101,37,S 37 < 100,network_event_scoring,False,mainshock-aftershock
+noto_2024,Noto 2024,msas,acceptance,1,False,49,23,P 49 < 100; S 23 < 100,neither,False,mainshock-aftershock
+hualien_2024,Hualien 2024,msas,acceptance,1,False,38,15,single_station,neither,False,mainshock-aftershock
+samos_2020,Samos 2020,msas,dev,1,False,34,24,P 34 < 100; S 24 < 100,neither,False,mainshock-aftershock
+maurienne_2017,Maurienne 2017-2019,swarm,acceptance,1,True,290,308,P 290 and S 308 >= 100 on 6 stations,both,True,fluid-driven swarm
+west_bohemia_2018,West Bohemia 2018,swarm,acceptance,1,False,137,157,single_station,neither,False,fluid-driven swarm
+corinth_thiva_2020,Corinth-Thiva 2020-2021,swarm,dev,1,False,108,87,S 87 < 100,network_event_scoring,False,fluid-driven swarm
+campi_flegrei_2023,Campi Flegrei 2023,swarm,acceptance,1,False,30,26,P 30 < 100; S 26 < 100,neither,False,fluid-driven swarm
+noto_swarm_2023,Noto swarm 2023,swarm,acceptance,1,False,0,0,zero_overlap,neither,False,fluid-driven swarm
+santorini_2025,Santorini-Amorgos 2025,vt,acceptance,1,True,1132,1067,P 1132 and S 1067 >= 100 on 6 stations,both,True,volcano-tectonic
+la_palma_2021,La Palma 2021,vt,acceptance,1,True,940,951,P 940 and S 951 >= 100 on 6 stations,both,True,volcano-tectonic
+etna_2022_2024,Etna 2022-2024,vt,dev,1,True,597,395,P 597 and S 395 >= 100 on 6 stations,both,True,volcano-tectonic
+reykjanes_2023,Reykjanes 2023 dike,vt,acceptance,1,False,25,18,single_station,neither,False,volcano-tectonic
+fagradalsfjall_2021,Fagradalsfjall 2021,vt,acceptance,1,False,16,8,P 16 < 100; S 8 < 100,neither,False,volcano-tectonic

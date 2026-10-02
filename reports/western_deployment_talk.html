@@ -34,6 +34,9 @@ h3{font-size:1rem;font-weight:700;color:var(--purple);margin:0 0 10px}
 .title code{background:rgba(255,255,255,.14);color:#fff}
 .lede{color:var(--stone);font-size:1.02rem;max-width:88ch;margin-bottom:18px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:34px;align-items:start}
+.cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;align-items:start}
+.cols3 table.t{font-size:.76rem} .cols3 .cap{font-size:.75rem}
+.slide.wide{max-width:1500px}
 .stats4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
 .stats2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px}
 .stat{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
@@ -77,7 +80,7 @@ svg.map{width:100%;height:auto;background:var(--paper);border:1px solid var(--li
   .slide{display:flex!important;page-break-after:always;min-height:auto;padding:28px}
   .nav,.count{display:none} body{background:#fff}
 }
-@media (max-width:900px){.cols,.stats4,.stats2{grid-template-columns:1fr}
+@media (max-width:900px){.cols,.cols3,.stats4,.stats2{grid-template-columns:1fr}
   .slide{padding:28px 20px 72px}}
 </style>
 </head>
@@ -90,7 +93,7 @@ svg.map{width:100%;height:auto;background:var(--paper);border:1px solid var(--li
   campaign did not pick and why, how we score it, and the case for a benchmark organised
   by earthquake-sequence regime instead of by place.</p>
   <p class="meta">2026-10-02 &middot; built from the campaign's own manifests and Parquet
-  footers &middot; <code>10b8c08</code></p>
+  footers &middot; <code>2c11279</code></p>
 </section>
 <section class="slide">
   <h2>What the western campaign produced</h2>
@@ -312,33 +315,30 @@ svg.map{width:100%;height:auto;background:var(--paper);border:1px solid var(--li
     </div>
   </div>
 </section>
-<section class="slide">
-  <h2>The next benchmark: three regimes, not three places</h2>
-  <div class="cols">
+<section class="slide wide">
+  <h2>The next benchmark: three regimes, none of it SeisBench-curated</h2>
+  <div class="cols3">
+    <div><h3>Mainshock-aftershock &mdash; 5 ready of 9</h3><table class="t"><thead><tr><th class="l">sequence</th><th>P</th><th>S</th><th class="l">status</th></tr></thead><tbody><tr><td class="l">Norcia 2016</td><td>701</td><td>656</td><td class="ok l">ready</td></tr><tr><td class="l">Adriatic 2022</td><td>400</td><td>357</td><td class="ok l">ready</td></tr><tr><td class="l">Thessaly 2021</td><td>395</td><td>331</td><td class="ok l">ready</td></tr><tr><td class="l">Kaikoura 2016</td><td>357</td><td>458</td><td class="ok l">ready</td></tr><tr><td class="l">Petrinja 2020</td><td>152</td><td>142</td><td class="ok l">ready</td></tr><tr><td class="l">Kahramanmaras 2023</td><td>101</td><td>37</td><td class="warn2 l">S 37 &lt; 100</td></tr><tr><td class="l">Noto 2024</td><td>49</td><td>23</td><td class="warn2 l">P 49 &lt; 100; S 23 &lt; 100</td></tr><tr><td class="l">Hualien 2024</td><td>38</td><td>15</td><td class="warn2 l">single station</td></tr><tr><td class="l">Samos 2020</td><td>34</td><td>24</td><td class="warn2 l">P 34 &lt; 100; S 24 &lt; 100</td></tr></tbody></table><p class="cap">Events seconds apart, overlapping codas, a saturating network. Four of the ready cases are already on the board.</p></div>
+    <div><h3>Volcano-tectonic &mdash; 3 ready of 5</h3><table class="t"><thead><tr><th class="l">sequence</th><th>P</th><th>S</th><th class="l">status</th></tr></thead><tbody><tr><td class="l">Santorini-Amorgos 2025</td><td>1,132</td><td>1,067</td><td class="ok l">ready</td></tr><tr><td class="l">La Palma 2021</td><td>940</td><td>951</td><td class="ok l">ready</td></tr><tr><td class="l">Etna 2022-2024</td><td>597</td><td>395</td><td class="ok l">ready</td></tr><tr><td class="l">Reykjanes 2023 dike</td><td>25</td><td>18</td><td class="warn2 l">single station</td></tr><tr><td class="l">Fagradalsfjall 2021</td><td>16</td><td>8</td><td class="warn2 l">P 16 &lt; 100; S 8 &lt; 100</td></tr></tbody></table><p class="cap">Emergent onsets, low magnitudes, event types a picker was never trained on. Held out as places rather than time windows, because a volcano recurs where it is.</p></div>
+    <div><h3>Fluid-driven swarm &mdash; 4 ready of 7</h3><table class="t"><thead><tr><th class="l">sequence</th><th>P</th><th>S</th><th class="l">status</th></tr></thead><tbody><tr><td class="l">Maurienne 2017-2019</td><td>706</td><td>724</td><td class="ok l">rebuilt here</td></tr><tr><td class="l">West Bohemia 2018</td><td>1,208</td><td>1,353</td><td class="ok l">rebuilt here</td></tr><tr><td class="l">Corinth-Thiva 2020-2021</td><td>108</td><td>87</td><td class="warn2 l">S 87 &lt; 100</td></tr><tr><td class="l">Campi Flegrei 2023</td><td>30</td><td>26</td><td class="warn2 l">P 30 &lt; 100; S 26 &lt; 100</td></tr><tr><td class="l">Noto swarm 2023</td><td>0</td><td>0</td><td class="warn2 l">zero overlap</td></tr><tr><td class="l">Jones-Guthrie 2014-2015</td><td>276</td><td>126</td><td class="ok l">new, built here</td></tr><tr><td class="l">Salton Sea 2016</td><td>641</td><td>580</td><td class="ok l">new, built here</td></tr></tbody></table><p class="cap">Months of elevated rate, no mainshock, shallow sources on a dense local array. This arm had no scorable case until this week.</p></div>
+  </div>
+  <div class="cols" style="margin-top:12px">
     <div>
-      <h3>Built and ready to score</h3>
-      <table class="t">
-        <thead><tr><th>fluid-driven swarm</th><th>P</th><th>S</th><th>reference</th></tr></thead>
-        <tbody><tr><td>Jones-Guthrie 2014-2015</td><td>276</td><td>126</td><td class="src">usgs, isc</td></tr><tr><td>Maurienne 2017-2019</td><td>706</td><td>724</td><td class="src">isc, franceseisme</td></tr><tr><td>Salton Sea 2016</td><td>641</td><td>580</td><td class="src">usgs, isc</td></tr><tr><td>West Bohemia 2018</td><td>1,208</td><td>1,353</td><td class="src">isc</td></tr></tbody>
-      </table>
-      <p class="cap">5,614 analyst arrivals on the stations and windows we will
-      score, from the ISC bulletin, the USGS phase-data product and BCSF-RENASS. Two
-      sources per sequence where one under-collected; duplicate readings between services
-      are collapsed on station, phase and time.</p>
+      <h3>Why not reuse the curated sets</h3>
+      <p>The benchmark we have is 35,392 single-arrival windows from 12 SeisBench
+      datasets (instancecounts 9,776, stead 9,360, ceed 5,435, pnw 2,841, txed 2,261, and 7 more). One pick per window, no sequence context,
+      and <strong>every one of those datasets is in the fine-tune's training
+      manifest</strong>. It measures timing on isolated arrivals and cannot measure
+      generalisation, so it stays as a unit test.</p>
     </div>
     <div>
-      <h3>What this changes</h3>
-      <ul>
-        <li>Nineteen sequences are specified across the three regimes, all built. Nine are
-        scorable today; the swarm arm was the one that had none until this week.</li>
-        <li>The reference problem is the work, not the model. Every swarm failure was a
-        station-code mismatch or a bulletin that under-collected, and each was found by
-        measuring the reference before fetching waveforms.</li>
-        <li><strong>Open question for this group:</strong> a sequence that postdates the
-        training window of every model it scores, labelled independently. That is an analyst
-        campaign, and it is the only thing that turns this from a report into a benchmark a
-        paper can cite.</li>
-      </ul>
+      <h3>What the regime set is instead</h3>
+      <p>Continuous data scored at the event level against picks an operator or a published
+      study made by hand, on sequences drawn from bulletins rather than from any curated
+      corpus. 12 of 21 are scorable now. The rest fail on the
+      reference, not the model: a bulletin that under-collects, or station codes that
+      resolve to one station. <strong>Still missing: a sequence that postdates the training
+      window of every model it scores, labelled independently.</strong></p>
     </div>
   </div>
 </section></div>
