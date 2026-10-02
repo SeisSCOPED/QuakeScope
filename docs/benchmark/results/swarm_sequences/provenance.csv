@@ -1,0 +1,5 @@
+sequence,key,source,events,arrivals,P,S,stations,modes,sources,t0,t1,note
+West Bohemia 2018,west_bohemia_2018,isc,334,7629,3695,3934,78,"[[""unset"", 7629]]","[[""isc"", 7629]]",2018-05-10,2018-06-01,"CO2-driven swarm, WEBNET; ISC carries the agencies' reviewed readings"
+Maurienne 2017-2019,maurienne_2017,isc,224,6061,3465,2596,280,"[[""unset"", 3344], [""manual"", 2717]]","[[""isc"", 3344], [""franceseisme"", 2717]]",2017-08-01,2019-03-31,"fluid and slip interplay, French Alps; ISC over SISmalp/RESIF"
+Salton Sea 2016,salton_sea_2016,usgs,158,8915,5189,3726,305,"[[""manual"", 7210], [""unset"", 1705]]","[[""usgs"", 7210], [""isc"", 1705]]",2016-09-26,2016-10-10,Brawley seismic zone swarm; SCEDC analyst picks through ComCat
+Jones-Guthrie 2014-2015,jones_guthrie_2014,usgs,66,2759,2328,431,304,"[[""manual"", 1822], [""unset"", 937]]","[[""usgs"", 1822], [""isc"", 937]]",2014-01-01,2015-06-30,"injection-induced swarm, Oklahoma; OGS and USGS analyst picks. The rate is elevated for months rather than concentrated in a burst, so this one takes more and longer windows to reach a scorable count"

@@ -190,3 +190,7 @@ tutorials/global_sequences_cache/
 # Derived by tutorials/read_the_catalogue.ipynb and download_the_catalogue.ipynb - mirrored partitions and exports
 tutorials/quakescope_mirror/
 tutorials/export/
+
+# Benchmark waveform caches: hundreds of MB, refetchable from the public archives
+# by scripts/build_swarm_benchmark.py --stage waveforms
+docs/benchmark/results/*/waveforms/
