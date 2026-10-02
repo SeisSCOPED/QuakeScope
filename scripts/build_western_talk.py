@@ -315,6 +315,9 @@ def main() -> None:
         {n_p:,} P and {n_s:,} S.</li>
         <li>{manifests:,} shard manifests record {station_days:,} station-days of work,
         {len(stn):,} station epochs were in scope across {stn.network_code.nunique()} networks.</li>
+        <li><strong>Every pick here was made by PhaseNet with the <code>original</code>
+        weights</strong> of Zhu &amp; Beroza, at P and S thresholds of 0.2, three components,
+        SeisBench 0.12.5. One model, one configuration, across the whole catalogue.</li>
       </ul>
     </div>
     <div>
@@ -335,7 +338,8 @@ def main() -> None:
 <section class="slide">
   <h2>Where the picks came from</h2>
   {station_map(mp)}
-  <p class="cap">{with_coords:,} of the {stations_seen:,} stations the campaign processed
+  <p class="cap"><strong>Western campaign only, PhaseNet <code>original</code> weights at a
+  0.2 threshold.</strong> {with_coords:,} of the {stations_seen:,} stations the campaign processed
   carry coordinates in the campaign station table and produced at least one pick. Circle
   area follows pick count. The heaviest producers are {top_blurb}. Borehole instruments
   dominate the top of the list: {pb_share:.0f}% of the twenty largest counts are
@@ -734,47 +738,47 @@ def main() -> None:
 }}
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:Manrope,system-ui,sans-serif;background:var(--lav);color:var(--ink);
-  line-height:1.5;-webkit-font-smoothing:antialiased}}
+  font-size:20px;line-height:1.5;-webkit-font-smoothing:antialiased}}
 .deck{{position:relative}}
 .slide{{display:none;min-height:100vh;padding:56px 64px 84px;max-width:1340px;margin:0 auto;
   flex-direction:column}}
 .slide.on{{display:flex}}
-h1{{font-size:clamp(1.9rem,3.4vw,2.8rem);font-weight:800;letter-spacing:-.02em;margin-bottom:18px}}
-h2{{font-size:clamp(1.4rem,2.4vw,2rem);font-weight:700;letter-spacing:-.02em;
+h1{{font-size:clamp(2.4rem,4.2vw,3.6rem);font-weight:800;letter-spacing:-.02em;margin-bottom:18px}}
+h2{{font-size:clamp(1.9rem,3vw,2.6rem);font-weight:700;letter-spacing:-.02em;
   margin-bottom:22px;padding-bottom:12px;border-bottom:2px solid var(--line)}}
-h3{{font-size:1rem;font-weight:700;color:var(--purple);margin:0 0 10px}}
+h3{{font-size:1.18rem;font-weight:700;color:var(--purple);margin:0 0 10px}}
 .title{{justify-content:center;background:linear-gradient(150deg,var(--ink),var(--deep) 55%,var(--purple));
   color:#fff;padding-left:84px}}
 .title h1{{max-width:22ch}}
-.title .lede{{color:#ded8f2;font-size:1.1rem;max-width:68ch;margin-bottom:26px}}
-.title .eyebrow{{text-transform:uppercase;letter-spacing:.14em;font-size:.72rem;font-weight:700;
+.title .lede{{color:#ded8f2;font-size:1.3rem;max-width:68ch;margin-bottom:26px}}
+.title .eyebrow{{text-transform:uppercase;letter-spacing:.14em;font-size:.86rem;font-weight:700;
   color:var(--peri-l);margin-bottom:16px}}
-.title .meta{{color:#b9aee8;font-size:.86rem}}
+.title .meta{{color:#b9aee8;font-size:1rem}}
 .title code{{background:rgba(255,255,255,.14);color:#fff}}
-.lede{{color:var(--stone);font-size:1.02rem;max-width:88ch;margin-bottom:18px}}
+.lede{{color:var(--stone);font-size:1.18rem;max-width:88ch;margin-bottom:18px}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:34px;align-items:start}}
 .cols3{{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;align-items:start}}
-.cols3 table.t{{font-size:.76rem}} .cols3 .cap{{font-size:.75rem}}
+.cols3 table.t{{font-size:.88rem}} .cols3 .cap{{font-size:.92rem}}
 .slide.wide{{max-width:1500px}}
 .stats4{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}}
 .stats2{{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px}}
 .stat{{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:16px 18px}}
-.stat .n{{font-size:1.8rem;font-weight:800;color:var(--purple);letter-spacing:-.02em;
+.stat .n{{font-size:2.4rem;font-weight:800;color:var(--purple);letter-spacing:-.02em;
   font-variant-numeric:tabular-nums;line-height:1.1}}
-.stat .k{{color:var(--stone);font-size:.84rem;margin-top:4px}}
+.stat .k{{color:var(--stone);font-size:1rem;margin-top:4px}}
 .stat.warn .n{{color:var(--warn)}}
 ul{{margin:0 0 0 20px}} li{{margin-bottom:9px;max-width:72ch}}
 p{{max-width:80ch;margin-bottom:12px}}
-.big-claim{{font-size:1.1rem;font-weight:600;color:var(--purple-deep,var(--deep));
+.big-claim{{font-size:1.3rem;font-weight:600;color:var(--purple-deep,var(--deep));
   background:var(--lav2);border-left:4px solid var(--peri);border-radius:10px;padding:14px 18px}}
-table.t{{width:100%;border-collapse:collapse;font-size:.88rem;font-variant-numeric:tabular-nums;
+table.t{{width:100%;border-collapse:collapse;font-size:1.02rem;font-variant-numeric:tabular-nums;
   margin-bottom:10px}}
-table.t th{{text-align:right;padding:7px 10px;color:var(--purple);font-size:.72rem;
+table.t th{{text-align:right;padding:8px 11px;color:var(--purple);font-size:.84rem;
   text-transform:uppercase;letter-spacing:.06em;border-bottom:1.5px solid var(--line)}}
-table.t td{{text-align:right;padding:7px 10px;border-bottom:1px solid var(--line)}}
+table.t td{{text-align:right;padding:8px 11px;border-bottom:1px solid var(--line)}}
 table.t th:first-child,table.t td:first-child,table.t td.l{{text-align:left}}
-table.t.big td{{font-size:1.05rem;padding:10px}}
-table.t.metrics{{font-size:.78rem}} table.t.metrics td{{padding:5px 9px;white-space:normal;vertical-align:top}}
+table.t.big td{{font-size:1.3rem;padding:12px}}
+table.t.metrics{{font-size:.92rem}} table.t.metrics td{{padding:6px 10px;white-space:normal;vertical-align:top}}
 table.t.metrics td.rsn{{color:var(--stone);max-width:46ch}}
 td.lead{{font-weight:700;background:rgba(109,91,208,.12)}}
 td.ok,.ok{{color:var(--good);font-weight:600}}
@@ -782,7 +786,7 @@ td.warn2{{color:var(--warn);font-weight:600}}
 td.bad,.bad{{color:var(--bad);font-weight:600}}
 td.src{{font-size:.76rem;color:var(--stone);text-align:left}}
 .dot{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}}
-.cap{{color:var(--stone);font-size:.84rem;max-width:104ch;margin-top:8px}}
+.cap{{color:var(--stone);font-size:1rem;max-width:104ch;margin-top:8px}}
 code{{font-family:ui-monospace,Menlo,monospace;font-size:.86em;background:rgba(75,46,131,.09);
   padding:1px 5px;border-radius:4px;color:var(--deep)}}
 a{{color:var(--peri)}}
@@ -790,14 +794,14 @@ svg.map{{width:100%;height:auto;background:var(--paper);border:1px solid var(--l
   border-radius:14px}}
 .coast{{fill:none;stroke:#b9b4cc;stroke-width:.8}}
 .border{{fill:none;stroke:#d8d4e4;stroke-width:.6}}
-.key text{{font-size:11px;fill:var(--stone);font-family:Manrope,sans-serif}}
-.seqlab{{font-size:10.5px;font-weight:600;font-family:Manrope,sans-serif;text-anchor:middle;paint-order:stroke;stroke:#fff;stroke-width:3px}}
-.maplegend text{{font-size:11.5px;fill:var(--ink);font-family:Manrope,sans-serif}}
+.key text{{font-size:15px;fill:var(--stone);font-family:Manrope,sans-serif}}
+.seqlab{{font-size:15px;font-weight:600;font-family:Manrope,sans-serif;text-anchor:middle;paint-order:stroke;stroke:#fff;stroke-width:3px}}
+.maplegend text{{font-size:16px;fill:var(--ink);font-family:Manrope,sans-serif}}
 .nav{{position:fixed;left:0;right:0;bottom:0;display:flex;gap:7px;justify-content:center;
   padding:14px;background:linear-gradient(transparent,var(--lav) 42%);z-index:9}}
 .nav button{{width:26px;height:5px;border:0;border-radius:3px;background:var(--line);cursor:pointer}}
 .nav button.on{{background:var(--purple)}}
-.count{{position:fixed;right:18px;bottom:16px;color:var(--stone);font-size:.78rem;
+.count{{position:fixed;right:18px;bottom:16px;color:var(--stone);font-size:1rem;
   font-variant-numeric:tabular-nums;z-index:9}}
 @media print{{
   .slide{{display:flex!important;page-break-after:always;min-height:auto;padding:28px}}
