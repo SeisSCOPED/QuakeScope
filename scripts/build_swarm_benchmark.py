@@ -42,6 +42,7 @@ import numpy as np
 import obspy
 import pandas as pd
 from obspy import UTCDateTime, read_events
+from obspy.geodetics import gps2dist_azimuth
 from obspy.clients.fdsn import Client, RoutingClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -336,12 +337,23 @@ def _station_aliases(code: str) -> list[str]:
     return out
 
 
-def resolve_network(code: str, t: UTCDateTime) -> tuple[str, str, str] | None:
+MAX_STATION_KM = 400.0          # a local sequence is not recorded usefully beyond this
+
+
+def resolve_network(code: str, t: UTCDateTime,
+                    centre: tuple[float, float] | None = None) -> tuple[str, str, str] | None:
     """Network, archive station code and band for a code the bulletin reported.
 
     Returns the code the archive answers to, which is not always the one the
     bulletin printed, so the caller can label the pick with a station the model
     output will also carry.
+
+    Station codes are not unique across networks, and a query by bare code
+    answers with whichever network replies first. That put Silent Canyon,
+    Nevada (SN.STC) on the West Bohemia swarm, 9,097 km away, and matched its
+    record against Czech analyst arrivals. When ``centre`` is given, a
+    candidate more than MAX_STATION_KM from the sequence is rejected and the
+    search continues, so a wrong network cannot be accepted silently.
     """
     global _fed
     if _fed is None:
@@ -355,6 +367,12 @@ def resolve_network(code: str, t: UTCDateTime) -> tuple[str, str, str] | None:
                 continue
             for net in inv:
                 for sta in net:
+                    if centre is not None:
+                        km = gps2dist_azimuth(centre[0], centre[1],
+                                              sta.latitude, sta.longitude)[0] / 1000.0
+                        if km > MAX_STATION_KM:
+                            log(f"      reject {net.code}.{alias}: {km:,.0f} km from the sequence")
+                            continue
                     bands = {c.code[:2] for c in sta.channels if c.code[-1] in "ZNE12"}
                     for pref in CHANNEL_PREF:
                         if pref in bands:
@@ -399,7 +417,8 @@ def stage_waveforms() -> None:
             for code in top.index:
                 if n_ok >= N_STATIONS:
                     break
-                got = resolve_network(code, UTCDateTime(start.to_pydatetime()))
+                got = resolve_network(code, UTCDateTime(start.to_pydatetime()),
+                                      (spec["lat"], spec["lon"]))
                 if got is None:
                     continue
                 net, archive_code, band = got

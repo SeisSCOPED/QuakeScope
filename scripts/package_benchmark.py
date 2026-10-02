@@ -41,6 +41,12 @@ HTTP = f"https://{BUCKET}.s3.{REGION}.amazonaws.com"
 
 SCRATCH = Path("/private/tmp/claude-501/-Users-marinedenolle-GitHub-QuakeScope/8f282710-68a1-4cdd-b77e-e07856ef31af/scratchpad")
 
+SEQ_LABEL = {                      # held-out registry key -> published label
+    "kaikoura_2016": "Kaikoura 2016", "norcia_2016": "Norcia 2016",
+    "thessaly_2021": "Thessaly 2021", "adriatic_2022": "Adriatic 2022",
+    "etna_2022_2024": "Etna 2022-2024",
+}
+
 RETRAIN = Path("/Users/marinedenolle/GitHub/phasenet-retrain/data/heldout_testset")
 
 TRACKS = {
@@ -288,7 +294,23 @@ def assemble_track(key: str, spec: dict, out: Path) -> dict:
 
     ref = pd.concat(refs, ignore_index=True)[["sequence", "station", "phase", "time"]] if refs \
         else pd.DataFrame(columns=["sequence", "station", "phase", "time"])
-    ref = ref.drop_duplicates().sort_values(["sequence", "station", "phase", "time"])
+
+    # The same sequence reaches a track under two labels: QuakeScope writes
+    # "Kaikoura 2016" and the held-out build writes its registry key
+    # "kaikoura_2016". Deduplicating on the tuple as-is keeps both and doubles
+    # the reference, which is what happened in the first push. Normalise the
+    # label first, then collapse on station, phase and time to a tenth of a
+    # second, which is well inside the 0.5 s matching tolerance.
+    ref["sequence"] = ref.sequence.map(lambda v: SEQ_LABEL.get(str(v), str(v)))
+    before = len(ref)
+    t = pd.to_datetime(ref.time, utc=True, format="mixed").dt.tz_localize(None)
+    ref = (ref.assign(_k=t.dt.round("100ms"))
+              .sort_values(["sequence", "station", "phase", "_k"])
+              .drop_duplicates(["sequence", "station", "phase", "_k"])
+              .drop(columns=["_k"]))
+    if before != len(ref):
+        print(f"    {key}: collapsed {before - len(ref):,} duplicate arrivals reported under "
+              f"more than one label")
 
     # Only keep arrivals on stations whose waveforms are in the bundle. A
     # reference listing 714 stations against 18 waveform files is not a task
@@ -399,7 +421,20 @@ def main() -> None:
         {"name": name, "built": built, "commit": commit,
          "scorer": "score/score_picks.py", "identifiability": IDENTIFIABILITY,
          "tracks": tasks}, indent=1))
-    (out / "README.md").write_text(readme(tasks, built, commit))
+    prov = pd.read_csv(RES / "label_provenance.csv")
+    nets = json.loads((RES / "network_doi.json").read_text())
+    # the card must describe what the bundle actually contains, so keep only the
+    # sequences and networks that made it through station and window filtering
+    seqs = set()
+    for t in tasks:
+        r = pd.read_csv(out / t["track"] / "reference_picks.csv")
+        seqs |= set(r.sequence.unique())
+    missing = seqs - set(prov.sequence)
+    if missing:
+        raise SystemExit(f"no recorded label provenance for: {sorted(missing)}")
+    prov = prov[prov.sequence.isin(seqs)]
+    (out / "README.md").write_text(readme(tasks, built, commit, prov, nets))
+    prov.to_csv(out / "label_provenance.csv", index=False)
 
     files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "MANIFEST.json")
     manifest = [{"path": str(p.relative_to(out)), "bytes": p.stat().st_size,
@@ -429,7 +464,7 @@ def main() -> None:
     print(f"  https://huggingface.co/datasets/{a.repo}")
 
 
-def readme(tasks: list, built: str, commit: str) -> str:
+def readme(tasks: list, built: str, commit: str, prov, nets: dict) -> str:
     """A Hugging Face dataset card: YAML frontmatter, then the prose.
 
     The `configs` block makes every track's arrivals loadable with
@@ -447,6 +482,13 @@ def readme(tasks: list, built: str, commit: str) -> str:
         f"{t['counts']['arrivals']:,} | {t['counts']['P']:,} | {t['counts']['S']:,} | "
         f"{t['counts']['waveform_files']} |" for t in tasks)
     total = sum(t["counts"]["arrivals"] for t in tasks)
+    prov_rows = "\n".join(
+        f"| {r.sequence} | {r.agency_long} | {r.service} | {r.mode_filter} | "
+        f"[{r.doi_label}](https://doi.org/{r.doi}) |" for r in prov.itertuples())
+    net_rows = "\n".join(
+        f"| `{c}` | {i['n']:,} | {i['years']} | {i['name'][:46]} | "
+        + (f"[{i['doi']}](https://doi.org/{i['doi']}) |" if i.get("doi") else "not registered |")
+        for c, i in sorted(nets.items()))
     return f"""---
 pretty_name: QuakeScope phase-picking evaluation set
 license: cc-by-4.0
@@ -573,12 +615,58 @@ otherwise be tuned against.
   every training set a submitter might use.
 - **No association step.** Picks are scored as picks.
 
-## Provenance and licence
+## Where the labels come from
 
-Waveforms are redistributed from open archives and remain their operators':
-SCEDC, NCEDC, PNSN, GeoNet, INGV, NOA, RESIF/EPOS-France, EarthScope and WEBNET.
-Reference arrivals come from those services, the ISC bulletin and the USGS
-phase-data product. Cite the operators when you use the waveforms.
+Every arrival was picked by an analyst at a named agency and retrieved from a
+named service. Nothing here was produced by a model.
+
+| sequence | analysed by | retrieved from | which picks | cite |
+|---|---|---|---|---|
+{prov_rows}
+
+Tracks 1 and 2a/2b keep **only** arrivals whose `evaluation_mode` is `manual`,
+so preliminary automatic picks the catalogues also carry are dropped before the
+reference is built. That filter removed 1,826 automatic AIC picks from Kaikoura
+alone.
+
+The swarm track is the exception and the difference matters. The ISC Bulletin
+relays its contributing agencies' **reviewed** readings but does not populate an
+evaluation-mode field, so for ISC-sourced arrivals "analyst" follows from what
+the ISC Bulletin is, not from a flag on the record. Where a sequence has a
+second source — BCSF-RENASS for Maurienne, ANSS for Salton Sea and
+Jones-Guthrie — those arrivals do carry `manual` and are deduplicated against
+the ISC ones at 100 ms.
+
+## Seismic networks
+
+The waveforms belong to the networks that recorded them. Each has its own DOI
+and its own citation; cite the ones whose data you use.
+
+| network | arrivals | years | operator | DOI |
+|---|--:|---|---|---|
+{net_rows}
+
+Station codes are **not unique across networks**. Resolving a bare code against
+a federated catalogue returns whichever network answers first, which put a
+Nevada Test Site station on a Czech swarm 9,097 km away in our first build. Every
+station in this set is checked to lie within 400 km of its sequence.
+
+## Reference catalogues and bulletins
+
+| source | DOI |
+|---|---|
+| ISC Bulletin, International Seismological Centre | [10.31905/D808B830](https://doi.org/10.31905/D808B830) |
+| ANSS Comprehensive Catalog, U.S. Geological Survey | [10.5066/F7MS3QZH](https://doi.org/10.5066/F7MS3QZH) |
+| Southern California Earthquake Data Center | [10.7909/C3WD3xH1](https://doi.org/10.7909/C3WD3xH1) |
+| Northern California Earthquake Data Center | [10.7932/NCEDC](https://doi.org/10.7932/NCEDC) |
+| GeoNet Aotearoa New Zealand, GNS Science | [10.21420/G19Y-9D40](https://doi.org/10.21420/G19Y-9D40) |
+| Rete Sismica Nazionale, INGV | [10.13127/sd/x0fxnh7qfy](https://doi.org/10.13127/sd/x0fxnh7qfy) |
+| Hellenic Unified Seismological Network | [10.7914/SN/HL](https://doi.org/10.7914/SN/HL) |
+| EPOS-France / RESIF | [10.15778/RESIF.FR](https://doi.org/10.15778/RESIF.FR) |
+
+Every DOI above was resolved against doi.org when this card was generated.
+
+## Licence
 
 Code in `score/` is MIT, from
 [SeisSCOPED/QuakeScope](https://github.com/SeisSCOPED/QuakeScope). The board

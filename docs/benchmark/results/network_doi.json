@@ -1,0 +1,163 @@
+{
+ "AZ": {
+  "n": 228,
+  "years": "2016-2016",
+  "doi": "10.7914/SN/AZ",
+  "name": "ANZA Regional Network",
+  "n_fit": 1
+ },
+ "BK": {
+  "n": 213,
+  "years": "2003-2024",
+  "doi": "10.7932/BDSN",
+  "name": "Berkeley Digital Seismograph Network",
+  "n_fit": 1
+ },
+ "CI": {
+  "n": 1584,
+  "years": "2003-2019",
+  "doi": "10.7914/SN/CI",
+  "name": "Southern California Seismic Network",
+  "n_fit": 1
+ },
+ "CZ": {
+  "n": 19,
+  "years": "2018-2018",
+  "doi": "10.7914/SN/CZ",
+  "name": "Czech Regional Seismic Network",
+  "n_fit": 1
+ },
+ "FR": {
+  "n": 765,
+  "years": "2017-2017",
+  "doi": "10.15778/RESIF.FR",
+  "name": "RESIF and other broad-band and accelerometric permanent networks in metropolitan France",
+  "n_fit": 1
+ },
+ "GS": {
+  "n": 47,
+  "years": "2014-2014",
+  "doi": "10.7914/SN/GS",
+  "name": "US Geological Survey Networks",
+  "n_fit": 1
+ },
+ "GU": {
+  "n": 192,
+  "years": "2017-2017",
+  "doi": "10.7914/SN/GU",
+  "name": "Regional Seismic Network of North Western Italy",
+  "n_fit": 1
+ },
+ "HL": {
+  "n": 372,
+  "years": "2021-2021",
+  "doi": "10.7914/SN/HL",
+  "name": "Hellenic Unified Seismological Network",
+  "n_fit": 1
+ },
+ "HT": {
+  "n": 354,
+  "years": "2021-2021",
+  "doi": "10.7914/SN/HT",
+  "name": "Hellenic Unified Seismological Network",
+  "n_fit": 1
+ },
+ "IV": {
+  "n": 2114,
+  "years": "2016-2023",
+  "doi": "10.13127/sd/x0fxnh7qfy",
+  "name": "Italian National Seismic Network",
+  "n_fit": 1
+ },
+ "N4": {
+  "n": 48,
+  "years": "2014-2015",
+  "doi": "10.7914/SN/N4",
+  "name": "Central and Eastern US Network",
+  "n_fit": 1
+ },
+ "NC": {
+  "n": 130,
+  "years": "2024-2024",
+  "doi": "10.7914/SN/NC",
+  "name": "USGS Northern California Seismic Network",
+  "n_fit": 1
+ },
+ "NN": {
+  "n": 28,
+  "years": "2020-2020",
+  "doi": "10.7914/SN/NN",
+  "name": "Nevada Seismic Network",
+  "n_fit": 1
+ },
+ "NZ": {
+  "n": 956,
+  "years": "2016-2016",
+  "doi": "10.21420/G19Y-9D40",
+  "name": "New Zealand National Seismograph Network",
+  "n_fit": 1
+ },
+ "OK": {
+  "n": 115,
+  "years": "2014-2015",
+  "doi": "10.7914/SN/OK",
+  "name": "Oklahoma Seismic Network",
+  "n_fit": 1
+ },
+ "PB": {
+  "n": 93,
+  "years": "2016-2016",
+  "doi": "",
+  "name": "Plate Boundary Observatory Borehole Seismic Network",
+  "n_fit": 1
+ },
+ "RD": {
+  "n": 365,
+  "years": "2017-2017",
+  "doi": "10.15778/RESIF.RD",
+  "name": "CEA/DASE Seismic Network",
+  "n_fit": 1
+ },
+ "SX": {
+  "n": 51,
+  "years": "2018-2018",
+  "doi": "10.7914/SN/SX",
+  "name": "SXNET Saxon Seismic Network",
+  "n_fit": 1
+ },
+ "TA": {
+  "n": 59,
+  "years": "2014-2015",
+  "doi": "10.7914/SN/TA",
+  "name": "USArray Transportable Array",
+  "n_fit": 1
+ },
+ "US": {
+  "n": 105,
+  "years": "2014-2015",
+  "doi": "10.7914/SN/US",
+  "name": "United States National Seismic Network",
+  "n_fit": 1
+ },
+ "UW": {
+  "n": 1,
+  "years": "2019-2019",
+  "doi": "10.7914/SN/UW",
+  "name": "Pacific Northwest Seismic Network - University of Washington",
+  "n_fit": 1
+ },
+ "WB": {
+  "n": 3068,
+  "years": "2018-2018",
+  "doi": "10.7914/SN/WB",
+  "name": "West Bohemia Local Seismic Network",
+  "n_fit": 1
+ },
+ "XO": {
+  "n": 235,
+  "years": "2016-2016",
+  "doi": "10.13127/sd/7txegdo5x8",
+  "name": "Seismic Network for Site Effect Studies in Amatrice Area (Central Italy)",
+  "n_fit": 1
+ }
+}

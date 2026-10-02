@@ -1,22 +1,22 @@
 sequence,window,station,station_code,archive_code,network,band,arrivals,file
+West Bohemia 2018,0,WB.LBC,LBCW,LBC,WB,CH,358,west_bohemia_2018_w0_WB.LBC.mseed
 West Bohemia 2018,0,WB.KOC,KOCW,KOC,WB,CH,356,west_bohemia_2018_w0_WB.KOC.mseed
 West Bohemia 2018,0,WB.KRC,KRCW,KRC,WB,CH,347,west_bohemia_2018_w0_WB.KRC.mseed
-West Bohemia 2018,0,SN.STC,STCW,STC,SN,EH,346,west_bohemia_2018_w0_SN.STC.mseed
+West Bohemia 2018,0,WB.STC,STCW,STC,WB,CH,346,west_bohemia_2018_w0_WB.STC.mseed
 West Bohemia 2018,0,WB.SKC,SKC,SKC,WB,CH,313,west_bohemia_2018_w0_WB.SKC.mseed
 West Bohemia 2018,0,CZ.HSKC,HSKC,HSKC,CZ,HH,19,west_bohemia_2018_w0_CZ.HSKC.mseed
-West Bohemia 2018,0,CZ.KHC,KHC,KHC,CZ,HH,8,west_bohemia_2018_w0_CZ.KHC.mseed
-West Bohemia 2018,1,SN.STC,STCW,STC,SN,EH,280,west_bohemia_2018_w1_SN.STC.mseed
+West Bohemia 2018,1,WB.LBC,LBCW,LBC,WB,CH,284,west_bohemia_2018_w1_WB.LBC.mseed
+West Bohemia 2018,1,WB.STC,STCW,STC,WB,CH,280,west_bohemia_2018_w1_WB.STC.mseed
 West Bohemia 2018,1,WB.KOC,KOCW,KOC,WB,CH,276,west_bohemia_2018_w1_WB.KOC.mseed
 West Bohemia 2018,1,WB.KRC,KRCW,KRC,WB,CH,271,west_bohemia_2018_w1_WB.KRC.mseed
 West Bohemia 2018,1,WB.SKC,SKC,SKC,WB,CH,248,west_bohemia_2018_w1_WB.SKC.mseed
 West Bohemia 2018,1,SX.TANN,TANN,TANN,SX,HH,51,west_bohemia_2018_w1_SX.TANN.mseed
-West Bohemia 2018,1,SX.GUNZ,GUNZ,GUNZ,SX,HH,46,west_bohemia_2018_w1_SX.GUNZ.mseed
 Maurienne 2017-2019,0,RD.ORIF,ORIF,ORIF,RD,BH,154,maurienne_2017_w0_RD.ORIF.mseed
-Maurienne 2017-2019,0,NC.LPG,LPG,LPG,NC,EH,88,maurienne_2017_w0_NC.LPG.mseed
 Maurienne 2017-2019,0,FR.RSL,RSL,RSL,FR,HH,81,maurienne_2017_w0_FR.RSL.mseed
 Maurienne 2017-2019,0,GU.RRL,RRL,RRL,GU,HH,67,maurienne_2017_w0_GU.RRL.mseed
 Maurienne 2017-2019,0,FR.OGVG,OGVG,OGVG,FR,HH,63,maurienne_2017_w0_FR.OGVG.mseed
 Maurienne 2017-2019,0,FR.OGSA,OGSA,OGSA,FR,HH,62,maurienne_2017_w0_FR.OGSA.mseed
+Maurienne 2017-2019,0,FR.OGMO,OGMO,OGMO,FR,HH,60,maurienne_2017_w0_FR.OGMO.mseed
 Maurienne 2017-2019,1,RD.ORIF,ORIF,ORIF,RD,BH,131,maurienne_2017_w1_RD.ORIF.mseed
 Maurienne 2017-2019,1,FR.RSL,RSL,RSL,FR,HH,104,maurienne_2017_w1_FR.RSL.mseed
 Maurienne 2017-2019,1,FR.OGVG,OGVG,OGVG,FR,HH,80,maurienne_2017_w1_FR.OGVG.mseed
@@ -34,7 +34,7 @@ Salton Sea 2016,0,CI.BC3,BC3,BC3,CI,HH,110,salton_sea_2016_w0_CI.BC3.mseed
 Salton Sea 2016,0,CI.PMD,PMD,PMD,CI,HH,109,salton_sea_2016_w0_CI.PMD.mseed
 Salton Sea 2016,0,CI.TOR,TOR,TOR,CI,HH,108,salton_sea_2016_w0_CI.TOR.mseed
 Salton Sea 2016,0,CI.SAL,SAL,SAL,CI,HH,108,salton_sea_2016_w0_CI.SAL.mseed
-Salton Sea 2016,0,NN.CTC,CTC,CTC,NN,HH,104,salton_sea_2016_w0_NN.CTC.mseed
+Salton Sea 2016,0,CI.CTC,CTC,CTC,CI,HH,104,salton_sea_2016_w0_CI.CTC.mseed
 Salton Sea 2016,1,AZ.PFO,PFO,PFO,AZ,HH,109,salton_sea_2016_w1_AZ.PFO.mseed
 Salton Sea 2016,1,PB.B084,B084,B084,PB,HH,93,salton_sea_2016_w1_PB.B084.mseed
 Salton Sea 2016,1,CI.TOR,TOR,TOR,CI,HH,91,salton_sea_2016_w1_CI.TOR.mseed
