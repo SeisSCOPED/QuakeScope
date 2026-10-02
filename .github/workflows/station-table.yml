@@ -1,0 +1,124 @@
+name: Station table completeness
+
+# Is every station the catalogue has picks for listed in its station table?
+#
+# A pick names a station by `tid`. A reader selects stations from
+# <campaign>/stations.parquet and fetches their partitions. A station with
+# picks that is missing from the table is unreachable by anyone following the
+# documented workflow, and it fails silently: the reader gets a shorter list
+# and no error.
+#
+# That happened. The western-fill campaigns built their own station table,
+# wrote picks into western/picks/, and their rows never reached
+# western/stations.parquet. 1,383 stations and 178,416,797 picks, 10.3% of the
+# catalogue, were invisible for eleven days. Two outside groups found it from
+# maps with a hole over Utah before we did.
+#
+# This reads the bucket: every manifest's `records` for the stations that
+# produced picks, against the ids in the published table. It writes nothing.
+# Repair is `scripts/merge_station_tables.py --campaign <name> --write`, which
+# backs the table up first because bucket versioning is off.
+#
+# Credentials: the same as aws-watch, AWS_WATCH_ROLE_ARN (OIDC) or the
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets. Read access to the picks
+# bucket is enough.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"          # daily, after the overnight campaigns settle
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: "Campaign to check, or 'all'"
+        default: all
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        campaign: [western, obs, global]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install --quiet boto3 pandas pyarrow
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_WATCH_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_WATCH_ROLE_ARN == '' && secrets.AWS_ACCESS_KEY_ID || '' }}
+          aws-secret-access-key: ${{ secrets.AWS_WATCH_ROLE_ARN == '' && secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          aws-region: us-east-2
+
+      - name: Check ${{ matrix.campaign }}
+        id: check
+        run: |
+          set -o pipefail
+          python scripts/merge_station_tables.py \
+            --campaign "${{ matrix.campaign }}" --check 2>&1 | tee check.log
+          orphans=$(grep -oE 'with picks but NOT in the table: [0-9,]+' check.log \
+                    | grep -oE '[0-9,]+' | tr -d ,)
+          echo "orphans=${orphans:-unknown}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### ${{ matrix.campaign }}"
+            echo '```'
+            cat check.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${orphans:-0}" != "0" ]; then
+            echo "::error::${{ matrix.campaign }}: ${orphans} station(s) have picks but no row in stations.parquet"
+            exit 1
+          fi
+
+      - name: Open an issue if the table is incomplete
+        if: failure() && steps.check.outputs.orphans != 'unknown'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const c = "${{ matrix.campaign }}";
+            const n = "${{ steps.check.outputs.orphans }}";
+            const title = `${c}/stations.parquet is missing ${n} station(s) that have picks`;
+            const body = [
+              `\`${c}/stations.parquet\` does not list ${n} station(s) the catalogue has picks for.`,
+              ``,
+              `Anyone selecting stations from the table silently misses those picks.`,
+              ``,
+              `Repair:`,
+              '```',
+              `python scripts/merge_station_tables.py --campaign ${c} --dry-run`,
+              `python scripts/merge_station_tables.py --campaign ${c} --write`,
+              '```',
+              ``,
+              `The write backs the current table up to \`${c}/.backup/\` first, because`,
+              `bucket versioning is off. It refuses a repeated id and refuses to publish a`,
+              `table that still leaves a station with picks uncovered.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join("\n");
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: "open", labels: "station-table",
+            });
+            const hit = open.data.find(i => i.title.startsWith(`${c}/stations.parquet`));
+            if (hit) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: hit.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ["station-table"],
+              });
+            }
