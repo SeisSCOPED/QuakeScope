@@ -1,0 +1,101 @@
+track,sequence,station,arrivals,P,S,lat,lon,elev,site
+track1-western-us,Mendocino 2024,BK.PETL,73,40,33,40.28844,-124.34259,49.6,"Punta Gorda, Petrolia, CA"
+track1-western-us,Mendocino 2024,BK.RBOW,42,37,5,40.33467,-124.11136,1100.0,"Rainbow Ridge, Humboldt, CA"
+track1-western-us,Mendocino 2024,BK.WLKR,68,40,28,40.3629,-124.32226,274.9,Walker Ranch; near Petrolia CA
+track1-western-us,Mendocino 2024,NC.KCT,72,42,30,40.475567,-124.337486,378.0,Cape Town
+track1-western-us,Mendocino 2024,NC.KMPB,58,41,17,40.417194,-124.120758,970.0,Mount Pierce
+track1-western-us,Monroe WA,PB.B001,4,2,2,48.043072,-123.131409,237.0,"golbeck01bwa2005, Sequim, WA, USA"
+track1-western-us,Monroe WA,PB.B013,9,5,4,47.813,-122.910797,75.3,"pnycrk013bwa2007, Quilcene, WA, USA"
+track1-western-us,Monroe WA,UW.BERY,16,9,7,48.2641,-122.096,149.6,"Pilchuck Tree Farm, Arlington, WA, USA"
+track1-western-us,Monroe WA,UW.DOSE,3,2,1,47.7172,-122.9718,53.3,"Dosewallips, Brinnon, WA, USA"
+track1-western-us,Monroe WA,UW.GNW,15,8,7,47.56413,-122.82498,220.0,"Green Mountain, WA, USA"
+track1-western-us,Monroe WA,UW.RATT,10,9,1,47.42546,-121.80254,442.4,"Rattlesnake Lake, King County, WA"
+track1-western-us,Monte Cristo,NN.LHV,28,16,12,38.2513,-118.5049,2353.0,"Little Huntoon Valley, Nevada w84gm"
+track1-western-us,Ridgecrest,CI.CLC,160,82,78,35.81574,-117.59751,775.0,China Lake
+track1-western-us,Ridgecrest,CI.JRC2,152,75,77,35.98249,-117.80885,1469.0,Joshua Ridge: China Lake
+track1-western-us,Ridgecrest,CI.SRT,83,56,27,35.69235,-117.75051,667.0,Snort
+track1-western-us,Ridgecrest,CI.TOW2,84,55,29,35.80856,-117.76488,685.0,Tower 2
+track1-western-us,Ridgecrest,CI.WRC2,166,79,87,35.9479,-117.65038,943.0,Renegade Canyon
+track1-western-us,San Simeon,BK.PKD,27,15,12,35.945171,-120.541603,583.0,"Bear Valley Ranch, Parkfield, CA, USA"
+track1-western-us,San Simeon,BK.SAO,3,3,0,36.76403,-121.44722,317.2,"San Andreas Geophysical Obs., Hollister, CA, USA"
+track1-western-us,San Simeon,CI.LCP,5,5,0,34.73551,-120.27996,199.0,Los Alamos County Park
+track1-western-us,San Simeon,CI.PHL,32,30,2,35.40773,-120.54556,355.0,Park Hill
+track1-western-us,San Simeon,CI.SMM,11,9,2,35.3142,-119.99581,599.0,Simmler
+track2-msas,Kaikoura 2016,NZ.BSWZ,179,80,99,-41.714915447,173.875740852,277.0,Black Birch Station
+track2-msas,Kaikoura 2016,NZ.CMWZ,109,51,58,-41.749017075,174.213825009,281.0,Cape Campbell
+track2-msas,Kaikoura 2016,NZ.KHZ,103,45,58,-42.41598,173.53897,64.0,Kahutara
+track2-msas,Kaikoura 2016,NZ.TCW,146,62,84,-41.210364716,174.276328104,197.0,Tory Channel
+track2-msas,Kaikoura 2016,NZ.THZ,111,48,63,-41.762474128,172.905218304,747.0,Top House
+track2-msas,Kaikoura 2016,NZ.TUWZ,167,71,96,-41.429388947,173.942892947,132.0,Tuamarina
+track2-msas,Norcia 2016,IV.CAMP,213,113,100,42.53578,13.409,1283.0,CAMPOTOSTO
+track2-msas,Norcia 2016,IV.GUMA,261,134,127,43.0627,13.3352,574.0,Gualdo di Macerata
+track2-msas,Norcia 2016,IV.LNSS,228,115,113,42.60286,13.04032,1155.0,LEONESSA
+track2-msas,Norcia 2016,IV.MC2,206,105,101,42.911418,13.188976,1888.0,Monte Cornaccione
+track2-msas,Norcia 2016,IV.RM33,214,111,103,42.50898,13.21452,1097.0,
+track2-msas,Norcia 2016,XO.AM05,235,123,112,42.977404,13.352786,464.0,Amandola (FM) Campo sportivo
+track2-msas,Thessaly 2021,HL.KZN,117,66,51,40.30331,21.78209,791.0,"Kozani,Greece"
+track2-msas,Thessaly 2021,HL.TETR,109,66,43,39.3445,21.274667,942.0,"Tetrakomo,Epirus,Greece"
+track2-msas,Thessaly 2021,HL.THL,146,73,73,39.56468,22.0144,86.0,"Klokotos, Thessalia, Greece"
+track2-msas,Thessaly 2021,HT.AGG,109,64,45,39.021099,22.336,622.0,"AGIOS GEORGIOS, GREECE"
+track2-msas,Thessaly 2021,HT.LIT,117,62,55,40.1008,22.49,480.0,"Litochoro, Greece, HT-Net"
+track2-msas,Thessaly 2021,HT.TYRN,128,64,64,39.711,22.2325,151.0,"Tyrnavos, Greece"
+track2-swarm,Jones-Guthrie 2014-2015,GS.OK027,11,7,4,35.711956,-97.283646,364.0,Henny and Sorgum Hills Rd.
+track2-swarm,Jones-Guthrie 2014-2015,GS.OK028,13,7,6,35.561111,-97.061386,330.0,"N Oak Rd and Britton Rd, Lincoln County"
+track2-swarm,Jones-Guthrie 2014-2015,GS.OK029,23,13,10,35.79657,-97.45486,333.0,"Liberty Lake, Oklahoma, USA"
+track2-swarm,Jones-Guthrie 2014-2015,N4.T35B,48,32,16,36.9162,-96.5119,413.0,"Sooner Cattle Company, Foraker, OK, USA"
+track2-swarm,Jones-Guthrie 2014-2015,OK.CHOK,18,10,8,35.561127,-97.061303,338.0,"Chandler, Oklahoma"
+track2-swarm,Jones-Guthrie 2014-2015,OK.CROK,12,6,6,36.504737,-97.983354,403.0,"Carrier, Oklahoma, USA"
+track2-swarm,Jones-Guthrie 2014-2015,OK.OKCFA,41,23,18,35.41531,-97.45177,385.0,"Farley, Oklahoma City, OK"
+track2-swarm,Jones-Guthrie 2014-2015,OK.U32A,11,9,2,36.3795,-99.0014,525.0,"Winter Ranch, Mooreland, Oklahoma, USA"
+track2-swarm,Jones-Guthrie 2014-2015,OK.X37A,33,25,8,34.5892,-95.3713,207.0,"Clayton, Oklahoma, USA"
+track2-swarm,Jones-Guthrie 2014-2015,TA.TUL1,25,17,8,35.9104,-95.791901,256.0,"Leonard, OK, USA"
+track2-swarm,Jones-Guthrie 2014-2015,TA.W39A,34,28,6,35.195999,-93.783997,162.0,"Magazine, AR, USA"
+track2-swarm,Jones-Guthrie 2014-2015,US.MIAR,36,25,11,34.5454,-93.5765,207.0,"Mount Ida, Arkansas, USA"
+track2-swarm,Jones-Guthrie 2014-2015,US.WMOK,69,50,19,34.7379,-98.7807,486.0,"Wichita Mountains, Oklahoma, USA"
+track2-swarm,Maurienne 2017-2019,FR.OGGM,136,68,68,45.205717,6.116735,1575.0,barrage de Grand'Maison
+track2-swarm,Maurienne 2017-2019,FR.OGMO,55,26,29,45.20865,6.68308,1200.0,Modane
+track2-swarm,Maurienne 2017-2019,FR.OGSA,134,65,69,45.036806,6.400931,2106.0,station alpine
+track2-swarm,Maurienne 2017-2019,FR.OGVG,206,104,102,44.815507,6.1112,1090.0,Saint-Maurice-en-Valgodemard
+track2-swarm,Maurienne 2017-2019,FR.RSL,234,114,120,45.688207,6.624517,1590.0,Roselend
+track2-swarm,Maurienne 2017-2019,GU.LSD,34,16,18,45.4596,7.1339,2271.0,Lago del Serru` (TO) - Italy
+track2-swarm,Maurienne 2017-2019,GU.RRL,158,78,80,44.921,6.79,2086.0,Cesana Torinese (TO) - Italy
+track2-swarm,Maurienne 2017-2019,RD.ORIF,365,179,186,44.9183,5.88,1080.0,"Oris en Rattier, France"
+track2-swarm,Salton Sea 2016,AZ.PFO,228,126,102,33.611698,-116.459396,1259.0,"Pinyon Flats Observatory, CA, USA"
+track2-swarm,Salton Sea 2016,CI.BC3,108,55,53,33.65515,-115.45366,1137.0,Big Chuckawalla Mtns
+track2-swarm,Salton Sea 2016,CI.CTC,104,50,54,33.65516,-115.99006,538.0,Cactus City
+track2-swarm,Salton Sea 2016,CI.ERR,87,39,48,33.11675,-115.82267,-56.0,Elmore's Ranch
+track2-swarm,Salton Sea 2016,CI.PMD,197,104,93,33.64785,-116.37769,296.0,Palm Desert
+track2-swarm,Salton Sea 2016,CI.SAL,196,114,82,33.2801,-115.98585,14.0,Salton City
+track2-swarm,Salton Sea 2016,CI.TOR,199,98,101,33.57526,-116.22584,4.0,Toro Canyon
+track2-swarm,Salton Sea 2016,PB.B084,93,46,47,33.611568,-116.456367,1271.0,"pinyon084bcs2006, Anza, CA, USA"
+track2-swarm,West Bohemia 2018,CZ.HSKC,19,2,17,50.60745,13.43198,590.0,Hora Svate Kateriny
+track2-swarm,West Bohemia 2018,SX.TANN,51,28,23,50.415,12.461,870.0,"TU Freiberg Station Tannenbergsthal, Germany"
+track2-swarm,West Bohemia 2018,WB.KOC,630,308,322,50.264167,12.232878,621.0,Kopaniny
+track2-swarm,West Bohemia 2018,WB.KRC,616,307,309,50.330692,12.5295,806.0,Kraslice
+track2-swarm,West Bohemia 2018,WB.LBC,641,319,322,50.264608,12.411233,684.0,Luby
+track2-swarm,West Bohemia 2018,WB.SKC,560,240,320,50.16911,12.360497,501.0,Skalna
+track2-swarm,West Bohemia 2018,WB.STC,621,296,325,50.257942,12.518492,712.0,Studenec
+track2-vt,Etna edifice 2022-2024,IV.AIO,15,11,4,37.9712,15.233,751.0,"Antillo, Italy"
+track2-vt,Etna edifice 2022-2024,IV.ECBD,26,15,11,37.7802,15.0865,1465.0,Etna Case Bada
+track2-vt,Etna edifice 2022-2024,IV.ECHR,5,3,2,37.6863,14.9129,1168.0,Santa Chiara
+track2-vt,Etna edifice 2022-2024,IV.ECNE,10,5,5,37.7653,15.0018,2946.0,ECNE
+track2-vt,Etna edifice 2022-2024,IV.ECTS,17,10,7,37.8825,15.1212,644.0,ECTS - Etna Castiglione di Sicilia
+track2-vt,Etna edifice 2022-2024,IV.ECZM,5,4,1,37.7313,14.9041,1391.0,Etna Case Zampini
+track2-vt,Etna edifice 2022-2024,IV.EFIU,17,10,7,37.7896,15.2103,97.0,Fiumefreddo di Sicilia
+track2-vt,Etna edifice 2022-2024,IV.EMCN,28,15,13,37.7912,15.0336,1916.0,Monte Conca
+track2-vt,Etna edifice 2022-2024,IV.EMFO,24,13,11,37.7357,15.0902,1209.0,Etna Monte Fontane
+track2-vt,Etna edifice 2022-2024,IV.EMFS,26,13,13,37.7196,14.9979,2552.0,Etna Monte Frumento Supino
+track2-vt,Etna edifice 2022-2024,IV.EMNR,23,15,8,37.8168,15.026,1845.0,Etna Monte Nero
+track2-vt,Etna edifice 2022-2024,IV.EMPL,6,4,2,37.679,14.9703,1484.0,"EMPL - Etna Monte Parmentelli, Italy"
+track2-vt,Etna edifice 2022-2024,IV.EMSG,24,15,9,37.8208,14.9498,1435.0,EMSG
+track2-vt,Etna edifice 2022-2024,IV.ENIC,5,4,1,37.6314,15.0216,877.0,ENIC
+track2-vt,Etna edifice 2022-2024,IV.EPDN,18,9,9,37.7659,15.0168,2862.0,Etna Pizzi Deneri
+track2-vt,Etna edifice 2022-2024,IV.EPIT,21,11,10,37.8113,15.0567,1657.0,"Pozzo Pitarrone, Linguaglossa, Catania"
+track2-vt,Etna edifice 2022-2024,IV.EPMN,4,2,2,37.8204,15.1773,541.0,Piedimonte Etneo
+track2-vt,Etna edifice 2022-2024,IV.EPOZ,2,2,0,37.6719,15.1885,124.0,EPOZ
+track2-vt,Etna edifice 2022-2024,IV.EPZF,2,2,0,37.824,14.857,1140.0,Pizzo Felice
+track2-vt,Etna edifice 2022-2024,IV.ESAL,1,1,0,37.7551,15.1345,768.0,Etna Sant Alfio
+track2-vt,Etna edifice 2022-2024,IV.ESLN,8,4,4,37.6934,14.9744,1787.0,Serra La Nave
+track2-vt,Etna edifice 2022-2024,IV.ESPC,27,14,13,37.6925,15.0274,1655.0,Etna Serra Pizzuta Calvarina
+track2-vt,Etna edifice 2022-2024,IV.ESVO,7,4,3,37.7731,14.9469,1736.0,Etna Monte Scavo
+track2-vt,Etna edifice 2022-2024,IV.EVRN,16,9,7,37.6892,15.1356,421.0,Santa Venerina

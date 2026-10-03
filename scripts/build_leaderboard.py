@@ -662,6 +662,7 @@ def main() -> None:
         <a class="button primary" href="#board">See the board</a>
         <a class="button secondary" href="#data">Download the data</a>
         <a class="button secondary" href="benchmark_data.html">Code to fetch waveforms</a>
+        <a class="button secondary" href="benchmark_map.html">Map the sequences</a>
       </div>
     </div>
   </div>
