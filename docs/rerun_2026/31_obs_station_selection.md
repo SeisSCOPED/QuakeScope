@@ -157,6 +157,46 @@ unknown; the fill table should be rebuilt from FDSN channel metadata for these
 **Western is clean.** No western station is offshore by the rule. The 83
 western stations below -50 m are Imperial Valley land.
 
+### What the manifests hold against the list (checked 2026-10-03)
+
+The 5,984 obs manifests name 1,769 stations with picks. 1,157 of them are
+return-to-global land stations (100.1 M picks); 612 are offshore (29.4 M
+picks). **784 of the 1,396 offshore stations never wrote a pick.** Their
+planned station-days, by cause (a station can appear under more than one):
+
+| cause | station-days | stations |
+|---|--:|--:|
+| `EL` channels only, skipped by `select_channel`, network-year also unreadable at the S3 access point | 27,100 | 493 |
+| `EL` channels only, skipped by `select_channel`, access present | 22,299 | 366 |
+| planned on metadata that is wrong: `NV.KEMF.B1` has HN channels for 96 days in 2020, the table gives it 2010 to open | 5,853 | 1 |
+| data absent at the DMC too (`7D.M04A`, `7D.M05A` 2011 to 2012, `Z6.03` 2010; one hour requested, 404) | 658 | 3 |
+| blocked on EarthScope 403 (2F Axial 2022 to 2023) | 2,482 | 9 |
+| network-year unreadable, pickable band (XO 2019 class) | 1,692 | 6 |
+| not run (2026) or completed empty on a readable network-year | 405 | 3 |
+
+**The `EL` band is the finding.** 767 of the 1,396 offshore stations carry
+only `EL1, EL2, ELZ` (plus an `EDH` hydrophone): the SIO and OBSIP
+short-period fleet, Geospace GS-11D geophones at 200 Hz (YN 2009, X6 2012, YO
+2014, ZU 2018, YR 2021, 1V 2023) and L28LB at 100 Hz (X9, Z5, 9R). `EL` was
+dropped from `CHANNEL_PRIORITY` on 2026-09-02 because land pickers are not
+trained on it (`constants.py`, "Low-gain and short-period-geophone bands were
+dropped"), and [27](27_obs_literature_benchmark.md) already saw it on Blanco.
+Campaign-wide it is 47,168 of 439,354 offshore operating days (11%) but 55% of
+the offshore stations, and **846 of the 1,398 fill-from-global stations
+(43,303 days) are `EL`-only too**, so the fill as sized below would skip them.
+The data exist and are open: one hour of `ELZ` fetched from the DMC on
+2026-10-03 for Z5.BS611 (2014), X9.BS010 (2013), 9R.OBS01 (2023), YO.201
+(2014) and 1V.101 (2023) returned 1.2 to 2.9 MB each. X9 2013 is "missing" to
+the S3 access survey and openly served by the DMC, so the two tiers differ.
+
+Decision needed: whether the OBS track picks `EL` with the `obs` weight. The
+2026-09-02 reasoning was about land training sets; whether PickBlue's training
+corpus holds short-period OBS records is not recorded here and should be
+checked before deciding. If yes, `select_channel` needs a per-weight priority
+(or `EL` appended for the obs job definition only), the 767 kept stations and
+846 fill stations are planned, and the empty X9, Z5, 9R, YO, YN, X6, ZU, YR,
+1V shards are re-run.
+
 ### Decisions (M. Denolle, 2026-10-03)
 
 | | decision |
@@ -244,7 +284,8 @@ resumed-shard fix, 8 vCPU / 16 GB, Fargate; read back from Batch with boto3 on
 
 | queue | stations | span | planned station-days | note |
 |---|--:|---|--:|---|
-| `_queues/obs-fill` (new) | 1,398 from global + ~203 absent | 1993.001 to 2026.274 | ~384,000 | the planner clips to operating windows; the declared count will be close to the sum above |
+| `_queues/obs-fill` (new) | 1,398 from global + ~203 absent | 1993.001 to 2026.274 | ~384,000 | the planner clips to operating windows; the declared count will be close to the sum above. **846 of the 1,398 are `EL`-only and are skipped unless the `EL` decision above is yes**; without it the fill is 552 stations and ~295,000 days |
+| `EL` re-run of kept stations (if the `EL` decision is yes) | 767 keep | their windows | 47,168 | the X9, Z5, 9R, YO, YN, X6, ZU, YR, 1V shards that completed empty |
 | `_queues/obs-2026` (re-planned) | 1,396 keep | 2026.001 to 2026.274 | ~10,500 | today's queue has 26 sea-only shards (NV, OO) and 39 land-only |
 | `_queues/obs`, blocked shards | 2F Axial 2022 and 2023 | | 7,231 | 50 sea-only shards blocked on EarthScope 403s; re-survey access and unblock when the embargo lifts. The other 285 blocked shards are land and stay blocked |
 | XO 2019 and X9 2013 | | | 37,316 | recorded complete with zero picks ([obs-empty-completions](README.md)); run `python -m src.picker netyear-sweep` **from a Batch task** first, then a repair queue if the network-years exist |
