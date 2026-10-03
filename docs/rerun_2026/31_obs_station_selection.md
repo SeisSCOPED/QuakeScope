@@ -1,8 +1,10 @@
 # 31 — Offshore stations: select per station, then repair the obs catalogue
 
-**Status: plan, written 2026-10-03. Nothing below has been executed.** Every
-number was measured from `s3://quakescope-picks-2026` on 2026-10-03 by the
-commands in the appendix, not read from the dashboard or an earlier document.
+**Status: in execution since 2026-10-03** (M. Denolle approved the plan that
+day). The log of what has actually run is in section 7; everything else is
+plan. Every number was measured from `s3://quakescope-picks-2026` on
+2026-10-03 by the commands in the appendix, not read from the dashboard or an
+earlier document.
 
 Marine noticed from the dashboard station maps that the obs campaign holds
 stations that are not on the sea floor. It does: the campaign was planned from
@@ -355,14 +357,41 @@ Each line is a command or an assertion, not a reading of a document.
 - Dashboard: rebuilt, obs map shows no triangle on land.
 - `global_onshore_from_obs.csv` has 1,993 rows and no id in common with the
   keep set; the next global plan's station table is checked against it.
-- Before the fill: one `EL`-only shard (X9 2013 is the test case, open at the
-  DMC and in the keep set) run on the new obs job definition writes picks with
-  `cha == "EL"` in its manifest records; the same image run with `jma_wc`
-  still returns `None` for an `EL`-only station.
+- Before the fill: the `obs-el-test` queue (X9 2012 Blanco short-period, 23
+  stations, 2012.300 to 2012.320, 2 shards) run on the new obs job definition
+  writes picks with `cha == "EL"` in its manifest records; the same image run
+  with `jma_wc` still returns `None` for an `EL`-only station. X9 2013 was the
+  first choice but is unreadable at the S3 access point, so 2012 it is.
 - After the fill: `obs/runs/*.json` for the new run ids say `weight: obs`;
   `obs-fill` `complete/` records sum to the planned station-days less the
   blocked ones; `merge_station_tables --check` still passes with the
   contributor table merged.
+
+---
+
+## 7. Execution log
+
+All on 2026-10-03 unless stated. Branch `obs-station-selection`, pull request
+#48.
+
+| step | state | evidence |
+|---|---|---|
+| `EL` per-weight priority in code | done, on the branch, 174 tests and the offline selftest pass | commit `5ad5ae5`; `tests/test_channel_selection.py::test_obs_weight_picks_el_and_land_weights_do_not` |
+| image with the `EL` change | **waiting on the merge of PR #48** (`docker.yml` builds on push to `main` only) | `gh pr view 48` |
+| obs job definition on that image | not yet; `scripts/register_jobdef.py --tag <sha> quakescope_2026_obs` once the tag exists | |
+| queues installed under `_queues/` | done: `obs-el-test` 23 stations, 2 shards, 483 sd; `obs-el` 767, 210, 47,168; `obs-fill` 1,640 station-locations (1,398 + 242 absent), 2,994, 389,444; `obs-2026` re-planned 1,396, 28, 10,960 (old plan copied to `_archive/obs-2026-plan-before-20261003/`) | `scripts/plan_obs_queues.py`; each queue's `README.json` |
+| object classification by `tid` | done: 17,398 land-only (102.6 M rows, 2.74 GB), 571 mixed (3.1 M rows), 7,799 sea-only (27.9 M rows); none unknown | `docs/rerun_2026/obs_split/objects.parquet` |
+| manifests and station table classified | done: 4,549 land-only, 167 mixed, 1,268 sea-only; table 1,396 keep, 1,993 land, 0 neither | `scripts/split_obs_land.py dry-run` |
+| archive move (`apply`) | **done and verified** 2026-10-03: 17,398 objects moved, 571 split, 4,549 manifests moved and 167 rewritten; station table 3,389 to 1,396 rows, backup `obs/stations.parquet.bak-20261003T173825Z`; `obs/.dashboard/rowcount.json` deleted | `docs/rerun_2026/obs_split/apply_*.jsonl.gz` |
+| `verify` | **OK**: 133,641,669 rows before = 30,426,369 in `obs/picks/` (8,370 objects) + 103,215,300 in `_archive/obs-land/picks/` (17,969 objects); table 1,396 rows, all keep | `docs/rerun_2026/obs_split/verify.json` |
+| station-table invariant | `merge_station_tables.py --campaign obs --check`: 1,435 manifests, 607 stations with picks, 0 with picks but no table row. 612 kept stations have manifest records, 5 of them with zero picks; the same 612 and 607 before and after the move, and no land `tid` remains in any manifest | run 2026-10-03 after the move |
+| obs-fill stations into the catalogue table | done: `merge_station_tables.py --campaign obs --write` merged `_queues/obs-fill/stations.parquet`; `obs/stations.parquet` is 3,036 rows (1,396 keep + 1,640 fill), backup `obs/.backup/stations-20261003T174139Z.parquet` | the daily `station-table.yml` check |
+| `fleet.json` entries for `obs-el-test`, `obs-el`, `obs-fill` | not yet; they name the job definition, so after it exists | |
+| launch | not yet; Fleet runs the access survey on a campaign's first target, then launches on the second | |
+
+The manifest-based estimate in section 3 (16,327 / 1,458 / 7,712) was made
+before every object's `tid` column had been read; the numbers above are the
+read ones and are what the move used.
 
 ---
 
