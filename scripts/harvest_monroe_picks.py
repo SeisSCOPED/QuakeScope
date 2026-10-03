@@ -12,7 +12,10 @@ from obspy.clients.fdsn import Client
 
 SP = "/private/tmp/claude-501/-Users-marinedenolle-GitHub-QuakeScope/8f282710-68a1-4cdd-b77e-e07856ef31af/scratchpad"
 LAT, LON = 47.86, -121.93
-T0 = UTCDateTime("2019-07-12T14:51:00")
+# ComCat origin for uw61535372, in UTC. An earlier version of this script
+# carried 14:51, five hours late, which put the scored window after the
+# mainshock and its 128 manual arrivals and left the reference with one pick.
+T0 = UTCDateTime("2019-07-12T09:51:38")
 cat = Client("USGS", timeout=180).get_events(
     starttime=T0 - 600, endtime=T0 + 86400 * 7, latitude=LAT, longitude=LON,
     maxradius=0.8, minmagnitude=0.0)

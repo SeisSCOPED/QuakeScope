@@ -53,6 +53,11 @@ CACHE = OUT / "waveforms"
 WEIGHTS = ["quakescope2026", "jma_wc", "original", "instance"]
 DETECT_FLOOR = 0.02        # run once low, threshold offline, as the other tracks do
 N_STATIONS = 6
+ONLY: set[str] = set()      # --only <key>[,<key>] limits the run
+TRIM_MARGIN_S = 300     # context kept either side of the outermost arrival
+TRIM_IF_UNDER = 0.6     # only trim when it saves most of the window
+DEDUP_TOL_S = 0.5   # the scorer's matching tolerance
+PER_EVENT_FDSN = {"ingv", "geonet"}   # reject a region query with arrivals
 N_WINDOWS = 2              # default; a sequence may override both
 WINDOW_H = 3
 CHANNEL_PREF = ["HH", "EH", "BH", "CH", "SH"]   # CH is WEBNET's 250 Hz short period
@@ -76,6 +81,17 @@ SEQUENCES = {
         note="injection-induced swarm, Oklahoma; OGS and USGS analyst picks. The rate "
              "is elevated for months rather than concentrated in a burst, so this one "
              "takes more and longer windows to reach a scorable count"),
+    "Etna edifice 2022-2024": dict(
+        key="etna_edifice", source="ingv", sources=["ingv"], lat=37.751, lon=14.993,
+        radius=0.08, max_depth_km=8.0, t0="2022-01-01", t1="2024-12-31", min_mag=1.5,
+        n_windows=4, window_h=12, n_stations=14,
+        note="volcano-tectonic, Etna edifice. The held-out build harvested the busiest "
+             "windows over the whole region and caught only basement and regional "
+             "Sicilian earthquakes: median 22 km offset, 21.6 km depth, zero edifice "
+             "events. This one is bounded to 8 km of the summit craters and 8 km depth, "
+             "which is the seismicity the regime is about. INGV publishes reviewed "
+             "arrivals only for the larger of these: of 269 edifice events, 78 carry "
+             "arrivals, and above M1.5 it is 56 of 87, so the floor is 1.5"),
 }
 
 # Networks whose waveforms come from a known archive. Anything else is resolved
@@ -86,6 +102,7 @@ KNOWN_ROUTE = {
     "OK": "IRIS", "GS": "IRIS", "N4": "IRIS", "TA": "IRIS", "US": "IRIS", "ZD": "IRIS",
     "WB": "ORFEUS", "FR": "RESIF", "RA": "RESIF", "RD": "RESIF", "CZ": "ORFEUS",
     "GE": "GFZ", "SX": "GFZ", "TH": "GFZ", "BW": "LMU", "OE": "ORFEUS",
+    "IV": "INGV", "MN": "INGV", "GU": "INGV",
 }
 
 _clients: dict[str, Client] = {}
@@ -148,6 +165,20 @@ def _rows_from_events(events, sequence: str, source: str) -> list[dict]:
     return rows
 
 
+def _event_id(ev) -> str:
+    """The service's own event id out of a resource identifier.
+
+    Services disagree on spelling: USGS writes eventid, INGV writes eventId.
+    A case-sensitive split left the INGV ids as "query?eventId=35112771" and
+    every per-event arrival request failed.
+    """
+    t = str(ev.resource_id)
+    low = t.lower()
+    if "eventid=" in low:
+        return t[low.rindex("eventid=") + len("eventid="):].split("&")[0]
+    return t.split("/")[-1]
+
+
 def catalogue(spec) -> pd.DataFrame:
     """Origin times over the whole span, without arrivals.
 
@@ -157,10 +188,12 @@ def catalogue(spec) -> pd.DataFrame:
     than a few hours.
     """
     src = spec["source"]
-    name = "ISC" if src == "isc" else "USGS"
+    name = {"isc": "ISC", "usgs": "USGS"}.get(src, src.upper())
     kw = dict(latitude=spec["lat"], longitude=spec["lon"], maxradius=spec["radius"])
     if spec["min_mag"] is not None:
         kw["minmagnitude"] = spec["min_mag"]
+    if spec.get("max_depth_km") is not None:
+        kw["maxdepth"] = spec["max_depth_km"]
     rows, t0, t1 = [], UTCDateTime(spec["t0"]), UTCDateTime(spec["t1"])
     step = 90 * 86400
     a = t0
@@ -176,8 +209,10 @@ def catalogue(spec) -> pd.DataFrame:
             org = ev.preferred_origin() or (ev.origins[0] if ev.origins else None)
             if org is None or org.time is None:
                 continue
-            eid = str(ev.resource_id).split("eventid=")[-1].split("&")[0].split("/")[-1]
-            rows.append(dict(event=eid, time=org.time.datetime))
+            if spec.get("max_depth_km") is not None and org.depth is not None:
+                if org.depth / 1000.0 > spec["max_depth_km"]:
+                    continue                    # the service may ignore maxdepth
+            rows.append(dict(event=_event_id(ev), time=org.time.datetime))
         a = b
     df = pd.DataFrame(rows).drop_duplicates("event")
     log(f"    catalogue: {len(df):,} events")
@@ -232,6 +267,26 @@ def harvest_fdsn_window(spec, sequence, start, end, provider) -> list[dict]:
     return _rows_from_events(cat, sequence, provider)
 
 
+def harvest_fdsn_per_event(spec, sequence, events, provider) -> list[dict]:
+    """One arrival-bearing request per event.
+
+    INGV and GeoNet reject a region query that asks for arrivals, so the
+    catalogue is taken first and each event fetched by id.
+    """
+    rows, ok, fail = [], 0, 0
+    for eid in events:
+        try:
+            cat = client(provider).get_events(eventid=eid, includearrivals=True)
+            got = _rows_from_events(cat, sequence, provider)
+            rows += got
+            ok += 1
+        except Exception:                                          # noqa: BLE001
+            fail += 1
+    if fail:
+        log(f"      {provider}: {ok} events returned arrivals, {fail} failed")
+    return rows
+
+
 def harvest_usgs_window(spec, sequence, events) -> list[dict]:
     """The phase-data product for the events inside one scoring window."""
     rows = []
@@ -257,6 +312,8 @@ def stage_picks() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     all_rows, prov, win_rows = [], [], []
     for sequence, spec in SEQUENCES.items():
+        if ONLY and spec['key'] not in ONLY and sequence not in ONLY:
+            continue
         log(f"  {sequence} ({spec['source'].upper()})")
         cat = catalogue(spec)
         if cat.empty:
@@ -272,6 +329,9 @@ def stage_picks() -> None:
                 elif src == "usgs":
                     ev = cat[(cat.time >= start) & (cat.time < end)].event.tolist()
                     got = harvest_usgs_window(spec, sequence, ev)
+                elif src in PER_EVENT_FDSN:
+                    ev = cat[(cat.time >= start) & (cat.time < end)].event.tolist()
+                    got = harvest_fdsn_per_event(spec, sequence, ev, src)
                 else:
                     got = harvest_fdsn_window(spec, sequence, start, end, src)
                 by_source[src] = len(got)
@@ -284,12 +344,26 @@ def stage_picks() -> None:
                 # Collapse on station, phase and time to a twentieth of a second,
                 # keeping the source listed first, which is the one that reports a
                 # real network code and an evaluation mode.
+                # Rounding to a bin is not a tolerance: .620 and .660 land in
+                # different bins and both survive, which left 399 arrivals inside
+                # the scorer's own 0.5 s matching window of another arrival on the
+                # same station and phase. Each one is a guaranteed miss under
+                # one-to-one matching and inflates the reference. Scan instead, and
+                # key on the alias-normalised code so a reading relayed as LBCW and
+                # as LBC collapses.
                 order = {src: i for i, src in enumerate(spec.get("sources", [spec["source"]]))}
                 df["_pref"] = df.source.map(order).fillna(99)
-                df["_t"] = pd.to_datetime(df.time).dt.round("50ms")
-                df = (df.sort_values(["_pref", "time"])
-                        .drop_duplicates(["station_code", "phase", "_t"])
-                        .drop(columns=["_pref", "_t"]))
+                df["_sta"] = df.station_code.map(lambda c: _station_aliases(c)[-1])
+                df["_t"] = pd.to_datetime(df.time)
+                keep, last = [], {}
+                for idx, row in df.sort_values(["_pref", "_t"]).iterrows():
+                    k = (row._sta, row.phase)
+                    prev = last.get(k)
+                    if prev is not None and abs((row._t - prev).total_seconds()) < DEDUP_TOL_S:
+                        continue
+                    last[k] = row._t
+                    keep.append(idx)
+                df = df.loc[keep].drop(columns=["_pref", "_sta", "_t"])
                 df["window"] = wi
                 all_rows.append(df)
                 log("      sources " + ", ".join(f"{k} {v}" for k, v in by_source.items())
@@ -314,9 +388,19 @@ def stage_picks() -> None:
                              sources=json.dumps(Counter(sub["source"]).most_common()),
                              t0=spec["t0"], t1=spec["t1"], note=spec["note"]))
     full = pd.concat(all_rows, ignore_index=True)
-    full.to_csv(OUT / "reference_picks_raw.csv", index=False)
-    pd.DataFrame(prov).to_csv(OUT / "provenance.csv", index=False)
-    pd.DataFrame(win_rows).to_csv(OUT / "windows.csv", index=False)
+    # With --only, keep the sequences this run did not touch instead of
+    # replacing the file with a single sequence.
+    def _merge(new: pd.DataFrame, path, key="sequence") -> pd.DataFrame:
+        if ONLY and path.exists() and not new.empty:
+            old = pd.read_csv(path)
+            if key in old.columns:
+                keep = old[~old[key].isin(set(new[key]))]
+                new = pd.concat([keep, new], ignore_index=True)
+        return new
+
+    _merge(full, OUT / "reference_picks_raw.csv").to_csv(OUT / "reference_picks_raw.csv", index=False)
+    _merge(pd.DataFrame(prov), OUT / "provenance.csv").to_csv(OUT / "provenance.csv", index=False)
+    _merge(pd.DataFrame(win_rows), OUT / "windows.csv").to_csv(OUT / "windows.csv", index=False)
     log(f"\n  {len(full):,} arrivals -> {(OUT / 'reference_picks_raw.csv').relative_to(ROOT)}")
     log(pd.DataFrame(prov)[["sequence", "events", "arrivals", "P", "S", "stations"]]
         .to_string(index=False))
@@ -405,6 +489,8 @@ def stage_waveforms() -> None:
     wins = pd.read_csv(OUT / "windows.csv", parse_dates=["start", "end"])
     sta_rows, keep = [], []
     for sequence, spec in SEQUENCES.items():
+        if ONLY and spec['key'] not in ONLY and sequence not in ONLY:
+            continue
         sub = raw[raw.sequence == sequence]
         if sub.empty:
             continue
@@ -412,10 +498,11 @@ def stage_waveforms() -> None:
         for _, wrow in wins[wins.sequence == sequence].iterrows():
             wi, start, end = int(wrow.window), wrow.start, wrow.end
             inwin = sub[sub.window == wi]
-            top = inwin.station_code.value_counts().head(N_STATIONS * 3)
+            n_sta = spec.get("n_stations", N_STATIONS)
+            top = inwin.station_code.value_counts().head(n_sta * 4)
             n_ok = 0
             for code in top.index:
-                if n_ok >= N_STATIONS:
+                if n_ok >= n_sta:
                     break
                 got = resolve_network(code, UTCDateTime(start.to_pydatetime()),
                                       (spec["lat"], spec["lon"]))
@@ -442,19 +529,48 @@ def stage_waveforms() -> None:
                     if len(st) < 3:
                         continue
                     st.merge(fill_value=0)
+                    # A long window whose arrivals occupy a small part of it is
+                    # mostly bytes nobody scores: Etna's 12 h windows hold 1.75 h
+                    # of arrivals, so storing them whole cost 816 MB for 337
+                    # picks. Trim to the arrivals plus a margin when that saves
+                    # most of the file. Every arrival is kept; only span with no
+                    # arrival in it is dropped, and the stored span is recorded.
+                    at = pd.to_datetime(
+                        inwin[inwin.station_code == code].time, utc=True,
+                        format="mixed")
+                    if len(at):
+                        lo = UTCDateTime(at.min().to_pydatetime()) - TRIM_MARGIN_S
+                        hi = UTCDateTime(at.max().to_pydatetime()) + TRIM_MARGIN_S
+                        full = st[0].stats.endtime - st[0].stats.starttime
+                        a = max(lo, st[0].stats.starttime)
+                        b = min(hi, st[0].stats.endtime)
+                        # b <= a means the arrivals lie outside what the archive
+                        # returned; keep the trace whole rather than trim to nothing
+                        if b > a and (hi - lo) < TRIM_IF_UNDER * full:
+                            st.trim(a, b)
                     st.write(str(path), format="MSEED")
                 n_ok += 1
+                _hdr = obspy.read(str(path), headonly=True)[0].stats
+                _t0, _t1 = _hdr.starttime, _hdr.endtime
                 sta_rows.append(dict(sequence=sequence, window=wi, station=station,
                                      station_code=code, archive_code=archive_code,
                                      network=net, band=band,
-                                     arrivals=int(top[code]), file=path.name))
+                                     arrivals=int(top[code]), file=path.name,
+                                     stored_start=str(_t0), stored_end=str(_t1)))
                 w = inwin[inwin.station_code == code].copy()
                 w["station"] = station
                 keep.append(w)
                 log(f"    w{wi} {station:12s} {band} {int(top[code]):4d} arrivals")
-    pd.DataFrame(sta_rows).to_csv(OUT / "stations.csv", index=False)
+    _st = pd.DataFrame(sta_rows)
+    if ONLY and (OUT / "stations.csv").exists() and not _st.empty:
+        _old = pd.read_csv(OUT / "stations.csv")
+        _st = pd.concat([_old[~_old.sequence.isin(set(_st.sequence))], _st], ignore_index=True)
+    _st.to_csv(OUT / "stations.csv", index=False)
     ref = pd.concat(keep, ignore_index=True)[["sequence", "station", "phase", "time"]]
     ref = ref.sort_values(["sequence", "station", "phase", "time"])
+    if ONLY and (OUT / "reference_picks.csv").exists() and not ref.empty:
+        _o = pd.read_csv(OUT / "reference_picks.csv")
+        ref = pd.concat([_o[~_o.sequence.isin(set(ref.sequence))], ref], ignore_index=True)
     ref.to_csv(OUT / "reference_picks.csv", index=False)
     log(f"\n  {len(ref):,} scorable arrivals -> {(OUT / 'reference_picks.csv').relative_to(ROOT)}")
     log(ref.groupby(["sequence", "phase"]).size().unstack(fill_value=0).to_string())
@@ -517,5 +633,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", required=True, choices=["picks", "waveforms", "models"])
+    ap.add_argument("--only", default="", help="comma-separated sequence keys")
     a = ap.parse_args()
+    ONLY.update(x for x in a.only.split(",") if x)
     {"picks": stage_picks, "waveforms": stage_waveforms, "models": stage_models}[a.stage]()

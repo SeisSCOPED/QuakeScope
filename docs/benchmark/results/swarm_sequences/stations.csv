@@ -1,67 +1,109 @@
-sequence,window,station,station_code,archive_code,network,band,arrivals,file
-West Bohemia 2018,0,WB.LBC,LBCW,LBC,WB,CH,358,west_bohemia_2018_w0_WB.LBC.mseed
-West Bohemia 2018,0,WB.KOC,KOCW,KOC,WB,CH,356,west_bohemia_2018_w0_WB.KOC.mseed
-West Bohemia 2018,0,WB.KRC,KRCW,KRC,WB,CH,347,west_bohemia_2018_w0_WB.KRC.mseed
-West Bohemia 2018,0,WB.STC,STCW,STC,WB,CH,346,west_bohemia_2018_w0_WB.STC.mseed
-West Bohemia 2018,0,WB.SKC,SKC,SKC,WB,CH,313,west_bohemia_2018_w0_WB.SKC.mseed
-West Bohemia 2018,0,CZ.HSKC,HSKC,HSKC,CZ,HH,19,west_bohemia_2018_w0_CZ.HSKC.mseed
-West Bohemia 2018,1,WB.LBC,LBCW,LBC,WB,CH,284,west_bohemia_2018_w1_WB.LBC.mseed
-West Bohemia 2018,1,WB.STC,STCW,STC,WB,CH,280,west_bohemia_2018_w1_WB.STC.mseed
-West Bohemia 2018,1,WB.KOC,KOCW,KOC,WB,CH,276,west_bohemia_2018_w1_WB.KOC.mseed
-West Bohemia 2018,1,WB.KRC,KRCW,KRC,WB,CH,271,west_bohemia_2018_w1_WB.KRC.mseed
-West Bohemia 2018,1,WB.SKC,SKC,SKC,WB,CH,248,west_bohemia_2018_w1_WB.SKC.mseed
-West Bohemia 2018,1,SX.TANN,TANN,TANN,SX,HH,51,west_bohemia_2018_w1_SX.TANN.mseed
-Maurienne 2017-2019,0,RD.ORIF,ORIF,ORIF,RD,BH,154,maurienne_2017_w0_RD.ORIF.mseed
-Maurienne 2017-2019,0,FR.RSL,RSL,RSL,FR,HH,81,maurienne_2017_w0_FR.RSL.mseed
-Maurienne 2017-2019,0,GU.RRL,RRL,RRL,GU,HH,67,maurienne_2017_w0_GU.RRL.mseed
-Maurienne 2017-2019,0,FR.OGVG,OGVG,OGVG,FR,HH,63,maurienne_2017_w0_FR.OGVG.mseed
-Maurienne 2017-2019,0,FR.OGSA,OGSA,OGSA,FR,HH,62,maurienne_2017_w0_FR.OGSA.mseed
-Maurienne 2017-2019,0,FR.OGMO,OGMO,OGMO,FR,HH,60,maurienne_2017_w0_FR.OGMO.mseed
-Maurienne 2017-2019,1,RD.ORIF,ORIF,ORIF,RD,BH,131,maurienne_2017_w1_RD.ORIF.mseed
-Maurienne 2017-2019,1,FR.RSL,RSL,RSL,FR,HH,104,maurienne_2017_w1_FR.RSL.mseed
-Maurienne 2017-2019,1,FR.OGVG,OGVG,OGVG,FR,HH,80,maurienne_2017_w1_FR.OGVG.mseed
-Maurienne 2017-2019,1,FR.OGGM,OGGM,OGGM,FR,HH,76,maurienne_2017_w1_FR.OGGM.mseed
-Maurienne 2017-2019,1,GU.RRL,RRL,RRL,GU,HH,76,maurienne_2017_w1_GU.RRL.mseed
-Maurienne 2017-2019,1,FR.OGSA,OGSA,OGSA,FR,HH,72,maurienne_2017_w1_FR.OGSA.mseed
-Maurienne 2017-2019,2,RD.ORIF,ORIF,ORIF,RD,BH,97,maurienne_2017_w2_RD.ORIF.mseed
-Maurienne 2017-2019,2,FR.RSL,RSL,RSL,FR,HH,76,maurienne_2017_w2_FR.RSL.mseed
-Maurienne 2017-2019,2,FR.OGVG,OGVG,OGVG,FR,HH,63,maurienne_2017_w2_FR.OGVG.mseed
-Maurienne 2017-2019,2,FR.OGGM,OGGM,OGGM,FR,HH,60,maurienne_2017_w2_FR.OGGM.mseed
-Maurienne 2017-2019,2,GU.LSD,LSD,LSD,GU,HH,41,maurienne_2017_w2_GU.LSD.mseed
-Maurienne 2017-2019,2,GU.RRL,RRL,RRL,GU,HH,39,maurienne_2017_w2_GU.RRL.mseed
-Salton Sea 2016,0,AZ.PFO,PFO,PFO,AZ,HH,126,salton_sea_2016_w0_AZ.PFO.mseed
-Salton Sea 2016,0,CI.BC3,BC3,BC3,CI,HH,110,salton_sea_2016_w0_CI.BC3.mseed
-Salton Sea 2016,0,CI.PMD,PMD,PMD,CI,HH,109,salton_sea_2016_w0_CI.PMD.mseed
-Salton Sea 2016,0,CI.TOR,TOR,TOR,CI,HH,108,salton_sea_2016_w0_CI.TOR.mseed
-Salton Sea 2016,0,CI.SAL,SAL,SAL,CI,HH,108,salton_sea_2016_w0_CI.SAL.mseed
-Salton Sea 2016,0,CI.CTC,CTC,CTC,CI,HH,104,salton_sea_2016_w0_CI.CTC.mseed
-Salton Sea 2016,1,AZ.PFO,PFO,PFO,AZ,HH,109,salton_sea_2016_w1_AZ.PFO.mseed
-Salton Sea 2016,1,PB.B084,B084,B084,PB,HH,93,salton_sea_2016_w1_PB.B084.mseed
-Salton Sea 2016,1,CI.TOR,TOR,TOR,CI,HH,91,salton_sea_2016_w1_CI.TOR.mseed
-Salton Sea 2016,1,CI.SAL,SAL,SAL,CI,HH,88,salton_sea_2016_w1_CI.SAL.mseed
-Salton Sea 2016,1,CI.PMD,PMD,PMD,CI,HH,88,salton_sea_2016_w1_CI.PMD.mseed
-Salton Sea 2016,1,CI.ERR,ERR,ERR,CI,HH,87,salton_sea_2016_w1_CI.ERR.mseed
-Jones-Guthrie 2014-2015,0,OK.OKCFA,OKCFA,OKCFA,OK,HH,24,jones_guthrie_2014_w0_OK.OKCFA.mseed
-Jones-Guthrie 2014-2015,0,US.WMOK,WMOK,WMOK,US,BH,23,jones_guthrie_2014_w0_US.WMOK.mseed
-Jones-Guthrie 2014-2015,0,US.MIAR,MIAR,MIAR,US,BH,20,jones_guthrie_2014_w0_US.MIAR.mseed
-Jones-Guthrie 2014-2015,0,N4.T35B,T35B,T35B,N4,HH,19,jones_guthrie_2014_w0_N4.T35B.mseed
-Jones-Guthrie 2014-2015,0,TA.W39A,W39A,W39A,TA,BH,18,jones_guthrie_2014_w0_TA.W39A.mseed
-Jones-Guthrie 2014-2015,0,OK.CHOK,CHOK,CHOK,OK,HH,18,jones_guthrie_2014_w0_OK.CHOK.mseed
-Jones-Guthrie 2014-2015,1,OK.OKCFA,OKCFA,OKCFA,OK,HH,25,jones_guthrie_2014_w1_OK.OKCFA.mseed
-Jones-Guthrie 2014-2015,1,US.WMOK,WMOK,WMOK,US,BH,22,jones_guthrie_2014_w1_US.WMOK.mseed
-Jones-Guthrie 2014-2015,1,OK.X37A,X37A,X37A,OK,BH,22,jones_guthrie_2014_w1_OK.X37A.mseed
-Jones-Guthrie 2014-2015,1,N4.T35B,T35B,T35B,N4,HH,21,jones_guthrie_2014_w1_N4.T35B.mseed
-Jones-Guthrie 2014-2015,1,US.MIAR,MIAR,MIAR,US,BH,19,jones_guthrie_2014_w1_US.MIAR.mseed
-Jones-Guthrie 2014-2015,1,TA.W39A,W39A,W39A,TA,BH,18,jones_guthrie_2014_w1_TA.W39A.mseed
-Jones-Guthrie 2014-2015,2,US.WMOK,WMOK,WMOK,US,BH,16,jones_guthrie_2014_w2_US.WMOK.mseed
-Jones-Guthrie 2014-2015,2,TA.TUL1,TUL1,TUL1,TA,BH,15,jones_guthrie_2014_w2_TA.TUL1.mseed
-Jones-Guthrie 2014-2015,2,N4.T35B,T35B,T35B,N4,HH,14,jones_guthrie_2014_w2_N4.T35B.mseed
-Jones-Guthrie 2014-2015,2,GS.OK028,OK028,OK028,GS,HH,13,jones_guthrie_2014_w2_GS.OK028.mseed
-Jones-Guthrie 2014-2015,2,GS.OK029,OK029,OK029,GS,HH,12,jones_guthrie_2014_w2_GS.OK029.mseed
-Jones-Guthrie 2014-2015,2,OK.CROK,CROK,CROK,OK,HH,12,jones_guthrie_2014_w2_OK.CROK.mseed
-Jones-Guthrie 2014-2015,3,TA.TUL1,TUL1,TUL1,TA,BH,13,jones_guthrie_2014_w3_TA.TUL1.mseed
-Jones-Guthrie 2014-2015,3,US.WMOK,WMOK,WMOK,US,BH,13,jones_guthrie_2014_w3_US.WMOK.mseed
-Jones-Guthrie 2014-2015,3,OK.X37A,X37A,X37A,OK,BH,12,jones_guthrie_2014_w3_OK.X37A.mseed
-Jones-Guthrie 2014-2015,3,GS.OK029,OK029,OK029,GS,HH,11,jones_guthrie_2014_w3_GS.OK029.mseed
-Jones-Guthrie 2014-2015,3,OK.U32A,U32A,U32A,OK,BH,11,jones_guthrie_2014_w3_OK.U32A.mseed
-Jones-Guthrie 2014-2015,3,GS.OK027,OK027,OK027,GS,HH,11,jones_guthrie_2014_w3_GS.OK027.mseed
+sequence,window,station,station_code,archive_code,network,band,arrivals,file,stored_start,stored_end
+West Bohemia 2018,0,WB.LBC,LBCW,LBC,WB,CH,358,west_bohemia_2018_w0_WB.LBC.mseed,,
+West Bohemia 2018,0,WB.KOC,KOCW,KOC,WB,CH,356,west_bohemia_2018_w0_WB.KOC.mseed,,
+West Bohemia 2018,0,WB.KRC,KRCW,KRC,WB,CH,347,west_bohemia_2018_w0_WB.KRC.mseed,,
+West Bohemia 2018,0,WB.STC,STCW,STC,WB,CH,346,west_bohemia_2018_w0_WB.STC.mseed,,
+West Bohemia 2018,0,WB.SKC,SKC,SKC,WB,CH,313,west_bohemia_2018_w0_WB.SKC.mseed,,
+West Bohemia 2018,0,CZ.HSKC,HSKC,HSKC,CZ,HH,19,west_bohemia_2018_w0_CZ.HSKC.mseed,,
+West Bohemia 2018,1,WB.LBC,LBCW,LBC,WB,CH,284,west_bohemia_2018_w1_WB.LBC.mseed,,
+West Bohemia 2018,1,WB.STC,STCW,STC,WB,CH,280,west_bohemia_2018_w1_WB.STC.mseed,,
+West Bohemia 2018,1,WB.KOC,KOCW,KOC,WB,CH,276,west_bohemia_2018_w1_WB.KOC.mseed,,
+West Bohemia 2018,1,WB.KRC,KRCW,KRC,WB,CH,271,west_bohemia_2018_w1_WB.KRC.mseed,,
+West Bohemia 2018,1,WB.SKC,SKC,SKC,WB,CH,248,west_bohemia_2018_w1_WB.SKC.mseed,,
+West Bohemia 2018,1,SX.TANN,TANN,TANN,SX,HH,51,west_bohemia_2018_w1_SX.TANN.mseed,,
+Maurienne 2017-2019,0,RD.ORIF,ORIF,ORIF,RD,BH,154,maurienne_2017_w0_RD.ORIF.mseed,,
+Maurienne 2017-2019,0,FR.RSL,RSL,RSL,FR,HH,81,maurienne_2017_w0_FR.RSL.mseed,,
+Maurienne 2017-2019,0,GU.RRL,RRL,RRL,GU,HH,67,maurienne_2017_w0_GU.RRL.mseed,,
+Maurienne 2017-2019,0,FR.OGVG,OGVG,OGVG,FR,HH,63,maurienne_2017_w0_FR.OGVG.mseed,,
+Maurienne 2017-2019,0,FR.OGSA,OGSA,OGSA,FR,HH,62,maurienne_2017_w0_FR.OGSA.mseed,,
+Maurienne 2017-2019,0,FR.OGMO,OGMO,OGMO,FR,HH,60,maurienne_2017_w0_FR.OGMO.mseed,,
+Maurienne 2017-2019,1,RD.ORIF,ORIF,ORIF,RD,BH,131,maurienne_2017_w1_RD.ORIF.mseed,,
+Maurienne 2017-2019,1,FR.RSL,RSL,RSL,FR,HH,104,maurienne_2017_w1_FR.RSL.mseed,,
+Maurienne 2017-2019,1,FR.OGVG,OGVG,OGVG,FR,HH,80,maurienne_2017_w1_FR.OGVG.mseed,,
+Maurienne 2017-2019,1,FR.OGGM,OGGM,OGGM,FR,HH,76,maurienne_2017_w1_FR.OGGM.mseed,,
+Maurienne 2017-2019,1,GU.RRL,RRL,RRL,GU,HH,76,maurienne_2017_w1_GU.RRL.mseed,,
+Maurienne 2017-2019,1,FR.OGSA,OGSA,OGSA,FR,HH,72,maurienne_2017_w1_FR.OGSA.mseed,,
+Maurienne 2017-2019,2,RD.ORIF,ORIF,ORIF,RD,BH,97,maurienne_2017_w2_RD.ORIF.mseed,,
+Maurienne 2017-2019,2,FR.RSL,RSL,RSL,FR,HH,76,maurienne_2017_w2_FR.RSL.mseed,,
+Maurienne 2017-2019,2,FR.OGVG,OGVG,OGVG,FR,HH,63,maurienne_2017_w2_FR.OGVG.mseed,,
+Maurienne 2017-2019,2,FR.OGGM,OGGM,OGGM,FR,HH,60,maurienne_2017_w2_FR.OGGM.mseed,,
+Maurienne 2017-2019,2,GU.LSD,LSD,LSD,GU,HH,41,maurienne_2017_w2_GU.LSD.mseed,,
+Maurienne 2017-2019,2,GU.RRL,RRL,RRL,GU,HH,39,maurienne_2017_w2_GU.RRL.mseed,,
+Salton Sea 2016,0,AZ.PFO,PFO,PFO,AZ,HH,126,salton_sea_2016_w0_AZ.PFO.mseed,,
+Salton Sea 2016,0,CI.BC3,BC3,BC3,CI,HH,110,salton_sea_2016_w0_CI.BC3.mseed,,
+Salton Sea 2016,0,CI.PMD,PMD,PMD,CI,HH,109,salton_sea_2016_w0_CI.PMD.mseed,,
+Salton Sea 2016,0,CI.TOR,TOR,TOR,CI,HH,108,salton_sea_2016_w0_CI.TOR.mseed,,
+Salton Sea 2016,0,CI.SAL,SAL,SAL,CI,HH,108,salton_sea_2016_w0_CI.SAL.mseed,,
+Salton Sea 2016,0,CI.CTC,CTC,CTC,CI,HH,104,salton_sea_2016_w0_CI.CTC.mseed,,
+Salton Sea 2016,1,AZ.PFO,PFO,PFO,AZ,HH,109,salton_sea_2016_w1_AZ.PFO.mseed,,
+Salton Sea 2016,1,PB.B084,B084,B084,PB,HH,93,salton_sea_2016_w1_PB.B084.mseed,,
+Salton Sea 2016,1,CI.TOR,TOR,TOR,CI,HH,91,salton_sea_2016_w1_CI.TOR.mseed,,
+Salton Sea 2016,1,CI.SAL,SAL,SAL,CI,HH,88,salton_sea_2016_w1_CI.SAL.mseed,,
+Salton Sea 2016,1,CI.PMD,PMD,PMD,CI,HH,88,salton_sea_2016_w1_CI.PMD.mseed,,
+Salton Sea 2016,1,CI.ERR,ERR,ERR,CI,HH,87,salton_sea_2016_w1_CI.ERR.mseed,,
+Jones-Guthrie 2014-2015,0,OK.OKCFA,OKCFA,OKCFA,OK,HH,24,jones_guthrie_2014_w0_OK.OKCFA.mseed,,
+Jones-Guthrie 2014-2015,0,US.WMOK,WMOK,WMOK,US,BH,23,jones_guthrie_2014_w0_US.WMOK.mseed,,
+Jones-Guthrie 2014-2015,0,US.MIAR,MIAR,MIAR,US,BH,20,jones_guthrie_2014_w0_US.MIAR.mseed,,
+Jones-Guthrie 2014-2015,0,N4.T35B,T35B,T35B,N4,HH,19,jones_guthrie_2014_w0_N4.T35B.mseed,,
+Jones-Guthrie 2014-2015,0,TA.W39A,W39A,W39A,TA,BH,18,jones_guthrie_2014_w0_TA.W39A.mseed,,
+Jones-Guthrie 2014-2015,0,OK.CHOK,CHOK,CHOK,OK,HH,18,jones_guthrie_2014_w0_OK.CHOK.mseed,,
+Jones-Guthrie 2014-2015,1,OK.OKCFA,OKCFA,OKCFA,OK,HH,25,jones_guthrie_2014_w1_OK.OKCFA.mseed,,
+Jones-Guthrie 2014-2015,1,US.WMOK,WMOK,WMOK,US,BH,22,jones_guthrie_2014_w1_US.WMOK.mseed,,
+Jones-Guthrie 2014-2015,1,OK.X37A,X37A,X37A,OK,BH,22,jones_guthrie_2014_w1_OK.X37A.mseed,,
+Jones-Guthrie 2014-2015,1,N4.T35B,T35B,T35B,N4,HH,21,jones_guthrie_2014_w1_N4.T35B.mseed,,
+Jones-Guthrie 2014-2015,1,US.MIAR,MIAR,MIAR,US,BH,19,jones_guthrie_2014_w1_US.MIAR.mseed,,
+Jones-Guthrie 2014-2015,1,TA.W39A,W39A,W39A,TA,BH,18,jones_guthrie_2014_w1_TA.W39A.mseed,,
+Jones-Guthrie 2014-2015,2,US.WMOK,WMOK,WMOK,US,BH,16,jones_guthrie_2014_w2_US.WMOK.mseed,,
+Jones-Guthrie 2014-2015,2,TA.TUL1,TUL1,TUL1,TA,BH,15,jones_guthrie_2014_w2_TA.TUL1.mseed,,
+Jones-Guthrie 2014-2015,2,N4.T35B,T35B,T35B,N4,HH,14,jones_guthrie_2014_w2_N4.T35B.mseed,,
+Jones-Guthrie 2014-2015,2,GS.OK028,OK028,OK028,GS,HH,13,jones_guthrie_2014_w2_GS.OK028.mseed,,
+Jones-Guthrie 2014-2015,2,GS.OK029,OK029,OK029,GS,HH,12,jones_guthrie_2014_w2_GS.OK029.mseed,,
+Jones-Guthrie 2014-2015,2,OK.CROK,CROK,CROK,OK,HH,12,jones_guthrie_2014_w2_OK.CROK.mseed,,
+Jones-Guthrie 2014-2015,3,TA.TUL1,TUL1,TUL1,TA,BH,13,jones_guthrie_2014_w3_TA.TUL1.mseed,,
+Jones-Guthrie 2014-2015,3,US.WMOK,WMOK,WMOK,US,BH,13,jones_guthrie_2014_w3_US.WMOK.mseed,,
+Jones-Guthrie 2014-2015,3,OK.X37A,X37A,X37A,OK,BH,12,jones_guthrie_2014_w3_OK.X37A.mseed,,
+Jones-Guthrie 2014-2015,3,GS.OK029,OK029,OK029,GS,HH,11,jones_guthrie_2014_w3_GS.OK029.mseed,,
+Jones-Guthrie 2014-2015,3,OK.U32A,U32A,U32A,OK,BH,11,jones_guthrie_2014_w3_OK.U32A.mseed,,
+Jones-Guthrie 2014-2015,3,GS.OK027,OK027,OK027,GS,HH,11,jones_guthrie_2014_w3_GS.OK027.mseed,,
+Etna edifice 2022-2024,0,IV.EPMN,EPMN,EPMN,IV,HH,18,etna_edifice_w0_IV.EPMN.mseed,2023-05-27T18:59:00.000000Z,2023-05-28T00:00:01.380000Z
+Etna edifice 2022-2024,0,IV.EMFS,EMFS,EMFS,IV,HH,18,etna_edifice_w0_IV.EMFS.mseed,2023-05-28T04:29:43.740000Z,2023-05-28T06:20:44.150000Z
+Etna edifice 2022-2024,0,IV.EPDN,EPDN,EPDN,IV,HH,18,etna_edifice_w0_IV.EPDN.mseed,2023-05-28T04:29:43.630000Z,2023-05-28T06:20:44.000000Z
+Etna edifice 2022-2024,0,IV.EPIT,EPIT,EPIT,IV,HH,18,etna_edifice_w0_IV.EPIT.mseed,2023-05-28T04:29:44.130000Z,2023-05-28T06:20:44.760000Z
+Etna edifice 2022-2024,0,IV.ESPC,ESPC,ESPC,IV,HH,18,etna_edifice_w0_IV.ESPC.mseed,2023-05-28T04:29:43.670000Z,2023-05-28T06:20:43.820000Z
+Etna edifice 2022-2024,0,IV.EMFO,EMFO,EMFO,IV,HH,17,etna_edifice_w0_IV.EMFO.mseed,2023-05-28T04:29:43.240000Z,2023-05-28T06:20:43.200000Z
+Etna edifice 2022-2024,0,IV.EMCN,EMCN,EMCN,IV,HH,16,etna_edifice_w0_IV.EMCN.mseed,2023-05-28T04:29:43.730000Z,2023-05-28T06:20:43.880000Z
+Etna edifice 2022-2024,0,IV.EVRN,EVRN,EVRN,IV,HH,16,etna_edifice_w0_IV.EVRN.mseed,2023-05-28T04:29:44.280000Z,2023-05-28T06:20:44.770000Z
+Etna edifice 2022-2024,0,IV.ECBD,ECBD,ECBD,IV,HH,16,etna_edifice_w0_IV.ECBD.mseed,2023-05-28T04:29:43.490000Z,2023-05-28T06:20:43.800000Z
+Etna edifice 2022-2024,0,IV.EFIU,EFIU,EFIU,IV,HH,16,etna_edifice_w0_IV.EFIU.mseed,2023-05-28T04:29:45.000000Z,2023-05-28T06:20:43.750000Z
+Etna edifice 2022-2024,0,IV.EMSG,EMSG,EMSG,IV,HH,15,etna_edifice_w0_IV.EMSG.mseed,2023-05-28T04:29:45.110000Z,2023-05-28T06:20:46.610000Z
+Etna edifice 2022-2024,0,IV.EMNR,EMNR,EMNR,IV,HH,14,etna_edifice_w0_IV.EMNR.mseed,2023-05-28T04:29:44.230000Z,2023-05-28T06:20:42.970000Z
+Etna edifice 2022-2024,0,IV.AIO,AIO,AIO,IV,HH,13,etna_edifice_w0_IV.AIO.mseed,2023-05-28T04:29:47.720000Z,2023-05-28T06:20:46.250000Z
+Etna edifice 2022-2024,0,IV.ECTS,ECTS,ECTS,IV,HH,13,etna_edifice_w0_IV.ECTS.mseed,2023-05-28T04:29:45.040000Z,2023-05-28T06:20:43.770000Z
+Etna edifice 2022-2024,1,IV.ECNE,ECNE,ECNE,IV,HH,8,etna_edifice_w1_IV.ECNE.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMCN,EMCN,EMCN,IV,HH,8,etna_edifice_w1_IV.EMCN.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ESLN,ESLN,ESLN,IV,HH,8,etna_edifice_w1_IV.ESLN.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ESPC,ESPC,ESPC,IV,HH,8,etna_edifice_w1_IV.ESPC.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMFS,EMFS,EMFS,IV,HH,8,etna_edifice_w1_IV.EMFS.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ESVO,ESVO,ESVO,IV,HH,7,etna_edifice_w1_IV.ESVO.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMFO,EMFO,EMFO,IV,HH,7,etna_edifice_w1_IV.EMFO.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ECBD,ECBD,ECBD,IV,HH,6,etna_edifice_w1_IV.ECBD.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMPL,EMPL,EMPL,IV,HH,6,etna_edifice_w1_IV.EMPL.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMSG,EMSG,EMSG,IV,HH,6,etna_edifice_w1_IV.EMSG.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ECHR,ECHR,ECHR,IV,HH,5,etna_edifice_w1_IV.ECHR.mseed,2023-05-18T14:46:19.940000Z,2023-05-18T15:05:32.270000Z
+Etna edifice 2022-2024,1,IV.ENIC,ENIC,ENIC,IV,HH,5,etna_edifice_w1_IV.ENIC.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.EMNR,EMNR,EMNR,IV,HH,5,etna_edifice_w1_IV.EMNR.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,1,IV.ECZM,ECZM,ECZM,IV,HH,5,etna_edifice_w1_IV.ECZM.mseed,2023-05-18T13:59:00.000000Z,2023-05-19T02:01:00.000000Z
+Etna edifice 2022-2024,2,IV.EMCN,EMCN,EMCN,IV,HH,4,etna_edifice_w2_IV.EMCN.mseed,2023-04-16T23:00:41.450000Z,2023-04-16T23:13:11.200000Z
+Etna edifice 2022-2024,2,IV.EMNR,EMNR,EMNR,IV,HH,4,etna_edifice_w2_IV.EMNR.mseed,2023-04-16T23:00:41.600000Z,2023-04-16T23:13:11.400000Z
+Etna edifice 2022-2024,2,IV.ECBD,ECBD,ECBD,IV,HH,4,etna_edifice_w2_IV.ECBD.mseed,2023-04-16T23:00:42.110000Z,2023-04-16T23:13:12.400000Z
+Etna edifice 2022-2024,2,IV.ECTS,ECTS,ECTS,IV,HH,4,etna_edifice_w2_IV.ECTS.mseed,2023-04-16T23:00:43.510000Z,2023-04-16T23:13:15.100000Z
+Etna edifice 2022-2024,2,IV.EPMN,EPMN,EPMN,IV,HH,4,etna_edifice_w2_IV.EPMN.mseed,2023-04-16T23:00:43.680000Z,2023-04-16T23:13:15.100000Z
+Etna edifice 2022-2024,2,IV.EPIT,EPIT,EPIT,IV,HH,3,etna_edifice_w2_IV.EPIT.mseed,2023-04-16T23:00:41.130000Z,2023-04-16T23:13:10.520000Z
+Etna edifice 2022-2024,2,IV.EMSG,EMSG,EMSG,IV,HH,3,etna_edifice_w2_IV.EMSG.mseed,2023-04-16T23:00:43.520000Z,2023-04-16T23:13:12.580000Z
+Etna edifice 2022-2024,2,IV.EPZF,EPZF,EPZF,IV,HH,2,etna_edifice_w2_IV.EPZF.mseed,2023-04-16T23:00:45.240000Z,2023-04-16T23:13:14.150000Z
+Etna edifice 2022-2024,2,IV.EPOZ,EPOZ,EPOZ,IV,HH,2,etna_edifice_w2_IV.EPOZ.mseed,2023-04-16T23:00:46.620000Z,2023-04-16T23:13:15.650000Z
+Etna edifice 2022-2024,2,IV.AIO,AIO,AIO,IV,HH,2,etna_edifice_w2_IV.AIO.mseed,2023-04-16T23:00:46.730000Z,2023-04-16T23:13:15.660000Z
+Etna edifice 2022-2024,2,IV.ECNE,ECNE,ECNE,IV,HH,2,etna_edifice_w2_IV.ECNE.mseed,2023-04-16T23:03:11.700000Z,2023-04-16T23:13:13.500000Z
+Etna edifice 2022-2024,2,IV.ESAL,ESAL,ESAL,IV,HH,1,etna_edifice_w2_IV.ESAL.mseed,2023-04-16T23:00:43.840000Z,2023-04-16T23:10:43.840000Z
+Etna edifice 2022-2024,2,IV.ESPC,ESPC,ESPC,IV,HH,1,etna_edifice_w2_IV.ESPC.mseed,2023-04-16T23:00:44.120000Z,2023-04-16T23:10:44.120000Z
+Etna edifice 2022-2024,2,IV.EFIU,EFIU,EFIU,IV,HH,1,etna_edifice_w2_IV.EFIU.mseed,2023-04-16T23:00:44.560000Z,2023-04-16T23:10:44.560000Z

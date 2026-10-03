@@ -75,17 +75,23 @@ TRACKS = {
         title="Track 2b: volcano-tectonic",
         regime="volcano-tectonic",
         question="Does it pick emergent, low-magnitude, volcanic seismicity?",
-        src=None,
-        blurb="Etna 2022-2024, from the INGV-OE catalogue. Emergent onsets, low "
-              "magnitudes and event types a picker trained on tectonic "
-              "earthquakes has not seen. Held out as a place rather than a time "
-              "window, because a volcano recurs where it is and the curated "
-              "corpora hold its earlier years.",
-        retrain=["etna_2022_2024"],
+        src=RES / "swarm_sequences",
+        only=["Etna edifice 2022-2024"],
+        blurb="Etna 2022-2024 on the volcanic edifice, from the INGV catalogue: "
+              "within 8 km of the summit craters and shallower than 8 km. "
+              "Emergent onsets, low magnitudes and event types a picker trained "
+              "on tectonic earthquakes has not seen. Held out as a place rather "
+              "than a time window, because a volcano recurs where it is and the "
+              "curated corpora hold its earlier years. An earlier build of this "
+              "track took the busiest windows over the whole region and caught "
+              "only basement and regional Sicilian earthquakes, median 22 km "
+              "offset and 21.6 km depth with no edifice event in it; this one "
+              "has median 4.6 km offset and 5.3 km depth.",
     ),
     "track2-swarm": dict(
         title="Track 2c: fluid-driven swarm",
         regime="fluid-driven swarm",
+        exclude=["Etna edifice 2022-2024"],
         question="Does it pick a swarm that migrates for months with no mainshock?",
         src=RES / "swarm_sequences",
         blurb="Four swarms, two driven by crustal fluids and two by wastewater "
@@ -254,14 +260,35 @@ def assemble_track(key: str, spec: dict, out: Path) -> dict:
 
     if spec.get("src"):
         src = spec["src"]
+        # Two tracks can share one build directory: the swarm builder also
+        # produces the Etna edifice sequence, which belongs to the volcano
+        # -tectonic track. `only` keeps those sequences, `exclude` drops them,
+        # and both have to reach the station table and the waveform files or a
+        # track ships records it does not score.
+        def _sel(df):
+            if "sequence" not in df.columns:
+                return df
+            if spec.get("only"):
+                return df[df.sequence.isin(spec["only"])]
+            if spec.get("exclude"):
+                return df[~df.sequence.isin(spec["exclude"])]
+            return df
+
         if (src / "reference_picks.csv").exists():
-            refs.append(pd.read_csv(src / "reference_picks.csv"))
+            refs.append(_sel(pd.read_csv(src / "reference_picks.csv")))
         for f in ("model_picks.csv", "windows.csv", "provenance.csv"):
             if (src / f).exists():
-                shutil.copy2(src / f, d / (f if f != "provenance.csv" else "sequences.csv"))
+                _sel(pd.read_csv(src / f)).to_csv(
+                    d / (f if f != "provenance.csv" else "sequences.csv"), index=False)
+        keys = None
         if (src / "stations.csv").exists():
-            stations.append(pd.read_csv(src / "stations.csv"))
+            st = _sel(pd.read_csv(src / "stations.csv"))
+            stations.append(st)
+            if "file" in st.columns:
+                keys = set(st.file)
         for wf in sorted((src / "waveforms").glob("*.mseed")) if (src / "waveforms").exists() else []:
+            if keys is not None and wf.name not in keys:
+                continue
             shutil.copy2(wf, d / "waveforms" / wf.name)
             n_wf += 1
 
@@ -280,6 +307,17 @@ def assemble_track(key: str, spec: dict, out: Path) -> dict:
         if pk.exists():
             t = pd.read_parquet(pk)
             cols = {c.lower(): c for c in t.columns}
+            # Keep analyst work only. The QuakeScope harvest filters on
+            # evaluation_mode before it writes reference_picks.csv; this branch
+            # reads the held-out parquet directly and has to do it here. Without
+            # it, 1,884 automatic AIC picks from Kaikoura reach the reference
+            # under a card that says nothing here was produced by a model.
+            if "mode" in cols:
+                before = len(t)
+                t = t[t[cols["mode"]].astype(str).str.lower() == "manual"]
+                if before != len(t):
+                    print(f"    {key_r}: dropped {before - len(t):,} picks whose "
+                          f"evaluation_mode is not manual")
             lab = t[cols.get("label", "label")] if "label" in cols else key_r
             frame = pd.DataFrame({
                 "sequence": lab if not isinstance(lab, str) else key_r,
@@ -301,6 +339,13 @@ def assemble_track(key: str, spec: dict, out: Path) -> dict:
     # the reference, which is what happened in the first push. Normalise the
     # label first, then collapse on station, phase and time to a tenth of a
     # second, which is well inside the 0.5 s matching tolerance.
+    # One timestamp convention across every file: naive UTC with microseconds.
+    # Sources hand back a mix of tz-aware and naive, and with and without a
+    # fractional part, which made two of the four files unreadable by a plain
+    # pd.to_datetime and only the shipped scorer (format="mixed") could load them.
+    ref["time"] = (pd.to_datetime(ref.time, utc=True, format="mixed")
+                     .dt.tz_localize(None)
+                     .dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
     ref["sequence"] = ref.sequence.map(lambda v: SEQ_LABEL.get(str(v), str(v)))
     before = len(ref)
     t = pd.to_datetime(ref.time, utc=True, format="mixed").dt.tz_localize(None)

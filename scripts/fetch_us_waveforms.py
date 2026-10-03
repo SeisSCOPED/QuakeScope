@@ -17,12 +17,17 @@ ROUTE = {"CI": "SCEDC", "BK": "NCEDC", "NC": "NCEDC", "NP": "NCEDC",
          "UW": "EARTHSCOPE", "NN": "EARTHSCOPE", "LB": "EARTHSCOPE", "UO": "EARTHSCOPE"}
 PREF = ["HH", "BH", "EH"]
 WINDOW_START = 600
+# origin (UTC), window length in minutes, and the offset from the origin at
+# which the window opens. The default 600 s skips the mainshock coda so the
+# window scores the aftershock sequence. Monroe is an M4.6 whose aftershocks
+# are sparse and spread over days: skipping its mainshock leaves one arrival,
+# so its window opens before the origin and the mainshock is the sequence.
 SEQ = {
-    "Ridgecrest":     ("2019-07-06T03:19:53", 30),
-    "San Simeon":     ("2003-12-22T19:15:56", 120),
-    "Monte Cristo":   ("2020-05-15T11:03:27", 120),
-    "Mendocino 2024": ("2024-12-05T18:44:22", 120),
-    "Monroe WA":      ("2019-07-12T14:51:00", 120),
+    "Ridgecrest":     ("2019-07-06T03:19:53", 30, WINDOW_START),
+    "San Simeon":     ("2003-12-22T19:15:56", 120, WINDOW_START),
+    "Monte Cristo":   ("2020-05-15T11:03:27", 120, WINDOW_START),
+    "Mendocino 2024": ("2024-12-05T18:44:22", 120, WINDOW_START),
+    "Monroe WA":      ("2019-07-12T09:51:38", 120, -60),
 }
 _fs = S3FileSystem(anon=True); _lst = {}; _cl = {}
 
@@ -76,8 +81,8 @@ for seq in SEQ:
 N_WANT = 6
 
 rows = []
-for seq, (t, mins) in SEQ.items():
-    t0 = UTCDateTime(t) + WINDOW_START; t1 = t0 + mins * 60
+for seq, (t, mins, _ws) in SEQ.items():
+    t0 = UTCDateTime(t) + _ws; t1 = t0 + mins * 60
     print(f"{seq}  {t0} .. {t1}", flush=True)
     kept = 0
     for station in want[seq]:

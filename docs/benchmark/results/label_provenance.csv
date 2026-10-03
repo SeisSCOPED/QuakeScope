@@ -1,14 +1,14 @@
 sequence,track,agency,agency_long,service,mode_filter,doi,doi_label
 Ridgecrest,track1-western-us,SCEDC,Southern California Earthquake Data Center,SCEDC FDSN event service,manual only,10.7909/C3WD3xH1,SCEDC
 San Simeon,track1-western-us,SCEDC,Southern California Earthquake Data Center,SCEDC FDSN event service,manual only,10.7909/C3WD3xH1,SCEDC
-Monte Cristo,track1-western-us,SCEDC,Southern California Earthquake Data Center,SCEDC FDSN event service,manual only,10.7909/C3WD3xH1,SCEDC
+Monte Cristo,track1-western-us,NCEDC,Northern California Earthquake Data Center,NCEDC FDSN event service,manual only,10.7932/NCEDC,NCEDC
 Mendocino 2024,track1-western-us,NCEDC,Northern California Earthquake Data Center,NCEDC FDSN event service,manual only,10.7932/NCEDC,NCEDC
 Monroe WA,track1-western-us,PNSN via ANSS,Pacific Northwest Seismic Network,USGS ComCat phase-data product,manual only,10.5066/F7MS3QZH,ANSS ComCat
 Kaikoura 2016,track2-msas,GNS Science,"GNS Science, Wellington (WEL/GNS_Primary)",GeoNet FDSN per event,manual only,10.21420/G19Y-9D40,GeoNet
 Norcia 2016,track2-msas,INGV,Istituto Nazionale di Geofisica e Vulcanologia,INGV FDSN per event,manual only,10.13127/sd/x0fxnh7qfy,INGV RSN
 Thessaly 2021,track2-msas,NOA,National Observatory of Athens (NOAreg1),NOA FDSN region query,manual only,10.7914/SN/HL,HUSN
 Adriatic 2022,track2-msas,INGV,Istituto Nazionale di Geofisica e Vulcanologia,INGV FDSN per event,manual only,10.13127/sd/x0fxnh7qfy,INGV RSN
-Etna 2022-2024,track2-vt,INGV,Istituto Nazionale di Geofisica e Vulcanologia,INGV FDSN per event,manual only,10.13127/sd/x0fxnh7qfy,INGV RSN
+Etna edifice 2022-2024,track2-vt,INGV,Istituto Nazionale di Geofisica e Vulcanologia,INGV FDSN per event,manual only,10.13127/sd/x0fxnh7qfy,INGV RSN
 West Bohemia 2018,track2-swarm,ISC,International Seismological Centre,ISC Bulletin region query,ISC reviewed readings; mode not populated,10.31905/D808B830,ISC Bulletin
 Maurienne 2017-2019,track2-swarm,BCSF-RENASS and ISC,"Bureau Central Sismologique Francais / RENASS, and ISC",franceseisme FDSN and ISC Bulletin,manual (BCSF-RENASS) and ISC reviewed readings,10.31905/D808B830,ISC Bulletin
 Salton Sea 2016,track2-swarm,USGS and ISC,"USGS ANSS (SCEDC analysts), and ISC",USGS ComCat phase-data and ISC Bulletin,manual (ANSS) and ISC reviewed readings,10.5066/F7MS3QZH,ANSS ComCat
