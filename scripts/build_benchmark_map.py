@@ -146,22 +146,26 @@ because the data does not auto-download.</p>
 <script>
 const SEQ = {json.dumps(seqs)};
 const map = L.map('map', {{ worldCopyJump: true }}).setView([30, 10], 2);
-// Plain grey by default: the markers are the content, and a shaded-relief
-// base competes with them. Terrain stays available for the volcanic and
-// mountain-belt sequences where the setting is the point.
-const plain = L.tileLayer(
-  'https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png',
-  {{ maxZoom: 19, attribution: '&copy; OpenStreetMap, &copy; CARTO' }}).addTo(map);
-const grey = L.tileLayer(
-  'https://{{s}}.basemaps.cartocdn.com/light_nolabels/{{z}}/{{x}}/{{y}}{{r}}.png',
-  {{ maxZoom: 19, attribution: '&copy; OpenStreetMap, &copy; CARTO' }});
+// Esri's World Light Gray Canvas, which is what a plain grey reference
+// basemap is for. CARTO's tiles are NOT keyless: basemaps.cartocdn.com answers
+// 200 with a 2,049-byte placeholder reading "API KEY REQUIRED" at every zoom,
+// so a page using them looks fine in code review and ships a watermark. That
+// is also why plotly's "carto-positron" style would not have helped: it pulls
+// the same tiles. Every URL below was fetched and checked for real content.
+const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services';
+const ATTR = 'Tiles &copy; <a href="https://www.esri.com">Esri</a>';
+const base = L.tileLayer(`${{ESRI}}/Canvas/World_Light_Gray_Base/MapServer/tile/{{z}}/{{y}}/{{x}}`,
+  {{ maxZoom: 16, attribution: ATTR }}).addTo(map);
+const labels = L.tileLayer(`${{ESRI}}/Canvas/World_Light_Gray_Reference/MapServer/tile/{{z}}/{{y}}/{{x}}`,
+  {{ maxZoom: 16, pane: 'shadowPane', attribution: '' }}).addTo(map);
 const terrain = L.tileLayer(
   'https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png',
   {{ maxZoom: 16, attribution:
      'map data &copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors, '
      + '<a href="https://viewfinderpanoramas.org">SRTM</a> | style '
      + '<a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' }});
-L.control.layers({{ 'Grey': plain, 'Grey, no labels': grey, 'Terrain': terrain }}).addTo(map);
+L.control.layers({{ 'Grey': base, 'Terrain': terrain }},
+                 {{ 'Place names': labels }}).addTo(map);
 
 const layers = {{}}, bounds = {{}};
 for (const d of SEQ) {{
