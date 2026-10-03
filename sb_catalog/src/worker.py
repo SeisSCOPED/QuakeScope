@@ -363,6 +363,8 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         end=parse_year_day(shard["end"]),
         components=args.components,
         db=db,
+        # The obs weight also picks EL (short-period OBS); land weights do not.
+        weight=args.weight,
     )
     bridge = S3MongoSBBridge(
         s3=s3,

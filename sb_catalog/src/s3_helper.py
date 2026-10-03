@@ -1128,11 +1128,16 @@ class S3DataSource:
         components: str = "ZNE12",
         db: SeisBenchDatabase = None,
         limit_mb: Optional[int] = 200,
+        weight: Optional[str] = None,
     ):
         self.start = start
         self.end = end
         self.components = components
         self.limit_mb = limit_mb
+        # The weight decides the channel priority: `obs` also picks `EL`
+        # (constants.CHANNEL_PRIORITY_BY_WEIGHT); every other weight keeps the
+        # default list. None means the default.
+        self.weight = weight
         if stations is None:
             self.stations = []
             self.networks = []
@@ -1317,7 +1322,7 @@ class S3DataSource:
                 # produce a usable arrival at all. Location codes stay separate,
                 # as in the 2025 study - they are genuinely different sensors.
                 offered = self.meta.loc[station, "channels"].split(",")
-                channel = select_channel(offered)
+                channel = select_channel(offered, weight=self.weight)
                 if channel is None:
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} "

@@ -541,9 +541,28 @@ CHANNEL_PRIORITY = [
 
 CHANNEL_PRIORITY_INDEX = {c: i for i, c in enumerate(CHANNEL_PRIORITY)}
 
+# Per-weight additions, decided 2026-10-03 by M. Denolle
+# (docs/rerun_2026/31_obs_station_selection.md). The OBS track picks `EL`: the
+# SIO and OBSIP short-period fleet (Geospace GS-11D at 200 Hz, L28LB at 100 Hz)
+# records nothing else, and 767 of the 1,396 offshore stations in the obs
+# campaign completed empty because of the 2026-09-02 exclusion above. That
+# exclusion stands for every land weight: `EL` is appended last, for `obs`
+# only, so a station offering a trained band still gets that band.
+CHANNEL_PRIORITY_BY_WEIGHT = {
+    "obs": CHANNEL_PRIORITY + ["EL"],
+}
 
-def select_channel(available):
+
+def channel_priority(weight=None):
+    """The ordered band list for a weight; the default list for any other."""
+    return CHANNEL_PRIORITY_BY_WEIGHT.get(weight, CHANNEL_PRIORITY)
+
+
+def select_channel(available, weight=None):
     """The one channel code to pick on, from those a station offers.
+
+    `weight` selects a per-weight priority (CHANNEL_PRIORITY_BY_WEIGHT); None
+    or an unknown weight uses CHANNEL_PRIORITY unchanged.
 
     `available` accepts either two-character band codes ("HH", "BH") or full
     SEED channel codes ("HHZ", "BHN"); the component is dropped and duplicates
@@ -559,8 +578,7 @@ def select_channel(available):
     caller should treat as "skip this station" rather than as an error.
     """
     bands = {str(x).strip()[:2] for x in available if str(x).strip()}
-    ranked = sorted(
-        (c for c in bands if c in CHANNEL_PRIORITY_INDEX),
-        key=lambda c: CHANNEL_PRIORITY_INDEX[c],
-    )
+    order = channel_priority(weight)
+    index = {c: i for i, c in enumerate(order)}
+    ranked = sorted((c for c in bands if c in index), key=lambda c: index[c])
     return ranked[0] if ranked else None
