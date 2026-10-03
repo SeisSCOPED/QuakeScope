@@ -100,3 +100,29 @@ def test_channel_selection():
 
 if __name__ == "__main__":
     test_channel_selection()
+
+
+def test_obs_weight_picks_el_and_land_weights_do_not():
+    # 2026-10-03 (docs/rerun_2026/31): the OBS track picks EL. 767 of the
+    # 1,396 offshore stations in the obs campaign carry only EL1/EL2/ELZ (the
+    # SIO and OBSIP short-period fleet) and completed empty under the default
+    # list. EL is appended last, for `obs` only.
+    from sb_catalog.src.constants import CHANNEL_PRIORITY_BY_WEIGHT, channel_priority
+
+    assert channel_priority("obs")[:-1] == CHANNEL_PRIORITY
+    assert channel_priority("obs")[-1] == "EL"
+    assert channel_priority(None) == CHANNEL_PRIORITY
+    assert channel_priority("jma_wc") == CHANNEL_PRIORITY
+    assert set(CHANNEL_PRIORITY_BY_WEIGHT) == {"obs"}
+
+    # An EL-only OBS: picked by obs, skipped by every land weight.
+    obs_sp = ["EL1", "EL2", "ELZ", "EDH"]
+    assert select_channel(obs_sp, weight="obs") == "EL"
+    for land in ("jma_wc", "original", "quakescope2026", "instance", None):
+        assert select_channel(obs_sp, weight=land) is None, land
+
+    # A station with a trained band still gets that band under obs.
+    assert select_channel(["EL1", "EL2", "ELZ", "BHZ", "BH1", "BH2"], weight="obs") == "BH"
+    assert select_channel(["HHZ", "ELZ"], weight="obs") == "HH"
+    # Hydrophone alone is still nothing to pick on.
+    assert select_channel(["EDH"], weight="obs") is None
