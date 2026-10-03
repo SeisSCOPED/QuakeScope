@@ -50,7 +50,10 @@ _s3 = boto3.client("s3", config=Config(region_name=REGION, max_pool_connections=
 CONTRIBUTORS = {
     "western": ["_queues/western-fill/stations.parquet",
                 "_queues/western-fill2/stations.parquet"],
-    "obs": [],
+    # obs-fill adds offshore stations found in the global table and in no
+    # table at all (docs/rerun_2026/31); obs-el and obs-2026 re-plan stations
+    # the obs table already lists.
+    "obs": ["_queues/obs-fill/stations.parquet"],
     "global": [],
 }
 
