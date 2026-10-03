@@ -1,3 +1,9 @@
+# SUPERSEDED 2026-10-03 by offshore_stations.csv (per station). Do not plan
+# a campaign from this list: FDSN temporary codes are reused across years,
+# and 1,993 of the 3,389 stations these 26 codes brought into the obs
+# campaign are on land (docs/rerun_2026/31_obs_station_selection.md).
+# Kept for the record of what the 2026 obs campaign was planned from.
+#
 # EarthScope networks that are majority ocean-bottom.
 # Classified from station elevation: at least three stations deeper than
 # 50 m below sea level and at least half the network submarine, surveyed

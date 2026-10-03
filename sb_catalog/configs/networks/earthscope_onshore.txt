@@ -3,6 +3,14 @@
 # offshore list. Some of these still contain a handful of island or
 # lake-bottom stations; the split is by network, not by station.
 #
+# 2026-10-03: the split by network was wrong in both directions
+# (docs/rerun_2026/31_obs_station_selection.md). The next global
+# campaign must be planned per station: every land station in
+# offshore_stations.csv (offshore_class == land), which includes the
+# 1,993 stations of global_onshore_from_obs.csv that the 26 "offshore"
+# codes kept out of global, and excludes the 1,406 offshore stations
+# that are in these 420 codes. This list alone is not that plan.
+#
 # 420 networks
 1A
 1B

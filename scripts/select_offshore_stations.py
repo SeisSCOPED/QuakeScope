@@ -29,9 +29,12 @@ stations in mapped networks that no table holds.
 Writes sb_catalog/configs/networks/offshore_stations.csv: one row per
 station-location in any table, with `on_land`, `coast_km`, `offshore_class`
 (offshore / offshore_review_shallow / land), `source_tables` and `action`
-(keep-in-obs / remove-from-obs / fill-from-global / none). With --fdsn, also
-offshore_stations_absent.csv for stations in NETWORK_MAPPING that are in no
-table. Needs cartopy + shapely (the pixi environment).
+(keep-in-obs / return-to-global / fill-from-global / none), and
+global_onshore_from_obs.csv: the return-to-global rows in the catalogue
+table schema, to be planned with the land stations when global is next
+launched. With --fdsn, also offshore_stations_absent.csv for stations in
+NETWORK_MAPPING that are in no table. Needs cartopy + shapely (the pixi
+environment).
 """
 from __future__ import annotations
 
@@ -51,13 +54,23 @@ REGION = "us-east-2"
 CATALOGUES = ("obs", "global", "western")
 OUT = ROOT / "sb_catalog/configs/networks/offshore_stations.csv"
 OUT_ABSENT = ROOT / "sb_catalog/configs/networks/offshore_stations_absent.csv"
+OUT_RETURN = ROOT / "sb_catalog/configs/networks/global_onshore_from_obs.csv"
+TABLE_COLS = ["id", "network_code", "station_code", "location_code", "channels",
+              "latitude", "longitude", "elevation", "start_date", "end_date"]
 OBS_SPAN = (pd.Timestamp("1993-01-01"), pd.Timestamp("2026-10-01"))
 DEPTH_FLOOR = -10.0          # metres; shallower goes to review, not to the campaign
 
 # Decisions taken by a person on the review list, keyed by station id, value
-# "offshore" or "land". Empty until someone decides; the doc lists the open
-# cases (docs/rerun_2026/31_obs_station_selection.md, "Decisions needed").
-REVIEWED: dict[str, str] = {}
+# "offshore" or "land". M. Denolle, 2026-10-03: cabled observatories (Ocean
+# Networks Canada `NV`, OOI `OO`) stay in the OBS track whatever their depth,
+# so the Saanich Inlet node at -8 m is offshore. YN.PARE.02 at 0 m in Punta
+# Arenas is land by the rule and needs no entry.
+REVIEWED: dict[str, str] = {
+    "NV.NSMTC.B1": "offshore",
+    "NV.NSMTC.B2": "offshore",
+    "NV.NSMTC.B3": "offshore",
+}
+CABLED_NETWORKS = {"NV", "OO"}   # any station of these off the land mask is offshore
 FDSN = {
     "iris": "https://service.iris.edu/fdsnws/station/1/query?level=station&format=text&nodata=404",
     "ncedc": "https://service.ncedc.org/fdsnws/station/1/query?level=station&format=text&nodata=404",
@@ -123,15 +136,20 @@ def tables(mask: LandMask) -> pd.DataFrame:
     u = u.drop_duplicates("id").drop(columns=["catalogue", "state"], errors="ignore").reset_index(drop=True)
     u["on_land"], u["coast_km"] = mask.classify(u["latitude"].values, u["longitude"].values)
     u["offshore_class"] = offshore_class(u["on_land"], u["elevation"])
+    cabled = u["network_code"].isin(CABLED_NETWORKS) & ~u["on_land"]
+    u.loc[cabled, "offshore_class"] = "offshore"
     decided = u["id"].map(REVIEWED)
     u.loc[decided.notna(), "offshore_class"] = decided[decided.notna()]
     u["has_vertical"] = u["channels"].map(has_vertical)
     u["days_1993_2026"] = days_in(u, *OBS_SPAN)
     in_obs = u["source_tables"].str.contains("obs")
     offshore = u["offshore_class"] == "offshore"
+    # return-to-global: land stations the obs campaign picked under an offshore
+    # code. Their obs picks are archived, not re-picked with jma_wc now; the
+    # next global campaign (new picker) must plan them with the land stations.
     u["action"] = np.select(
         [in_obs & offshore, in_obs & ~offshore, ~in_obs & offshore & u["has_vertical"]],
-        ["keep-in-obs", "remove-from-obs", "fill-from-global"], default="none")
+        ["keep-in-obs", "return-to-global", "fill-from-global"], default="none")
     return u
 
 
@@ -169,8 +187,8 @@ def report(u: pd.DataFrame) -> None:
            .agg(n=("id", "size"), days=("days_1993_2026", "sum")).to_string())
     print("\nactions:")
     print(u.groupby("action").agg(n=("id", "size"), days=("days_1993_2026", "sum")).to_string())
-    rm = u[u["action"] == "remove-from-obs"]
-    print(f"\nremove-from-obs by network: {rm['network_code'].value_counts().to_dict()}")
+    rm = u[u["action"] == "return-to-global"]
+    print(f"\nreturn-to-global by network: {rm['network_code'].value_counts().to_dict()}")
     rv = u[(u["offshore_class"] == "offshore_review_shallow") & u["source_tables"].str.contains("obs")]
     if len(rv):
         print("\nobs-table stations needing a human decision (off the mask, -10 m < elevation <= 0):")
@@ -193,6 +211,10 @@ def main() -> None:
                 "offshore_class", "has_vertical", "days_1993_2026", "source_tables", "action"]
         u[cols].sort_values(["action", "network_code", "station_code"]).to_csv(OUT, index=False)
         print(f"\nwrote {OUT.relative_to(ROOT)} ({len(u):,} rows)")
+        back = u[u["action"] == "return-to-global"]
+        back[TABLE_COLS].sort_values(["network_code", "station_code"]).to_csv(OUT_RETURN, index=False)
+        print(f"wrote {OUT_RETURN.relative_to(ROOT)} ({len(back):,} rows): land stations the obs "
+              f"campaign picked, for the next global onshore plan")
     if a.fdsn:
         f = absent_from_tables(u, mask)
         print(f"\noffshore stations in mapped networks absent from every table: {len(f):,}, "
