@@ -189,13 +189,19 @@ The data exist and are open: one hour of `ELZ` fetched from the DMC on
 (2014) and 1V.101 (2023) returned 1.2 to 2.9 MB each. X9 2013 is "missing" to
 the S3 access survey and openly served by the DMC, so the two tiers differ.
 
-Decision needed: whether the OBS track picks `EL` with the `obs` weight. The
-2026-09-02 reasoning was about land training sets; whether PickBlue's training
-corpus holds short-period OBS records is not recorded here and should be
-checked before deciding. If yes, `select_channel` needs a per-weight priority
-(or `EL` appended for the obs job definition only), the 767 kept stations and
-846 fill stations are planned, and the empty X9, Z5, 9R, YO, YN, X6, ZU, YR,
-1V shards are re-run.
+**Decided 2026-10-03 (M. Denolle): the OBS track picks `EL`.** The
+2026-09-02 exclusion stands for the land weights and changes nothing there.
+Mechanism: `select_channel` is applied in one place on the read path,
+`s3_helper.py` (`channel = select_channel(offered)`, near line 1320), and in
+`hitrate.py`; the worker already knows `--weight`. Add a per-weight priority in
+`constants.py`, `CHANNEL_PRIORITY_BY_WEIGHT = {"obs": CHANNEL_PRIORITY +
+["EL"]}`, pass the weight into the S3 helper from `worker.py`, and keep the
+default list for every other weight. `EL` goes last, after `CN`, so a station
+offering a trained band still gets it. That is a code change, an image build
+and a new `quakescope_2026_obs` revision registered with boto3, not the local
+`aws` CLI ([README](README.md), "check the account"). With it, the 767 kept
+`EL` stations and the 846 `EL` fill stations are planned, and the shards that
+completed empty on X9, Z5, 9R, YO, YN, X6, ZU, YR and 1V are re-run.
 
 ### Decisions (M. Denolle, 2026-10-03)
 
@@ -205,6 +211,7 @@ checked before deciding. If yes, `select_channel` needs a per-weight priority
 | `YN.PARE.02`, 0 m, Punta Arenas, 343 days | return (coastal land, by the rule) |
 | the 1,993 land stations' `obs`-weight picks | **archive** under `_archive/obs-land/`; nothing is deleted from the bucket |
 | re-pick those 1,993 stations into `global` with `jma_wc` now | **no**: global will be relaunched with a new picker; the stations go into that plan through `global_onshore_from_obs.csv` |
+| the `EL` band (767 kept and 846 fill stations, short-period OBS) | **picked, in the OBS track only**: per-weight channel priority, see "What the manifests hold" below; land weights unchanged |
 | 96 shallow stations in global (201,629 days): 56 GeoNet tide gauges with no seismic channel, atoll and coastal stations at 0 m, Ross Ice Shelf | not queued; `CA` at 41.18, 1.75 (OBSEA) is the one worth a look |
 | strip the 1,398 offshore stations' `jma_wc` picks out of `global/` | open; phase 2 after the fill, needs the same split over 202,468 global manifests |
 
@@ -284,8 +291,8 @@ resumed-shard fix, 8 vCPU / 16 GB, Fargate; read back from Batch with boto3 on
 
 | queue | stations | span | planned station-days | note |
 |---|--:|---|--:|---|
-| `_queues/obs-fill` (new) | 1,398 from global + ~203 absent | 1993.001 to 2026.274 | ~384,000 | the planner clips to operating windows; the declared count will be close to the sum above. **846 of the 1,398 are `EL`-only and are skipped unless the `EL` decision above is yes**; without it the fill is 552 stations and ~295,000 days |
-| `EL` re-run of kept stations (if the `EL` decision is yes) | 767 keep | their windows | 47,168 | the X9, Z5, 9R, YO, YN, X6, ZU, YR, 1V shards that completed empty |
+| `_queues/obs-fill` (new) | 1,398 from global + ~203 absent | 1993.001 to 2026.274 | ~384,000 | the planner clips to operating windows; the declared count will be close to the sum above. 846 of the 1,398 are `EL`-only and are picked under the `EL` decision, so this queue must run on the new obs job definition |
+| `_queues/obs-el` (new), the kept `EL` stations | 767 keep | their windows | 47,168 | re-plans the X9, Z5, 9R, YO, YN, X6, ZU, YR, 1V station-days that completed empty; a new queue rather than un-completing the old shards, because `complete/` is the record of what ran |
 | `_queues/obs-2026` (re-planned) | 1,396 keep | 2026.001 to 2026.274 | ~10,500 | today's queue has 26 sea-only shards (NV, OO) and 39 land-only |
 | `_queues/obs`, blocked shards | 2F Axial 2022 and 2023 | | 7,231 | 50 sea-only shards blocked on EarthScope 403s; re-survey access and unblock when the embargo lifts. The other 285 blocked shards are land and stay blocked |
 | XO 2019 and X9 2013 | | | 37,316 | recorded complete with zero picks ([obs-empty-completions](README.md)); run `python -m src.picker netyear-sweep` **from a Batch task** first, then a repair queue if the network-years exist |
@@ -316,9 +323,9 @@ is indistinguishable from the rest of the catalogue.
 
 **Cost.** The obs campaign to date cost about $425 (sum of `seconds` over 10,518
 `complete/` records in six queues, 8 vCPU, $0.0213/vCPU-h, last attempts only)
-for 1.48 M planned station-days, $0.00029 per planned station-day. The ~440,000
-planned station-days above come to **$130, call it $100 to $200** with
-preemption overhead. The 1,398 global-table stations are mostly deep-water
+for 1.48 M planned station-days, $0.00029 per planned station-day. The ~490,000
+planned station-days above, the `EL` queue included, come to **$140, call it
+$100 to $200** with preemption overhead. The 1,398 global-table stations are mostly deep-water
 temporary deployments with short windows, so hit rates will be high and the
 upper end is more likely than for the land campaigns.
 
@@ -348,6 +355,10 @@ Each line is a command or an assertion, not a reading of a document.
 - Dashboard: rebuilt, obs map shows no triangle on land.
 - `global_onshore_from_obs.csv` has 1,993 rows and no id in common with the
   keep set; the next global plan's station table is checked against it.
+- Before the fill: one `EL`-only shard (X9 2013 is the test case, open at the
+  DMC and in the keep set) run on the new obs job definition writes picks with
+  `cha == "EL"` in its manifest records; the same image run with `jma_wc`
+  still returns `None` for an `EL`-only station.
 - After the fill: `obs/runs/*.json` for the new run ids say `weight: obs`;
   `obs-fill` `complete/` records sum to the planned station-days less the
   blocked ones; `merge_station_tables --check` still passes with the
