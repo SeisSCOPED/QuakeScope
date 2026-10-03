@@ -1,6 +1,6 @@
 """A Leaflet map of the benchmark: every event, every scored station.
 
-Terrain tiles so the tectonic setting reads, a colour per track and a shade per
+Plain grey tiles so the markers carry the page, a colour per track and a shade per
 event type within it, and a contamination statement per sequence. Numbers come
 from docs/benchmark/results/map/, never typed here.
 """
@@ -146,16 +146,22 @@ because the data does not auto-download.</p>
 <script>
 const SEQ = {json.dumps(seqs)};
 const map = L.map('map', {{ worldCopyJump: true }}).setView([30, 10], 2);
+// Plain grey by default: the markers are the content, and a shaded-relief
+// base competes with them. Terrain stays available for the volcanic and
+// mountain-belt sequences where the setting is the point.
+const plain = L.tileLayer(
+  'https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png',
+  {{ maxZoom: 19, attribution: '&copy; OpenStreetMap, &copy; CARTO' }}).addTo(map);
+const grey = L.tileLayer(
+  'https://{{s}}.basemaps.cartocdn.com/light_nolabels/{{z}}/{{x}}/{{y}}{{r}}.png',
+  {{ maxZoom: 19, attribution: '&copy; OpenStreetMap, &copy; CARTO' }});
 const terrain = L.tileLayer(
   'https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png',
   {{ maxZoom: 16, attribution:
      'map data &copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors, '
      + '<a href="https://viewfinderpanoramas.org">SRTM</a> | style '
-     + '<a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' }}).addTo(map);
-const plain = L.tileLayer(
-  'https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png',
-  {{ maxZoom: 19, attribution: '&copy; OpenStreetMap, &copy; CARTO' }});
-L.control.layers({{ 'Terrain': terrain, 'Plain': plain }}).addTo(map);
+     + '<a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' }});
+L.control.layers({{ 'Grey': plain, 'Grey, no labels': grey, 'Terrain': terrain }}).addTo(map);
 
 const layers = {{}}, bounds = {{}};
 for (const d of SEQ) {{
