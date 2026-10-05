@@ -42,6 +42,35 @@ DETECT_TOL = 0.5          # s, the board's detection tolerance
 BUCKET_HTTP = "https://quakescope-picks-2026.s3.us-east-2.amazonaws.com"
 
 
+def obs_station_map() -> pd.DataFrame:
+    """Picks per station in the obs catalogue, from its manifests and table.
+
+    Same columns as the old cached table (picks, days, zero, latitude,
+    longitude, network_code), indexed by station id. Only stations listed in
+    obs/stations.parquet are kept, which since 2026-10-03 means offshore only.
+    """
+    import io
+    from concurrent.futures import ThreadPoolExecutor
+    import boto3
+    s3 = boto3.client("s3", region_name="us-east-2")
+    bucket = "quakescope-picks-2026"
+    keys = [o["Key"] for p in s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix="obs/manifests/") for o in p.get("Contents", [])]
+    def records(k):
+        return json.loads(s3.get_object(Bucket=bucket, Key=k)["Body"].read()).get("records", [])
+    with ThreadPoolExecutor(64) as ex:
+        rec = pd.DataFrame([r for rs in ex.map(records, keys) for r in rs])
+    st = pd.read_parquet(io.BytesIO(s3.get_object(
+        Bucket=bucket, Key="obs/stations.parquet")["Body"].read())).set_index("id")
+    rec = rec[rec["tid"].isin(st.index)]
+    g = rec.groupby("tid").agg(picks=("npks", "sum"), days=("npks", "size"),
+                               zero=("npks", lambda s: float((s == 0).sum())))
+    g = g.join(st[["latitude", "longitude", "network_code"]])
+    print(f"obs layer: {len(keys):,} manifests, {len(g):,} stations, "
+          f"{int(g['picks'].sum()):,} picks")
+    return g
+
+
 def load():
     d = {}
     d["scan"] = json.loads((SP / "western_scan.json").read_text())
@@ -67,10 +96,12 @@ def load():
     d["sb"] = pd.read_csv(b) if b.exists() else None
     q = RES / "regime_sequences.csv"
     d["seq"] = pd.read_csv(q) if q.exists() else None
-    o = SP / "obs_station_map.parquet"
-    d["obs"] = pd.read_parquet(o) if o.exists() else None
-    om = SP / "obs_meta.json"
-    d["obs_meta"] = json.loads(om.read_text()) if om.exists() else None
+    # The ocean-bottom layer is read from the bucket at build time, not from a
+    # cached table: the cache of 2026-10-02 held 1,769 stations, 1,157 of them
+    # land stations picked under reused offshore codes, archived out of obs/ on
+    # 2026-10-03 (docs/rerun_2026/31_obs_station_selection.md).
+    d["obs"] = obs_station_map()
+    d["obs_meta"] = None
     f = SP / "station_table_fix.json"
     d["fix"] = json.loads(f.read_text()) if f.exists() else None
     return d
