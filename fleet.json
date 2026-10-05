@@ -123,7 +123,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/obs"
     },
     "obs-el": {
-      "target": 0,
+      "target": 10,
       "job_definition": "quakescope_2026_obs:24",
       "weight": "obs",
       "procs": 4,
