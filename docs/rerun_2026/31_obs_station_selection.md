@@ -377,8 +377,10 @@ All on 2026-10-03 unless stated. Branch `obs-station-selection`, pull request
 | step | state | evidence |
 |---|---|---|
 | `EL` per-weight priority in code | done, on the branch, 174 tests and the offline selftest pass | commit `5ad5ae5`; `tests/test_channel_selection.py::test_obs_weight_picks_el_and_land_weights_do_not` |
-| image with the `EL` change | **waiting on the merge of PR #48** (`docker.yml` builds on push to `main` only) | `gh pr view 48` |
-| obs job definition on that image | not yet; `scripts/register_jobdef.py --tag <sha> quakescope_2026_obs` once the tag exists | |
+| image with the `EL` change | done 2026-10-05: PR #48 merged as `f6bd81b`, `ghcr.io/seisscoped/quakescope:f6bd81b` built | `docker.yml` run 37314706210 |
+| obs job definition on that image | done: `quakescope_2026_obs:24`, read back, differs from `:23` in the image only; every obs campaign in `fleet.json` repointed | `scripts/register_jobdef.py --tag f6bd81b quakescope_2026_obs --update-fleet` |
+| `EL` test (`obs-el-test`) | **passed** 2026-10-05: both shards complete, manifests record only `cha == "EL"`, 112,446 picks on 12 of the 23 X9 2012 stations (the other 11 hold no data in the window), 2,433 s of compute | `obs/manifests/2012300-2012320-1fb7b5c7e5f9.json`, `2012320-2012321-f1d8d675411c.json` |
+| report maps | western talk reads its obs layer from the bucket at build time: 607 offshore stations, 29,408,460 picks (was 1,754 and 129,548,066); dashboard obs cache (last written 2026-09-06, 632 land stations) rebuilt | commit `2aad9b8` |
 | queues installed under `_queues/` | done: `obs-el-test` 23 stations, 2 shards, 483 sd; `obs-el` 767, 210, 47,168; `obs-fill` 1,640 station-locations (1,398 + 242 absent), 2,994, 389,444; `obs-2026` re-planned 1,396, 28, 10,960 (old plan copied to `_archive/obs-2026-plan-before-20261003/`) | `scripts/plan_obs_queues.py`; each queue's `README.json` |
 | object classification by `tid` | done: 17,398 land-only (102.6 M rows, 2.74 GB), 571 mixed (3.1 M rows), 7,799 sea-only (27.9 M rows); none unknown | `docs/rerun_2026/obs_split/objects.parquet` |
 | manifests and station table classified | done: 4,549 land-only, 167 mixed, 1,268 sea-only; table 1,396 keep, 1,993 land, 0 neither | `scripts/split_obs_land.py dry-run` |
@@ -386,8 +388,26 @@ All on 2026-10-03 unless stated. Branch `obs-station-selection`, pull request
 | `verify` | **OK**: 133,641,669 rows before = 30,426,369 in `obs/picks/` (8,370 objects) + 103,215,300 in `_archive/obs-land/picks/` (17,969 objects); table 1,396 rows, all keep | `docs/rerun_2026/obs_split/verify.json` |
 | station-table invariant | `merge_station_tables.py --campaign obs --check`: 1,435 manifests, 607 stations with picks, 0 with picks but no table row. 612 kept stations have manifest records, 5 of them with zero picks; the same 612 and 607 before and after the move, and no land `tid` remains in any manifest | run 2026-10-03 after the move |
 | obs-fill stations into the catalogue table | done: `merge_station_tables.py --campaign obs --write` merged `_queues/obs-fill/stations.parquet`; `obs/stations.parquet` is 3,036 rows (1,396 keep + 1,640 fill), backup `obs/.backup/stations-20261003T174139Z.parquet` | the daily `station-table.yml` check |
-| `fleet.json` entries for `obs-el-test`, `obs-el`, `obs-fill` | not yet; they name the job definition, so after it exists | |
-| launch | not yet; Fleet runs the access survey on a campaign's first target, then launches on the second | |
+| `fleet.json` entries for `obs-el-test`, `obs-el`, `obs-fill` | done, commit `2aad9b8`; `obs-el-test` and `obs-dates` (complete, 239 of 239) set back to 0 | |
+| launch | **running** 2026-10-05: `obs-el` 10 workers, `obs-fill` 50, `obs-2026` 5, all RUNNING on `quakescope_2026_obs:24` (read from Batch with boto3) | Fleet workflow runs; `_queues/<q>/access.json` |
+
+**Access surveys, 2026-10-05.** The EarthScope S3 access point does not hold
+every network-year the DMC serves:
+
+| queue | planned station-days | in network-years missing at S3 | denied (embargo) |
+|---|--:|--:|--:|
+| `obs-el` | 47,168 | 27,433 (58%) | 4,980 (2F 2022 to 2023) |
+| `obs-fill` | 389,444 | 66,342 (17%) | 11,953 (2P 2024, 3J 2023 to 2024, XB 2024) |
+| `obs-2026` | 10,960 | 0 | 7,398 (NV 2026) |
+
+Missing in `obs-el`: 1V 2023, 2F 2024, 3A 2023, 9A 2011, 9R 2023, X6 2012,
+X9 2013, XJ 2011, XZ 2013, YN 2009, YR 2021, Z5 2015, Z6 2018, ZF 2011,
+ZS 2013, ZU 2002, ZU 2019. Shards in a missing network-year complete with no
+picks, the silent-completion class of
+[obs-empty-completions](27_obs_literature_benchmark.md). At least X9 2013 is
+served openly by the DMC (one hour of ELZ fetched 2026-10-03), so these data
+exist outside S3. Closing the gap needs an FDSN dataselect read path, which
+this plan does not include; it is the next open item.
 
 The manifest-based estimate in section 3 (16,327 / 1,458 / 7,712) was made
 before every object's `tid` column had been read; the numbers above are the
