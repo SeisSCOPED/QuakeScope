@@ -1750,11 +1750,45 @@ the 2026 run, not deleted.</p>
 <code>NET.STA.LOC</code> &middot; <code>cha</code> band &middot;
 <code>pha</code> P or S &middot; <code>peak</code> the arrival time &middot;
 <code>conf</code> model score, floored at 0.2 &middot; <code>amp</code>
-Wood-Anderson displacement in metres &middot; <code>amp_raw</code> peak counts
-before response removal &middot; <code>rid</code> run id, joins to
+Wood-Anderson displacement in metres &middot; <code>amp_vel</code> peak ground
+velocity in m/s &middot; <code>start</code> and <code>end</code> the pick window
+&middot; <code>rid</code> run id, joins to
 <code>runs/</code>. <code>conf</code> is a detection score, not a probability
 of correctness; the 0.2 floor is permissive on purpose so you can pick your
 own threshold.</p>
+
+<h2>Scoring picks against analyst arrivals</h2>
+<p class="cap"><strong>One script, two CSV files, no account and no AWS.</strong>
+<code>score_picks.py</code> imports nothing but numpy and pandas, takes the
+arrivals you trust and the picks a model emitted, and writes recall, precision,
+onset-time error, calibration and phase-swap rate. It is the same scorer that
+produced every number on the picker board, pinned by unit tests and
+byte-reproducible across runs.</p>
+<p class="cap">&#8594; <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_picks.py"><strong>scripts/score_picks.py</strong></a>
+&#8212; the command-line scorer &middot;
+<a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/sb_catalog/src/benchmark_metrics.py"><strong>benchmark_metrics.py</strong></a>
+&#8212; the metric definitions, one function each &middot;
+<a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/scripts/score_track_models.py"><strong>score_track_models.py</strong></a>
+&#8212; the batch version that scores many weight sets over many sequences</p>
+<pre class="snip">python scripts/score_picks.py --demo          # synthetic picks, nothing to download
+python scripts/score_picks.py \
+    --reference arrivals.csv \                 # station,phase,time
+    --picks     mypicks.csv  \                 # station,phase,time,conf
+    --out       scores/</pre>
+<p class="cap"><strong>Run your model once at a low confidence floor and keep
+every pick.</strong> Each threshold is then a filter over one file rather than
+another pass over the waveforms. The scorer refuses two mistakes rather than
+letting you publish them: station names that differ between the files, which
+would report a working picker as recall&nbsp;0, and disjoint time windows, which
+is usually a time-zone error.</p>
+<p class="cap"><strong>Against a bulletin, not every metric is available.</strong>
+Recall and the timing statistics are exact. Precision, F1 and calibration are
+lower bounds, because an unmatched pick may be a real arrival the analyst never
+marked; the scorer names those columns <code>_lb</code>. MCC needs true
+negatives, which a continuous record with an incomplete reference does not
+define, so it is not computed at all.
+&#8594; <a href="https://seisscoped.org/QuakeScope/benchmark_metrics.html"><strong>the picker board</strong></a>
+&middot; <a href="https://seisscoped.org/QuakeScope/benchmark_data.html"><strong>downloadable benchmark data</strong></a></p>
 
 <footer>
 <strong>Two pick counts, both true.</strong> The tile counts picks in shards
