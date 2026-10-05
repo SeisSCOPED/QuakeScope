@@ -529,6 +529,116 @@ def fmt(v, nd=3, dash="&mdash;"):
     return dash if v is None or (isinstance(v, float) and not np.isfinite(v)) else f"{v:.{nd}f}"
 
 
+
+def ten_model_section() -> str:
+    """Ten published pickers over the four evaluation-set tracks.
+
+    Read from docs/benchmark/results/tracks/, which score_track_models.py writes
+    from 317,202 raw picks. Four protocols, because no one of them orders the
+    models and each is biased in a way worth naming.
+    """
+    import numpy as np
+    T = ROOT / "docs" / "benchmark" / "results" / "tracks"
+    if not (T / "detection.csv").exists():
+        return ""
+    d = pd.read_csv(T / "detection.csv")
+    b = pd.read_csv(T / "equal_count.csv")
+    tm = pd.read_csv(T / "timing.csv")
+    nref = d.groupby(["track", "sequence", "phase"]).n_ref.first()
+    b = b.join(nref, on=["track", "sequence", "phase"])
+    NAME = {"track1-western-us": "western US", "track2-msas": "MS-AS abroad",
+            "track2-vt": "volcano-tectonic", "track2-swarm": "fluid swarm"}
+
+    def wavg(g, v, w="n_ref"):
+        x = g.dropna(subset=[v])
+        return np.average(x[v], weights=x[w]) if len(x) else float("nan")
+
+    def table(df, col, src=None):
+        src = src if src is not None else df
+        rows = []
+        for m, g in src.groupby("model"):
+            r = {"model": m}
+            for tr, gg in g.groupby("track"):
+                r[NAME[tr]] = wavg(gg, col)
+            vals = [r.get(k) for k in NAME.values() if r.get(k) == r.get(k)]
+            r["mean"] = float(np.mean(vals)) if vals else float("nan")
+            rows.append(r)
+        rows.sort(key=lambda r: -(r["mean"] if r["mean"] == r["mean"] else -1))
+        head = "".join(f"<th>{k}</th>" for k in NAME.values())
+        body = ""
+        for i, r in enumerate(rows):
+            cells = "".join(
+                f'<td class="num">{r[k]:.3f}</td>' if r.get(k) == r.get(k) else '<td class="num">&ndash;</td>'
+                for k in NAME.values())
+            mean = f"{r['mean']:.3f}" if r["mean"] == r["mean"] else "&ndash;"
+            rank = f'<td class="rank">{i + 1}</td>'
+            body += (f'<tr>{rank}<td><code>{r["model"]}</code></td>{cells}'
+                     f'<td class="num"><b>{mean}</b></td></tr>')
+        return (f'<table class="t"><thead><tr><th></th><th>weights</th>{head}'
+                f'<th>mean</th></tr></thead><tbody>{body}</tbody></table>')
+
+    vt = b[b.track == "track2-vt"]
+    vt_rank = sorted(((m, wavg(g, "recall_at_budget")) for m, g in vt.groupby("model")),
+                     key=lambda x: -x[1])
+    vp_pos = next(i for i, (m, _) in enumerate(vt_rank, 1) if m == "PhaseNet:volpick")
+    vp_rec = dict(vt_rank)["PhaseNet:volpick"]
+    vt_lead, vt_lead_rec = vt_rank[0]
+    n_models = d.model.nunique()
+    n_picks = 317202
+
+    vtt = tm[tm.track == "track2-vt"]
+    tbest = min(((m, np.average(g.medae, weights=g.n)) for m, g in vtt.groupby("model")),
+                key=lambda x: x[1])
+
+    return f"""
+<section id="ten">
+  <div class="section-head">
+    <p class="eyebrow">The board</p>
+    <h2>Ten published pickers over the four evaluation tracks</h2>
+    <p class="lede">{n_picks:,} picks from {n_models} weight sets across two architectures,
+    scored on the {len(NAME)} tracks of the evaluation set. Ranking by recall at an equal
+    pick count, which is the only protocol here that does not reward whichever model was
+    shipped with the lowest threshold.</p>
+  </div>
+
+  <h3>Recall at an equal pick count</h3>
+  {table(b, "recall_at_budget")}
+  <p class="note">Every model's threshold is moved until all of them emit the same number of
+  picks on that sequence and phase, then recall is read there. The count all models can reach
+  is capped by the most conservative one, so this protocol is evaluated at the low end of
+  every curve.</p>
+
+  <h3>Recall at each model's own published threshold</h3>
+  {table(d, "recall_at_published")}
+  <p class="note">The threshold each weight set ships with, chosen by its authors. They
+  disagree by two orders of magnitude &mdash; EQTransformer <code>instance</code> at 0.005,
+  <code>volpick</code> at 0.39, <code>scedc</code> at 0.41 &mdash; so this ranking largely
+  reflects who set theirs lowest: on the volcano track <code>jma_wc</code> emits 14,060 picks
+  at its 0.10 against <code>volpick</code>'s 1,771 at 0.39. PhaseNet <code>original</code> and
+  EQTransformer <code>original</code> ship no default and cannot be scored this way.</p>
+
+  <h3>Recall at each model's best-F1 threshold</h3>
+  {table(d, "recall_at_best")}
+
+  <div class="callout">
+    <h3>The volcano-trained picker does not win the volcano track</h3>
+    <p><code>volpick</code> (Zhong &amp; Tan, 2024,
+    <a href="https://doi.org/10.1029/2024GL108438">10.1029/2024GL108438</a>) is trained on
+    volcano-tectonic and long-period earthquakes and is the only weight set here with a prior
+    claim on this regime. At an equal pick count on the Etna edifice it ranks
+    <b>{vp_pos} of {len(vt_rank)}</b>, recall {vp_rec:.3f} against {vt_lead_rec:.3f} for
+    <code>{vt_lead}</code>.</p>
+    <p>Its training corpus is VCSEIS, which covers Alaska, Hawaii, northern California and the
+    Cascades. <b>Etna is not in it</b>, and the paper's own held-out tests were Cascadia and
+    the Nankai Trough, so this is a volcano the model has not seen. The result is that training
+    on volcanic seismicity did not by itself transfer to a volcano in another tectonic setting
+    &mdash; which is the question a regime-based benchmark exists to ask. It does hold the
+    joint-best onset accuracy on the track, {tbest[1]:.3f}&thinsp;s median error.</p>
+  </div>
+</section>
+"""
+
+
 def main() -> None:
     d, t, q, c, sweep, meta = load()
     publish_data()
@@ -779,6 +889,8 @@ def main() -> None:
     {tim_track['global'][gl_time_worst]:.3f}&thinsp;s median error against
     {tim_track['global'][gl_time_best]:.3f}&thinsp;s for <code>{gl_time_best}</code>.</p>
 </section>
+
+{ten_model_section()}
 
 <section id="protocols">
   <div class="section-head">

@@ -1,0 +1,11 @@
+model,P_thr,S_thr
+PhaseNet:original,,
+PhaseNet:instance,0.08639824281948567,0.1194333034644735
+PhaseNet:jma_wc,0.1,0.1
+PhaseNet:quakescope2026,0.1,0.1
+PhaseNet:diting,0.3,0.3
+PhaseNet:stead,0.26809832759017366,0.2607360032861827
+PhaseNet:volpick,0.39,0.34
+PhaseNet:scedc,0.40876261396056346,0.4039903966026159
+EQTransformer:original,,
+EQTransformer:instance,0.00546712,0.00546712

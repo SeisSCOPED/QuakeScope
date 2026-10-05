@@ -1,0 +1,261 @@
+track,sequence,phase,model,n,ece_lb
+track1-western-us,Mendocino 2024,P,EQTransformer:instance,299,0.22559113712374582
+track1-western-us,Mendocino 2024,P,EQTransformer:original,401,0.24725907730673316
+track1-western-us,Mendocino 2024,P,PhaseNet:diting,315,0.11411488888888892
+track1-western-us,Mendocino 2024,P,PhaseNet:instance,375,0.22251168
+track1-western-us,Mendocino 2024,P,PhaseNet:jma_wc,727,0.37915819807427786
+track1-western-us,Mendocino 2024,P,PhaseNet:original,433,0.3589915473441108
+track1-western-us,Mendocino 2024,P,PhaseNet:quakescope2026,483,0.2502293167701864
+track1-western-us,Mendocino 2024,P,PhaseNet:scedc,273,0.3517952747252748
+track1-western-us,Mendocino 2024,P,PhaseNet:stead,152,0.14113302631578944
+track1-western-us,Mendocino 2024,P,PhaseNet:volpick,469,0.325588763326226
+track1-western-us,Mendocino 2024,S,EQTransformer:instance,229,0.2416703493449782
+track1-western-us,Mendocino 2024,S,EQTransformer:original,344,0.2957507558139535
+track1-western-us,Mendocino 2024,S,PhaseNet:diting,359,0.293928495821727
+track1-western-us,Mendocino 2024,S,PhaseNet:instance,219,0.22410378995433794
+track1-western-us,Mendocino 2024,S,PhaseNet:jma_wc,435,0.31729422988505745
+track1-western-us,Mendocino 2024,S,PhaseNet:original,518,0.41498536679536674
+track1-western-us,Mendocino 2024,S,PhaseNet:quakescope2026,367,0.3248655313351499
+track1-western-us,Mendocino 2024,S,PhaseNet:scedc,63,0.24180952380952378
+track1-western-us,Mendocino 2024,S,PhaseNet:stead,231,0.3189006060606061
+track1-western-us,Mendocino 2024,S,PhaseNet:volpick,501,0.4282188423153693
+track1-western-us,Monroe WA,P,EQTransformer:instance,107,0.4050145794392524
+track1-western-us,Monroe WA,P,EQTransformer:original,75,0.2446826666666666
+track1-western-us,Monroe WA,P,PhaseNet:diting,129,0.3936151162790698
+track1-western-us,Monroe WA,P,PhaseNet:instance,103,0.42397970873786406
+track1-western-us,Monroe WA,P,PhaseNet:jma_wc,246,0.4828814634146342
+track1-western-us,Monroe WA,P,PhaseNet:original,148,0.4597887162162162
+track1-western-us,Monroe WA,P,PhaseNet:quakescope2026,169,0.4736855029585798
+track1-western-us,Monroe WA,P,PhaseNet:scedc,131,0.41246526717557247
+track1-western-us,Monroe WA,P,PhaseNet:stead,63,0.20509126984126988
+track1-western-us,Monroe WA,P,PhaseNet:volpick,128,0.5215896874999999
+track1-western-us,Monroe WA,S,EQTransformer:instance,99,0.37597272727272724
+track1-western-us,Monroe WA,S,EQTransformer:original,74,0.3300544594594594
+track1-western-us,Monroe WA,S,PhaseNet:diting,162,0.5133630864197531
+track1-western-us,Monroe WA,S,PhaseNet:instance,84,0.3104033333333333
+track1-western-us,Monroe WA,S,PhaseNet:jma_wc,196,0.4469745408163266
+track1-western-us,Monroe WA,S,PhaseNet:original,174,0.5064035057471263
+track1-western-us,Monroe WA,S,PhaseNet:quakescope2026,152,0.40718236842105265
+track1-western-us,Monroe WA,S,PhaseNet:scedc,76,0.32995710526315786
+track1-western-us,Monroe WA,S,PhaseNet:stead,106,0.5354982075471698
+track1-western-us,Monroe WA,S,PhaseNet:volpick,180,0.5798961666666667
+track1-western-us,Monte Cristo,P,EQTransformer:instance,86,0.5358596511627907
+track1-western-us,Monte Cristo,P,EQTransformer:original,43,0.4059502325581395
+track1-western-us,Monte Cristo,P,PhaseNet:diting,77,0.3348120779220779
+track1-western-us,Monte Cristo,P,PhaseNet:instance,94,0.5193304255319149
+track1-western-us,Monte Cristo,P,PhaseNet:jma_wc,155,0.5124581290322581
+track1-western-us,Monte Cristo,P,PhaseNet:original,135,0.5444256296296296
+track1-western-us,Monte Cristo,P,PhaseNet:quakescope2026,127,0.47961606299212595
+track1-western-us,Monte Cristo,P,PhaseNet:scedc,36,0.47381638888888883
+track1-western-us,Monte Cristo,P,PhaseNet:stead,49,0.3660667346938775
+track1-western-us,Monte Cristo,P,PhaseNet:volpick,107,0.5355978504672896
+track1-western-us,Monte Cristo,S,EQTransformer:instance,59,0.38293610169491515
+track1-western-us,Monte Cristo,S,EQTransformer:original,36,0.2926858333333333
+track1-western-us,Monte Cristo,S,PhaseNet:diting,77,0.35555454545454546
+track1-western-us,Monte Cristo,S,PhaseNet:instance,51,0.3775009803921568
+track1-western-us,Monte Cristo,S,PhaseNet:jma_wc,86,0.3979061627906976
+track1-western-us,Monte Cristo,S,PhaseNet:original,152,0.48037513157894746
+track1-western-us,Monte Cristo,S,PhaseNet:quakescope2026,73,0.3967520547945205
+track1-western-us,Monte Cristo,S,PhaseNet:scedc,26,0.3317111538461538
+track1-western-us,Monte Cristo,S,PhaseNet:stead,120,0.5470513333333333
+track1-western-us,Monte Cristo,S,PhaseNet:volpick,115,0.5349001739130435
+track1-western-us,Ridgecrest,P,EQTransformer:instance,94,0.18967159574468084
+track1-western-us,Ridgecrest,P,EQTransformer:original,104,0.052939519230769234
+track1-western-us,Ridgecrest,P,PhaseNet:diting,122,0.3264871311475409
+track1-western-us,Ridgecrest,P,PhaseNet:instance,100,0.10247150000000005
+track1-western-us,Ridgecrest,P,PhaseNet:jma_wc,338,0.07817088757396451
+track1-western-us,Ridgecrest,P,PhaseNet:original,496,0.25653570564516126
+track1-western-us,Ridgecrest,P,PhaseNet:quakescope2026,352,0.062239460227272704
+track1-western-us,Ridgecrest,P,PhaseNet:scedc,57,0.13366087719298256
+track1-western-us,Ridgecrest,P,PhaseNet:stead,136,0.11381639705882349
+track1-western-us,Ridgecrest,P,PhaseNet:volpick,213,0.11383507042253523
+track1-western-us,Ridgecrest,S,EQTransformer:instance,84,0.13533654761904765
+track1-western-us,Ridgecrest,S,EQTransformer:original,120,0.11956599999999998
+track1-western-us,Ridgecrest,S,PhaseNet:diting,123,0.19510178861788613
+track1-western-us,Ridgecrest,S,PhaseNet:instance,99,0.12002292929292932
+track1-western-us,Ridgecrest,S,PhaseNet:jma_wc,279,0.08342225806451617
+track1-western-us,Ridgecrest,S,PhaseNet:original,520,0.2716668846153846
+track1-western-us,Ridgecrest,S,PhaseNet:quakescope2026,292,0.10609897260273969
+track1-western-us,Ridgecrest,S,PhaseNet:scedc,44,0.11964113636363637
+track1-western-us,Ridgecrest,S,PhaseNet:stead,177,0.16751005649717515
+track1-western-us,Ridgecrest,S,PhaseNet:volpick,254,0.09045244094488188
+track1-western-us,San Simeon,P,EQTransformer:instance,382,0.46319976439790583
+track1-western-us,San Simeon,P,EQTransformer:original,225,0.4170024
+track1-western-us,San Simeon,P,PhaseNet:diting,344,0.3793741569767442
+track1-western-us,San Simeon,P,PhaseNet:instance,362,0.4976554972375691
+track1-western-us,San Simeon,P,PhaseNet:jma_wc,739,0.511922652232747
+track1-western-us,San Simeon,P,PhaseNet:original,448,0.5459915178571428
+track1-western-us,San Simeon,P,PhaseNet:quakescope2026,482,0.4678169294605809
+track1-western-us,San Simeon,P,PhaseNet:scedc,174,0.4191329885057471
+track1-western-us,San Simeon,P,PhaseNet:stead,172,0.2541309302325581
+track1-western-us,San Simeon,P,PhaseNet:volpick,349,0.5292647564469914
+track1-western-us,San Simeon,S,EQTransformer:instance,110,0.43039299999999997
+track1-western-us,San Simeon,S,EQTransformer:original,264,0.4608566287878788
+track1-western-us,San Simeon,S,PhaseNet:diting,325,0.4615646461538462
+track1-western-us,San Simeon,S,PhaseNet:instance,131,0.43298595419847324
+track1-western-us,San Simeon,S,PhaseNet:jma_wc,278,0.41706366906474823
+track1-western-us,San Simeon,S,PhaseNet:original,454,0.5356674449339206
+track1-western-us,San Simeon,S,PhaseNet:quakescope2026,208,0.4306329807692308
+track1-western-us,San Simeon,S,PhaseNet:scedc,56,0.4012251785714286
+track1-western-us,San Simeon,S,PhaseNet:stead,298,0.5681452684563758
+track1-western-us,San Simeon,S,PhaseNet:volpick,382,0.567574109947644
+track2-msas,Kaikoura 2016,P,EQTransformer:instance,800,0.39670372500000006
+track2-msas,Kaikoura 2016,P,EQTransformer:original,566,0.3600282508833923
+track2-msas,Kaikoura 2016,P,PhaseNet:diting,720,0.2392755
+track2-msas,Kaikoura 2016,P,PhaseNet:instance,911,0.399347716794731
+track2-msas,Kaikoura 2016,P,PhaseNet:jma_wc,1817,0.4632548266373143
+track2-msas,Kaikoura 2016,P,PhaseNet:original,1650,0.5119837696969697
+track2-msas,Kaikoura 2016,P,PhaseNet:quakescope2026,1629,0.44332128913443836
+track2-msas,Kaikoura 2016,P,PhaseNet:scedc,454,0.3828135462555066
+track2-msas,Kaikoura 2016,P,PhaseNet:stead,717,0.3247297071129708
+track2-msas,Kaikoura 2016,P,PhaseNet:volpick,1149,0.4735449086161879
+track2-msas,Kaikoura 2016,S,EQTransformer:instance,561,0.1576034224598931
+track2-msas,Kaikoura 2016,S,EQTransformer:original,613,0.18033916802610114
+track2-msas,Kaikoura 2016,S,PhaseNet:diting,724,0.1150651104972376
+track2-msas,Kaikoura 2016,S,PhaseNet:instance,612,0.15791354575163397
+track2-msas,Kaikoura 2016,S,PhaseNet:jma_wc,1031,0.2629410184287099
+track2-msas,Kaikoura 2016,S,PhaseNet:original,1741,0.402742354968409
+track2-msas,Kaikoura 2016,S,PhaseNet:quakescope2026,992,0.2763301411290323
+track2-msas,Kaikoura 2016,S,PhaseNet:scedc,310,0.24775412903225807
+track2-msas,Kaikoura 2016,S,PhaseNet:stead,1373,0.3913863947560088
+track2-msas,Kaikoura 2016,S,PhaseNet:volpick,1212,0.33435216996699674
+track2-msas,Norcia 2016,P,EQTransformer:instance,483,0.11794666666666664
+track2-msas,Norcia 2016,P,EQTransformer:original,410,0.06071658536585364
+track2-msas,Norcia 2016,P,PhaseNet:diting,450,0.2685728222222223
+track2-msas,Norcia 2016,P,PhaseNet:instance,564,0.0969512234042553
+track2-msas,Norcia 2016,P,PhaseNet:jma_wc,1345,0.2019933977695167
+track2-msas,Norcia 2016,P,PhaseNet:original,1534,0.3152349804432855
+track2-msas,Norcia 2016,P,PhaseNet:quakescope2026,1260,0.19376199206349212
+track2-msas,Norcia 2016,P,PhaseNet:scedc,238,0.03587075630252098
+track2-msas,Norcia 2016,P,PhaseNet:stead,451,0.09657026607538804
+track2-msas,Norcia 2016,P,PhaseNet:volpick,815,0.07112207361963188
+track2-msas,Norcia 2016,S,EQTransformer:instance,471,0.18555963906581738
+track2-msas,Norcia 2016,S,EQTransformer:original,461,0.1363868329718004
+track2-msas,Norcia 2016,S,PhaseNet:diting,632,0.19015318037974682
+track2-msas,Norcia 2016,S,PhaseNet:instance,555,0.1953324864864865
+track2-msas,Norcia 2016,S,PhaseNet:jma_wc,1195,0.12020851882845188
+track2-msas,Norcia 2016,S,PhaseNet:original,1926,0.3291138525441329
+track2-msas,Norcia 2016,S,PhaseNet:quakescope2026,1148,0.1356550522648084
+track2-msas,Norcia 2016,S,PhaseNet:scedc,454,0.1332891850220264
+track2-msas,Norcia 2016,S,PhaseNet:stead,894,0.0938529642058166
+track2-msas,Norcia 2016,S,PhaseNet:volpick,1058,0.10966591682419664
+track2-msas,Thessaly 2021,P,EQTransformer:instance,816,0.32756887254901956
+track2-msas,Thessaly 2021,P,EQTransformer:original,706,0.3479775354107648
+track2-msas,Thessaly 2021,P,PhaseNet:diting,748,0.19121914438502674
+track2-msas,Thessaly 2021,P,PhaseNet:instance,932,0.3647153755364807
+track2-msas,Thessaly 2021,P,PhaseNet:jma_wc,1732,0.43430158198614316
+track2-msas,Thessaly 2021,P,PhaseNet:original,1849,0.5515216008653326
+track2-msas,Thessaly 2021,P,PhaseNet:quakescope2026,1640,0.4419518475609756
+track2-msas,Thessaly 2021,P,PhaseNet:scedc,451,0.19772104212860314
+track2-msas,Thessaly 2021,P,PhaseNet:stead,758,0.2999923218997361
+track2-msas,Thessaly 2021,P,PhaseNet:volpick,1161,0.41094033591731266
+track2-msas,Thessaly 2021,S,EQTransformer:instance,471,0.2968369214437367
+track2-msas,Thessaly 2021,S,EQTransformer:original,697,0.4231045193687232
+track2-msas,Thessaly 2021,S,PhaseNet:diting,799,0.3016206382978723
+track2-msas,Thessaly 2021,S,PhaseNet:instance,522,0.33920482758620696
+track2-msas,Thessaly 2021,S,PhaseNet:jma_wc,1053,0.4019337037037037
+track2-msas,Thessaly 2021,S,PhaseNet:original,2044,0.5400447455968689
+track2-msas,Thessaly 2021,S,PhaseNet:quakescope2026,914,0.39810700218818384
+track2-msas,Thessaly 2021,S,PhaseNet:scedc,243,0.2881440329218107
+track2-msas,Thessaly 2021,S,PhaseNet:stead,1393,0.5047222613065326
+track2-msas,Thessaly 2021,S,PhaseNet:volpick,1327,0.46143256970610397
+track2-swarm,Jones-Guthrie 2014-2015,P,EQTransformer:instance,1268,0.5577054179810725
+track2-swarm,Jones-Guthrie 2014-2015,P,EQTransformer:original,776,0.4777388402061855
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:diting,1344,0.49904962053571433
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:instance,1398,0.5539914377682403
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:jma_wc,4656,0.5029790335051547
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:original,1832,0.5606468995633187
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:quakescope2026,2337,0.5237093881044075
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:scedc,1538,0.5391877373211964
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:stead,660,0.35690180303030306
+track2-swarm,Jones-Guthrie 2014-2015,P,PhaseNet:volpick,1719,0.604372739965096
+track2-swarm,Jones-Guthrie 2014-2015,S,EQTransformer:instance,620,0.48855812903225804
+track2-swarm,Jones-Guthrie 2014-2015,S,EQTransformer:original,857,0.49006862310385063
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:diting,1461,0.46902353182751544
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:instance,732,0.4580294262295082
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:jma_wc,1356,0.5283953687315633
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:original,1478,0.575767794316644
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:quakescope2026,1142,0.5434290017513135
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:scedc,301,0.44700039867109637
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:stead,1079,0.5858945134383688
+track2-swarm,Jones-Guthrie 2014-2015,S,PhaseNet:volpick,1753,0.5841501597261836
+track2-swarm,Maurienne 2017-2019,P,EQTransformer:instance,491,0.04615553971486758
+track2-swarm,Maurienne 2017-2019,P,EQTransformer:original,395,0.09245217721518988
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:diting,587,0.050059557069846675
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:instance,506,0.056201857707509906
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:jma_wc,1855,0.35157932614555254
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:original,584,0.15480352739726028
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:quakescope2026,916,0.2673450873362445
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:scedc,487,0.07381597535934295
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:stead,249,0.15810409638554218
+track2-swarm,Maurienne 2017-2019,P,PhaseNet:volpick,725,0.2327266620689655
+track2-swarm,Maurienne 2017-2019,S,EQTransformer:instance,469,0.12965159914712157
+track2-swarm,Maurienne 2017-2019,S,EQTransformer:original,378,0.23812653439153436
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:diting,649,0.06685898305084745
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:instance,432,0.17619254629629627
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:jma_wc,876,0.10964100456621002
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:original,599,0.03297030050083474
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:quakescope2026,648,0.07931296296296295
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:scedc,408,0.13520316176470587
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:stead,350,0.09324957142857139
+track2-swarm,Maurienne 2017-2019,S,PhaseNet:volpick,747,0.14011294511378847
+track2-swarm,Salton Sea 2016,P,EQTransformer:instance,1238,0.3099746042003231
+track2-swarm,Salton Sea 2016,P,EQTransformer:original,777,0.07453940797940799
+track2-swarm,Salton Sea 2016,P,PhaseNet:diting,1218,0.1904600328407225
+track2-swarm,Salton Sea 2016,P,PhaseNet:instance,1223,0.31323640228945215
+track2-swarm,Salton Sea 2016,P,PhaseNet:jma_wc,2155,0.40639017633410657
+track2-swarm,Salton Sea 2016,P,PhaseNet:original,1951,0.41943117888262427
+track2-swarm,Salton Sea 2016,P,PhaseNet:quakescope2026,1841,0.3620505757740359
+track2-swarm,Salton Sea 2016,P,PhaseNet:scedc,935,0.2823195294117647
+track2-swarm,Salton Sea 2016,P,PhaseNet:stead,690,0.10960820289855072
+track2-swarm,Salton Sea 2016,P,PhaseNet:volpick,1400,0.3607876214285714
+track2-swarm,Salton Sea 2016,S,EQTransformer:instance,943,0.09353470837751858
+track2-swarm,Salton Sea 2016,S,EQTransformer:original,687,0.047335138282387126
+track2-swarm,Salton Sea 2016,S,PhaseNet:diting,1199,0.16106235195996663
+track2-swarm,Salton Sea 2016,S,PhaseNet:instance,775,0.016161458064516132
+track2-swarm,Salton Sea 2016,S,PhaseNet:jma_wc,1498,0.23933501335113486
+track2-swarm,Salton Sea 2016,S,PhaseNet:original,2388,0.42695064907872704
+track2-swarm,Salton Sea 2016,S,PhaseNet:quakescope2026,1324,0.20472839879154078
+track2-swarm,Salton Sea 2016,S,PhaseNet:scedc,424,0.1366484198113208
+track2-swarm,Salton Sea 2016,S,PhaseNet:stead,1171,0.26665394534585823
+track2-swarm,Salton Sea 2016,S,PhaseNet:volpick,1577,0.3229651870640457
+track2-swarm,West Bohemia 2018,P,EQTransformer:instance,793,0.17688224464060526
+track2-swarm,West Bohemia 2018,P,EQTransformer:original,1954,0.4054024053224155
+track2-swarm,West Bohemia 2018,P,PhaseNet:diting,1433,0.18744296580600134
+track2-swarm,West Bohemia 2018,P,PhaseNet:instance,831,0.21259399518652222
+track2-swarm,West Bohemia 2018,P,PhaseNet:jma_wc,3698,0.4091668144943213
+track2-swarm,West Bohemia 2018,P,PhaseNet:original,3647,0.5134578777077049
+track2-swarm,West Bohemia 2018,P,PhaseNet:quakescope2026,3686,0.4215989175257732
+track2-swarm,West Bohemia 2018,P,PhaseNet:scedc,1133,0.2885073168578994
+track2-swarm,West Bohemia 2018,P,PhaseNet:stead,1266,0.29146147709320697
+track2-swarm,West Bohemia 2018,P,PhaseNet:volpick,2748,0.3971519177583697
+track2-swarm,West Bohemia 2018,S,EQTransformer:instance,817,0.1355187760097919
+track2-swarm,West Bohemia 2018,S,EQTransformer:original,2128,0.42102728383458654
+track2-swarm,West Bohemia 2018,S,PhaseNet:diting,1699,0.1909778575632725
+track2-swarm,West Bohemia 2018,S,PhaseNet:instance,809,0.1802679110012361
+track2-swarm,West Bohemia 2018,S,PhaseNet:jma_wc,3678,0.3842303153887983
+track2-swarm,West Bohemia 2018,S,PhaseNet:original,3790,0.5104256860158312
+track2-swarm,West Bohemia 2018,S,PhaseNet:quakescope2026,3566,0.3840097027481772
+track2-swarm,West Bohemia 2018,S,PhaseNet:scedc,1178,0.2497211375212224
+track2-swarm,West Bohemia 2018,S,PhaseNet:stead,1390,0.3072778633093525
+track2-swarm,West Bohemia 2018,S,PhaseNet:volpick,3202,0.37973320737039346
+track2-vt,Etna edifice 2022-2024,P,EQTransformer:instance,876,0.4937981621004567
+track2-vt,Etna edifice 2022-2024,P,EQTransformer:original,398,0.3949765075376885
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:diting,982,0.3805766089613035
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:instance,790,0.46801991139240506
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:jma_wc,2979,0.49138659281638136
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:original,1325,0.5897344754716981
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:quakescope2026,1927,0.5177823508043591
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:scedc,720,0.4272981111111111
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:stead,574,0.450468693379791
+track2-vt,Etna edifice 2022-2024,P,PhaseNet:volpick,1024,0.5345613867187501
+track2-vt,Etna edifice 2022-2024,S,EQTransformer:instance,426,0.38246957746478877
+track2-vt,Etna edifice 2022-2024,S,EQTransformer:original,331,0.403689003021148
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:diting,616,0.3358078571428572
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:instance,389,0.3586540102827764
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:jma_wc,879,0.41570196814562
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:original,1112,0.49014990107913664
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:quakescope2026,672,0.4227525
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:scedc,80,0.36978537499999997
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:stead,1341,0.47284568232662194
+track2-vt,Etna edifice 2022-2024,S,PhaseNet:volpick,747,0.4437845649263721
