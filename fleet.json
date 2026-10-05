@@ -114,7 +114,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/western"
     },
     "obs-el-test": {
-      "target": 1,
+      "target": 0,
       "job_definition": "quakescope_2026_obs:24",
       "weight": "obs",
       "procs": 4,
