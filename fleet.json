@@ -12,7 +12,7 @@
     },
     "global": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:14",
+      "job_definition": "quakescope_2026_global:15",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2,
@@ -23,7 +23,7 @@
     },
     "obs": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -32,7 +32,7 @@
     },
     "obs-early": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -41,7 +41,7 @@
     },
     "obs-2026": {
       "target": 5,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -59,7 +59,7 @@
     },
     "global-2026": {
       "target": 0,
-      "job_definition": "quakescope_2026_global:14",
+      "job_definition": "quakescope_2026_global:15",
       "weight": "jma_wc",
       "procs": 4,
       "threads": 2,
@@ -87,7 +87,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/western"
     },
     "western-dates": {
-      "target": 20,
+      "target": 0,
       "job_definition": "quakescope_2026_western:27",
       "weight": "original",
       "procs": 4,
@@ -97,7 +97,7 @@
     },
     "obs-dates": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -105,7 +105,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/obs"
     },
     "western-fill2": {
-      "target": 30,
+      "target": 0,
       "job_definition": "quakescope_2026_western:27",
       "weight": "original",
       "procs": 4,
@@ -115,7 +115,7 @@
     },
     "obs-el-test": {
       "target": 0,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -124,7 +124,7 @@
     },
     "obs-el": {
       "target": 10,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -133,7 +133,7 @@
     },
     "obs-fill": {
       "target": 50,
-      "job_definition": "quakescope_2026_obs:24",
+      "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
       "threads": 2,
@@ -149,13 +149,13 @@
       "queue": "s3://quakescope-picks-2026/_queues/western-dates2",
       "parquet_uri": "s3://quakescope-picks-2026/western"
     },
-    "western-reread": {
+    "western-reread2": {
       "target": 0,
       "job_definition": "quakescope_2026_western:29",
       "weight": "original",
       "procs": 4,
       "threads": 2,
-      "queue": "s3://quakescope-picks-2026/_queues/western-reread",
+      "queue": "s3://quakescope-picks-2026/_queues/western-reread2",
       "parquet_uri": "s3://quakescope-picks-2026/western"
     }
   },

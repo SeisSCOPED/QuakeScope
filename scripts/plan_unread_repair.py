@@ -41,6 +41,32 @@ SPAN = {"western": (datetime.date(1986, 1, 1), datetime.date(2026, 9, 8))}
 MAX_DAYS = 20
 
 
+def make_shards(runs: dict, lo: datetime.date, max_stations: int = 40,
+                max_sd: int = 800, min_sd: int = 20) -> tuple[list, list]:
+    """Shards from {(network, first, end): [station ids]} day-offset runs.
+
+    Stations sharing a run go together, capped at `max_stations` and at
+    `max_sd` station-days per shard. Station cap as well as station-day cap:
+    a shard opens with one FDSN inventory request naming every station, and
+    production shards never named more than 40; capping station-days alone
+    put up to 800 stations in a one-day shard (706 shards in the first
+    western-reread). Runs under `min_sd` station-days come back as holes.
+    """
+    shards, holes = [], []
+    for (net, x, y), tids in sorted(runs.items()):
+        d0, d1 = lo + datetime.timedelta(days=int(x)), lo + datetime.timedelta(days=int(y))
+        if len(tids) * (y - x) < min_sd:
+            holes += [(t, f"{d0:%Y.%j}", f"{d1:%Y.%j}", int(y - x)) for t in tids]
+            continue
+        per = max(1, min(max_stations, max_sd // (y - x)))
+        for j in range(0, len(tids), per):
+            g = sorted(tids[j:j + per])
+            shards.append(dict(shard_id=shard_id(g, d0, d1), stations=g,
+                               start=f"{d0:%Y.%j}", end=f"{d1:%Y.%j}",
+                               n_station_days=len(g) * int(y - x)))
+    return shards, holes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -51,6 +77,8 @@ def main():
     ap.add_argument("--skip-networks", default="TD,EO,LH")
     ap.add_argument("--weight", default="original")
     ap.add_argument("--dump", help="also write the shards to this local .jsonl")
+    ap.add_argument("--max-stations", type=int, default=40,
+                    help="stations per shard; 40 is the 2025 grouping")
     ap.add_argument("--max-sd", type=int, default=800,
                     help="station-days per shard; 800 is the 2025 grouping, 40 stations x 20 days")
     ap.add_argument("--min-shard-sd", type=int, default=20,
@@ -119,18 +147,7 @@ def main():
                 edge = min((k // MAX_DAYS + 1) * MAX_DAYS, y)
                 runs[(st["network_code"].iat[i], k, edge)].append(st["id"].iat[i])
                 k = edge
-    shards, holes = [], []
-    for (net, x, y), tids in sorted(runs.items()):
-        d0, d1 = lo + datetime.timedelta(days=int(x)), lo + datetime.timedelta(days=int(y))
-        if len(tids) * (y - x) < a.min_shard_sd:
-            holes += [(t, f"{d0:%Y.%j}", f"{d1:%Y.%j}", int(y - x)) for t in tids]
-            continue
-        per = max(1, a.max_sd // (y - x))
-        for j in range(0, len(tids), per):
-            g = sorted(tids[j:j + per])
-            shards.append(dict(shard_id=shard_id(g, d0, d1), stations=g,
-                               start=f"{d0:%Y.%j}", end=f"{d1:%Y.%j}",
-                               n_station_days=len(g) * int(y - x)))
+    shards, holes = make_shards(runs, lo, a.max_stations, a.max_sd, a.min_shard_sd)
     total = sum(s["n_station_days"] for s in shards)
     print(f"queue {a.queue}: {len(shards):,} shards, {total:,} station-days; "
           f"held out {sum(h[3] for h in holes):,} station-days in runs under "

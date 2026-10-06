@@ -48,7 +48,7 @@ on:
         type: choice
         options: [western, global, obs,
                   obs-early, western-early, obs-2026, western-2026, global-2026,
-                  western-fill, western-fill2, western-dates, western-dates2, western-reread, obs-dates,
+                  western-fill, western-fill2, western-dates, western-dates2, western-reread2, obs-dates,
                   obs-fill, obs-el, obs-el-test]
       target:
         description: "How many workers. 0 stops new ones. First run of a campaign starts an access survey instead."
