@@ -1404,7 +1404,7 @@ class S3DataSource:
                     continue
 
                 dc = self.s3helper.get_data_center(net)
-                stream, used, fault = obspy.Stream(), None, None
+                stream, used, fault, detail = obspy.Stream(), None, None, None
 
                 if dc in ["scedc", "ncedc", "geonet"]:
                     # One object per channel: the listing says which bands
@@ -1437,17 +1437,17 @@ class S3DataSource:
                         # what made --procs 4 exceed 16 GB). A fallback re-reads
                         # the object; that costs a GET only on the days the
                         # first band is absent.
-                        for channel in bands:
-                            s = await self._read_with_timeout(
-                                uri[0], net, station, day,
-                                sourcename=f"{net}.{sta}.{loc}.{channel}?")
-                            fault = getattr(s, "fault", None)
-                            s = s.select(channel=f"{channel}?", location=loc)
+                        s = await self._read_with_timeout(
+                            uri[0], net, station, day,
+                            sourcename=[f"{net}.{sta}.{loc}.{b}?" for b in bands])
+                        fault = getattr(s, "fault", None)
+                        band = getattr(s, "band", None)
+                        if band:
+                            s = s.select(channel=f"{band}?", location=loc)
                             if len(s) > 0:
-                                stream, used = s, channel
-                                break
-                            if fault and fault != "empty_read":
-                                break       # the object itself failed; another band will too
+                                stream, used = s, band
+                        elif getattr(s, "present", None) is not None:
+                            detail = f"object holds {','.join(s.present) or 'nothing'}"
                 else:
                     raise NotImplemented(f"Data center not supported: {dc}")
 
@@ -1460,7 +1460,7 @@ class S3DataSource:
                     yield [stream, station, day]
                 else:
                     status = (fault or "empty_read") if found else "no_data"
-                    self._outcome(station, day, status)
+                    self._outcome(station, day, status, detail=detail)
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc} < {status}"
                     )
@@ -1576,18 +1576,20 @@ class S3DataSource:
                 else:
                     with stage("s3.get", unit=size, unit_name="bytes"):
                         raw = fs.read_bytes(uri)
-                    buff = io.BytesIO(raw)
                     with stage("mseed.parse", unit=size, unit_name="bytes"):
                         if sourcename:
-                            st = obspy.read(buff, format="MSEED",
-                                            sourcename=sourcename)
+                            st = self._read_first_matching(raw, sourcename)
                         else:
-                            st = obspy.read(buff)
+                            st = obspy.read(io.BytesIO(raw))
+                    if getattr(st, "fault", None):
+                        return st
                     # The scope reads, so any earlier denial on it was a real
                     # expiry. Give the refresh budget back.
                     self.s3helper.clear_access_denied(net, year)
                     with stage("resample"):
-                        return downsample_to_target(st)
+                        out = downsample_to_target(st)
+                    out.band = getattr(st, "band", None)
+                    return out
             # ORDER MATTERS. PermissionError and FileNotFoundError both
             # subclass OSError, so the `except OSError` that used to sit first
             # shadowed both of them completely. Neither handler could run: an
@@ -1698,6 +1700,37 @@ class S3DataSource:
                 # into an empty stream and the shard would have carried on
                 # working after being told to stop.
                 return _empty("read_error")
+
+    @staticmethod
+    def _read_first_matching(raw: bytes, sourcenames) -> obspy.Stream:
+        """Decode the first selector, in order, that matches any record.
+
+        libmseed RAISES (a bare `Exception`, "Cannot open file") when no record
+        matches `sourcename`. Until 2026-10-06 that landed in the catch-all
+        below and came back as an empty stream, so every EarthScope station-day
+        whose object lacked the one band chosen for the station vanished
+        without trace: the UU stations listed EH,EN,HH on their EH-only years,
+        TA and IU on their BH-only days. Here the bands are tried in priority
+        order against the bytes already downloaded - one GET however many are
+        tried - and when none matches, a header-only pass says which bands the
+        object does hold, without decoding a sample.
+        """
+        names = [sourcenames] if isinstance(sourcenames, str) else list(sourcenames)
+        for name in names:
+            try:
+                st = obspy.read(io.BytesIO(raw), format="MSEED", sourcename=name)
+            except Exception:
+                continue
+            if len(st):
+                st.band = name.rsplit(".", 1)[-1][:2]
+                return st
+        try:
+            hdr = obspy.read(io.BytesIO(raw), format="MSEED", headonly=True)
+        except Exception:
+            return _empty("empty_read")       # not readable as miniSEED at all
+        st = _empty("empty_read")
+        st.present = sorted({t.stats.channel[:2] for t in hdr})
+        return st
 
     def _generate_waveform_uris(
         self, net: str, sta: str, loc: str, cha: str, date: datetime.date
