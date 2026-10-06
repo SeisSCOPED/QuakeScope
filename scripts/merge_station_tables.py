@@ -179,7 +179,11 @@ def merge(campaign: str, write: bool) -> None:
     print(f"\n  backed up the current table to s3://{BUCKET}/{backup} ({len(body) / 1e6:.2f} MB)")
 
     from sb_catalog.src.s3_state import prepare_station_dates
-    merged = prepare_station_dates(merged)
+    from sb_catalog.src.utils import normalize_station_codes
+    # The contributor tables under _queues/ carry the CSV-parse damage in their
+    # code columns ("0.0" for "00"); rebuild them from `id` so a merge cannot
+    # copy it back into the published table.
+    merged = prepare_station_dates(normalize_station_codes(merged))
     buf = io.BytesIO()
     merged.to_parquet(buf, index=False)
     _s3.put_object(Bucket=BUCKET, Key=f"{campaign}/stations.parquet", Body=buf.getvalue())

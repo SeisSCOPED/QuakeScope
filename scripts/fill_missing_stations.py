@@ -36,7 +36,9 @@ import argparse
 import io
 import json
 import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 BUCKET = "quakescope-picks-2026"
 
 
@@ -172,6 +174,8 @@ def main(argv=None):
     s3.copy_object(Bucket=BUCKET, Key=f"{a.campaign}/stations.parquet.bak",
                    CopySource={"Bucket": BUCKET,
                                "Key": f"{a.campaign}/stations.parquet"})
+    from sb_catalog.src.utils import normalize_station_codes
+    out = normalize_station_codes(out)
     buf = io.BytesIO()
     out.to_parquet(buf, index=False)
     s3.put_object(Bucket=BUCKET, Key=f"{a.campaign}/stations.parquet",

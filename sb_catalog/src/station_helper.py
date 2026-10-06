@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .utils import SeisBenchDatabase
+from .utils import SeisBenchDatabase, read_station_csv
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     )
     args = parser.parse_args()
 
-    stations = pd.read_csv(args.path)
+    stations = read_station_csv(args.path)
     db = SeisBenchDatabase(args.db_uri, args.database)
     db.write_stations(stations)
 

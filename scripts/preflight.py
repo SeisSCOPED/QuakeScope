@@ -190,6 +190,37 @@ def check_bucket(r, s3):
         r.add("Catalogue", "versioning", UNKNOWN, str(exc)[:80])
 
 
+def check_station_tables(r, s3):
+    """Every published station table's code columns agree with its `id`.
+
+    Until 2026-10-06 they did not: CSVs read with pandas' defaults turned "00"
+    into "0.0", "001" into "1" and "NA" into "", and 2,753 western and 9,294
+    global rows carried it. Picking keys on `id` and was unaffected; a reader
+    joining on the code columns silently lost those stations. Writers now go
+    through `utils.normalize_station_codes`; this catches one that does not.
+    """
+    if s3 is None:
+        r.add("Catalogue", "station codes", UNKNOWN, "no AWS access")
+        return
+    import io
+
+    import pandas as pd
+    for cat in ("western", "obs", "global"):
+        try:
+            body = s3.get_object(Bucket=BUCKET, Key=f"{cat}/stations.parquet")["Body"].read()
+            t = pd.read_parquet(io.BytesIO(body))
+            joined = (t["network_code"].astype(str) + "." + t["station_code"].astype(str)
+                      + "." + t["location_code"].astype(str))
+            bad = t["id"][t["id"] != joined]
+            r.add("Catalogue", f"{cat} station codes match id",
+                  PASS if bad.empty else WARN,
+                  "all rows" if bad.empty else
+                  f"{len(bad):,} rows disagree, e.g. {list(bad[:3])}; "
+                  f"python scripts/fix_station_codes.py --write")
+        except Exception as exc:
+            r.add("Catalogue", f"{cat} station codes", UNKNOWN, str(exc)[:80])
+
+
 def _yearless(logs, end, minutes):
     """Count credential requests that carry a temporary code and no year.
 
@@ -308,6 +339,7 @@ def main(argv=None):
     check_earthscope(r, logs)
     check_roles(r, iam)
     check_bucket(r, s3)
+    check_station_tables(r, s3)
     if not a.skip_selftest:
         check_client(r)
 

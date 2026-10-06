@@ -29,7 +29,7 @@ import logging
 import pandas as pd
 
 from .s3_state import S3CampaignState
-from .utils import station_date
+from .utils import read_station_csv, station_date
 
 logger = logging.getLogger("shard_planner")
 
@@ -191,7 +191,7 @@ def main(argv=None):
 
     if args.stations:
         df = (pd.read_parquet(args.stations) if args.stations.endswith(".parquet")
-              else pd.read_csv(args.stations))
+              else read_station_csv(args.stations))
         state.write_stations(df)
 
     extent = tuple(float(x) for x in args.extent.split(",")) if args.extent else None
