@@ -85,8 +85,19 @@ def _source(stations, channels, archive, days=1, dc="earthscope", done=(),
             return read(uri, sourcename)
         st = archive.get(uri, obspy.Stream()).copy()
         if sourcename:
-            band = sourcename.split(".")[-1][:2]
-            st = st.select(channel=f"{band}?")
+            # Same contract as S3DataSource._read_first_matching: the first
+            # selector that matches wins and is named in `.band`; none
+            # matching is an empty_read that lists the bands present.
+            names = [sourcename] if isinstance(sourcename, str) else sourcename
+            for name in names:
+                band = name.split(".")[-1][:2]
+                sel = st.select(channel=f"{band}?")
+                if len(sel):
+                    sel.band = band
+                    return sel
+            out = _empty("empty_read")
+            out.present = sorted({t.stats.channel[:2] for t in st})
+            return out
         return st
     src._read_with_timeout = _read
     if dc == "earthscope":
@@ -190,3 +201,39 @@ def test_no_failed_read_returns_an_untagged_empty_stream():
     import inspect
     for fn in (S3DataSource._read_with_timeout, S3DataSource._read_waveform_from_s3):
         assert "return obspy.Stream()" not in inspect.getsource(fn), fn.__name__
+
+
+def _mseed(bands, loc="01"):
+    import io
+    st = obspy.Stream([_trace("UU", "BMUT", loc, f"{b}Z") for b in bands])
+    buf = io.BytesIO()
+    st.write(buf, format="MSEED")
+    return buf.getvalue()
+
+
+def test_libmseed_raises_on_a_selector_that_matches_nothing():
+    # The behaviour the 2026-10-06 dry test exposed: in production this raise
+    # was swallowed into an empty stream and the day disappeared.
+    import io
+    raw = _mseed(["EH"])
+    with pytest.raises(Exception):
+        obspy.read(io.BytesIO(raw), format="MSEED", sourcename="UU.BMUT.01.HH?")
+
+
+def test_first_matching_selector_is_decoded_from_the_same_bytes():
+    raw = _mseed(["EH", "EN"])
+    st = S3DataSource._read_first_matching(raw, ["UU.BMUT.01.HH?", "UU.BMUT.01.EH?"])
+    assert st.band == "EH" and {t.stats.channel for t in st} == {"EHZ"}
+
+
+def test_no_matching_selector_says_what_the_object_holds():
+    raw = _mseed(["EN", "LH"])
+    st = S3DataSource._read_first_matching(raw, ["UU.BMUT.01.HH?", "UU.BMUT.01.EH?"])
+    assert len(st) == 0 and st.fault == "empty_read" and st.present == ["EN", "LH"]
+
+
+def test_empty_read_detail_is_recorded():
+    key = f"UU/{D0:%Y}/{D0:%j}/AAA..mseed"
+    src = _source(["UU.AAA."], ["HH"], {key: _es_object("UU", "AAA", "", ["LH"])})
+    _run(src)
+    assert src.outcomes[0]["detail"] == "object holds LH"
