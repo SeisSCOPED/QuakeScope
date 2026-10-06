@@ -37,7 +37,9 @@ from sb_catalog.src.shard_planner import _operating_windows, shard_id  # noqa: E
 from sb_catalog.src.utils import normalize_station_codes       # noqa: E402
 
 BUCKET = "quakescope-picks-2026"
-SPAN = {"western": (datetime.date(1986, 1, 1), datetime.date(2026, 9, 8))}
+SPAN = {"western": (datetime.date(1986, 1, 1), datetime.date(2026, 9, 8)),
+        # obs-2026 and obs-fill run to 2026.275 (end exclusive)
+        "obs": (datetime.date(1993, 1, 1), datetime.date(2026, 10, 2))}
 MAX_DAYS = 20
 
 

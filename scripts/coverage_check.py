@@ -35,7 +35,7 @@ from sb_catalog.src.shard_planner import _operating_windows  # noqa: E402
 BUCKET = "quakescope-picks-2026"
 # The span each catalogue holds, end exclusive like the queues.
 SPAN = {"western": (datetime.date(1986, 1, 1), datetime.date(2026, 9, 8)),
-        "obs": (datetime.date(1993, 1, 1), datetime.date(2026, 1, 1)),
+        "obs": (datetime.date(1993, 1, 1), datetime.date(2026, 10, 2)),
         "global": (datetime.date(2010, 1, 1), datetime.date(2026, 9, 8))}
 
 

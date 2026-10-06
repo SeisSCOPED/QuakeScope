@@ -107,3 +107,23 @@ Expected to load about 3 million (sample yield scaled per network); expected
 cost $390 to $720. The held-out holes would be 110,654 tiny shards, one FDSN
 inventory request each; they wait for an image that takes per-station day
 lists. `western-dates2` and `western-unread` (never launched) are superseded.
+
+## 2026-10-07: western-reread2, obs-reread, images
+
+- `western-reread` replaced by `western-reread2` (58,825 shards, same
+  15,631,837 station-days): 706 shards of the first had up to 800 stations;
+  `make_shards` now caps at 40 stations and 800 station-days.
+- `quakescope_2026_obs:25` and `quakescope_2026_global:15` on d0ccf9b; every
+  obs and global campaign repointed.
+- **obs dry test** (`_archive/dryrun-obs-yield-20261007`, obs:25, weight obs,
+  133 shards, 662 station-days over 72 networks): not_found 363, no_data 73,
+  too_big 54, empty_read 18, loaded 17 (XO, ZU, YD, ZT; 2,612 picks); 24
+  shards blocked on NV (403 for the account). Estimated ~11,000 loadable of
+  the queued days.
+- **`obs-reread`**: obs manifests (3,113) record 402,769 station-days of
+  771,434 inside epochs; excluding the 26,258 still pending in obs-fill,
+  obs-el and obs-2026, and NV: 2,424 shards, 251,177 station-days, 18,832
+  held out. Cheap (mostly not_found listings) and low yield.
+- Open in the obs results: 10% of sampled OBS objects exceed the 200 MB read
+  limit (`too_big`), and the 18 empty_read days hold BH/EH/SH bands the
+  station table does not list. Both are image follow-ups.
