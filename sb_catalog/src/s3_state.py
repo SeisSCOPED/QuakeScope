@@ -314,7 +314,30 @@ class S3CampaignState:
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body,
                            ContentType="application/x-ndjson")
         logger.info(f"Wrote {len(shards)} shards to {self.uri('shards.jsonl')}")
+        self._record_plan_basis(len(shards), sum(s.get("n_station_days") or 0 for s in shards))
         return self.uri("shards.jsonl")
+
+    def _record_plan_basis(self, n_shards: int, n_station_days: int) -> None:
+        """Write `plan.json`: which version of the station table this queue came from.
+
+        A queue is immutable, the station table is not. `western-dates` was
+        planned from the table of 2026-09-29; the fill stations were merged
+        into it on 10-02, and nothing could tell that the repair had been
+        planned against a table missing 2,369 stations. With the version id
+        recorded, `scripts/coverage_check.py` can say which queues predate
+        the current table.
+        """
+        basis = {"planned": _utcnow(), "shards": n_shards,
+                 "station_days": n_station_days}
+        try:
+            h = self.s3.head_object(Bucket=self.bucket, Key=self._key("stations.parquet"))
+            basis["stations"] = {"key": self._key("stations.parquet"),
+                                 "version_id": h.get("VersionId"),
+                                 "etag": h.get("ETag", "").strip('"'),
+                                 "last_modified": h["LastModified"].isoformat()}
+        except ClientError:
+            basis["stations"] = None
+        self._put_json(self._key("plan.json"), basis)
 
     def read_shards(self) -> list[dict]:
         obj = self.s3.get_object(Bucket=self.bucket, Key=self._key("shards.jsonl"))
@@ -420,7 +443,7 @@ class S3CampaignState:
                                       "scope": rec.get("scope", {})})
         return out
 
-    def note_review(self, shard_id: str, items: list) -> None:
+    def note_review(self, shard_id: str, items: list, kind: str = "signal") -> None:
         """Record station-days a completed shard could not process.
 
         Distinct from `block`: the shard FINISHED and its good station-days are
@@ -433,7 +456,7 @@ class S3CampaignState:
             return
         self._put_json(self._key("review", f"{shard_id}.json"), {
             "shard_id": shard_id,
-            "kind": "signal",
+            "kind": kind,
             "count": len(items),
             "items": items[:200],
             "noted": _utcnow(),

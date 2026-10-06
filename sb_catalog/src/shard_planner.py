@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+from typing import Optional
 import hashlib
 import logging
 
@@ -129,18 +130,47 @@ def _network_groups(stations: pd.DataFrame, size: int) -> list[list[str]]:
     return groups
 
 
-def _operating_windows(stations: pd.DataFrame) -> dict:
-    """{station id: (start, end)} from the metadata, where it is present.
+def parse_epochs(value) -> Optional[list]:
+    """`"2008-02-28/2011-10-04;2011-10-04/2014-10-15"` -> [(date, date), ...].
 
-    A station with unparseable or missing dates is planned for the whole
-    campaign rather than dropped: missing metadata should cost a wasted listing,
-    never a silently missing station.
+    The optional `epochs` column holds every operating window of a
+    station-location, from FDSN channel epochs of its pickable bands
+    (scripts/add_station_epochs.py). `start_date`/`end_date` are their hull,
+    and planning the hull invented days: XA.AZ01 has a 1993 deployment and a
+    2017 one, and its hull planned the 23 years between them. Returns None when
+    the column is absent or empty, and the caller falls back to the hull.
+    """
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    out = []
+    for part in str(value).split(";"):
+        if "/" not in part:
+            continue
+        a, b = (station_date(x.strip()) for x in part.split("/", 1))
+        if a is not None and b is not None and b >= a:
+            out.append((a, b))
+    return sorted(out) or None
+
+
+def _operating_windows(stations: pd.DataFrame) -> dict:
+    """{station id: [(start, end), ...]} from the metadata, where it is present.
+
+    One window per epoch when the table has an `epochs` column, else the
+    single `start_date`/`end_date` window. A station with unparseable or
+    missing dates is planned for the whole campaign rather than dropped:
+    missing metadata should cost a wasted listing, never a silently missing
+    station.
     """
     if not {"start_date", "end_date"} <= set(stations.columns):
         return {}
+    epochs = stations["epochs"] if "epochs" in stations.columns else [None] * len(stations)
     out = {}
-    for sid, s, e in zip(stations["id"].astype(str),
-                         stations["start_date"], stations["end_date"]):
+    for sid, s, e, ep in zip(stations["id"].astype(str),
+                             stations["start_date"], stations["end_date"], epochs):
+        windows = parse_epochs(ep)
+        if windows:
+            out[sid] = windows
+            continue
         # station_date decodes a real date, a YYYY.DDD string, or the legacy
         # float - the last numerically, because str() drops the trailing zero
         # and made every day-of-year divisible by ten parse ten times small.
@@ -148,23 +178,31 @@ def _operating_windows(stations: pd.DataFrame) -> dict:
         start, end = station_date(s), station_date(e)
         if start is None or end is None:
             continue                          # unknown window: plan it whole
-        out[sid] = (start, end)
+        out[sid] = [(start, end)]
     return out
+
+
+def _windows(window) -> list:
+    # Accept the old single (start, end) tuple as well as a list of them.
+    if window is None:
+        return []
+    return [window] if isinstance(window[0], datetime.date) else list(window)
 
 
 def _overlaps(window, d0: datetime.date, d1: datetime.date) -> bool:
     if window is None:
         return True                           # unknown window: plan it
-    s, e = window
-    return s < d1 and e >= d0
+    return any(s < d1 and e >= d0 for s, e in _windows(window))
 
 
 def _overlap_days(window, d0: datetime.date, d1: datetime.date) -> int:
     if window is None:
         return (d1 - d0).days
-    s, e = window
-    lo, hi = max(s, d0), min(e, d1 - datetime.timedelta(days=1))
-    return max((hi - lo).days + 1, 0)
+    days = set()
+    for s, e in _windows(window):
+        lo, hi = max(s, d0), min(e, d1 - datetime.timedelta(days=1))
+        days.update(lo + datetime.timedelta(days=k) for k in range((hi - lo).days + 1))
+    return len(days)
 
 
 def main(argv=None):

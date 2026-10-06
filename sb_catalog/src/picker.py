@@ -554,7 +554,11 @@ class S3MongoSBBridge:
 
         await asyncio.gather(task_load, task_pick, task_db)
 
-        if self._parquet is not None:
+        # A manifest for EVERY job, including one that loaded nothing. A job
+        # with no picks used to write no manifest at all - 10,678 of 27,924
+        # completed western-fill shards - so "read and found nothing" left the
+        # same trace as "never ran". Touching the property creates the writer.
+        if self.parquet_uri is not None and self.parquet is not None:
             # Written at the end because the file boundary is the job, not the
             # station-day; see parquet_writer for why that matters.
             await asyncio.to_thread(self._finalise_parquet)
@@ -568,7 +572,9 @@ class S3MongoSBBridge:
         leaves no records and its whole retry re-does the work, which is exactly
         what a job-sized file boundary implies.
         """
+        self._parquet.outcomes = list(getattr(self.s3, "outcomes", None) or [])
         summary = self._parquet.close()
+        self.manifest = summary
         records = summary.get("records", [])
         if records:
             self.db.insert_many_ignore_duplicates("picks_record", records)

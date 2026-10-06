@@ -28,6 +28,8 @@ from __future__ import annotations
 import argparse
 import ctypes
 import gc
+import collections
+import datetime
 import logging
 import multiprocessing as mp
 import os
@@ -390,9 +392,17 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
     )
     t0 = time.time()
     bridge.run_picking()
-    # Station-days obspy could not process. The shard still completed and its
-    # good data is written; these are the ones a person has to look at.
-    state.note_review(shard["shard_id"], getattr(bridge, "signal_faults", []))
+    outcomes = list(getattr(s3, "outcomes", None) or [])
+    counts = check_outcome_coverage(shard, outcomes)
+    # Station-days obspy could not process, plus station-days the reader could
+    # not read (timeout, throttled, refused...). The shard still completes and
+    # its good data is written; these are what a person or a repair queue has
+    # to look at, named exactly.
+    from .s3_helper import UNREAD_OUTCOMES
+    unread = [o for o in outcomes if o["status"] in UNREAD_OUTCOMES]
+    review = list(getattr(bridge, "signal_faults", [])) + unread
+    state.note_review(shard["shard_id"], review,
+                      kind="signal+unread" if unread else "signal")
     return {
         "stations": len(shard["stations"]),
         "start": shard["start"],
@@ -402,7 +412,37 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         "weight": args.weight,
         "model": args.model,
         "seconds": round(time.time() - t0, 1),
+        "outcomes": counts,
     }
+
+
+class ShardIncomplete(RuntimeError):
+    """The reader did not account for every planned station-day."""
+
+
+def check_outcome_coverage(shard: dict, outcomes: list[dict]) -> dict:
+    """Refuse to complete a shard unless every planned station-day has an outcome.
+
+    `complete/` used to mean "the worker exited without raising". It did not
+    mean the days were read: 3.4 million planned western-fill station-days had
+    no trace at all, and a sample found data at EarthScope for 13% of them.
+    Now a shard completes only when each (station, day) it was planned for
+    ends in exactly one recorded outcome; anything less raises, the shard is
+    released, and another attempt runs it.
+    """
+    from .utils import parse_year_day
+    d0, d1 = parse_year_day(shard["start"]), parse_year_day(shard["end"])
+    days = [d0 + datetime.timedelta(days=k) for k in range((d1 - d0).days)]
+    planned = {(t, d.year, int(d.strftime("%j"))) for t in shard["stations"] for d in days}
+    seen = {(o["tid"], o["yr"], o["doy"]) for o in outcomes}
+    missing = planned - seen
+    if missing:
+        ex = sorted(missing)[:5]
+        raise ShardIncomplete(
+            f"{shard['shard_id']}: {len(missing)} of {len(planned)} planned "
+            f"station-days have no outcome, e.g. {ex}. The reader stopped early "
+            f"or skipped without recording why; not marking the shard complete.")
+    return dict(collections.Counter(o["status"] for o in outcomes))
 
 
 def loop(args, proc_index: int = 0) -> None:

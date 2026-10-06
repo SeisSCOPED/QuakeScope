@@ -165,6 +165,13 @@ def main() -> None:
     buf = io.BytesIO()
     normalize_station_codes(st).to_parquet(buf, index=False)
     s3.put_object(Bucket=BUCKET, Key=f"_queues/{repair}/stations.parquet", Body=buf.getvalue())
+    _h = s3.head_object(Bucket=BUCKET, Key=f"{cat}/stations.parquet")
+    s3.put_object(Bucket=BUCKET, Key=f"_queues/{repair}/plan.json", ContentType="application/json",
+                  Body=json.dumps(dict(planned=datetime.datetime.utcnow().isoformat() + "Z",
+                                       shards=len(shards), station_days=total,
+                                       stations=dict(key=f"{cat}/stations.parquet",
+                                                     version_id=_h.get("VersionId"),
+                                                     etag=_h["ETag"].strip('"'))), indent=1).encode())
     s3.put_object(Bucket=BUCKET, Key=f"_queues/{repair}/README.json", ContentType="application/json",
                   Body=json.dumps(dict(
                       purpose="station-days a mis-decoded station date kept out of the original queues; "
