@@ -39,6 +39,7 @@ about 1.8% of the western campaign's processed station-days, re-picked on
 is what tells the writer it is resuming.
 """
 
+import collections
 import datetime
 import json
 import logging
@@ -153,6 +154,8 @@ class ParquetPickWriter:
         self._part_seq: dict[tuple, int] = {}
         self.n_picks = 0
         self.n_classifies = 0
+        # Set by the picker from S3DataSource.outcomes before close().
+        self.outcomes: list[dict] | None = None
         # Object keys written by this job, so readers never have to LIST.
         self._written: list[dict] = []
         # Station-day-channels an earlier attempt of this job wrote and
@@ -471,6 +474,16 @@ class ParquetPickWriter:
             "files": prior_files + self._written,
             "records": prior_records + self._records,
         }
+        if self.outcomes is not None:
+            # What happened to every planned station-day, picked or not:
+            # loaded, no_data, no_channel, denied, timeout... (s3_helper
+            # FINAL_OUTCOMES / UNREAD_OUTCOMES). `records` alone covers only
+            # the days that reached the picker, so a day the reader skipped
+            # left no trace; this is what makes "not read" distinguishable
+            # from "nothing there" afterwards.
+            summary["outcomes"] = self.outcomes
+            summary["outcome_counts"] = dict(collections.Counter(
+                o["status"] for o in self.outcomes))
         if prior_records:
             summary["resumed"] = {
                 "prior_station_days": len(prior_records),

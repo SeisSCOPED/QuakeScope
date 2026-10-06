@@ -19,7 +19,7 @@ from obspy.clients.fdsn.header import (FDSNException,
                                        FDSNNoDataException)
 from s3fs import S3FileSystem
 
-from .constants import NETWORK_MAPPING, select_channel
+from .constants import NETWORK_MAPPING, channel_priority, select_channel
 from .profiling import stage
 if TYPE_CHECKING:                     # pymongo is a 2025 DocumentDB
     from .utils import SeisBenchDatabase   # dependency; v3 writes Parquet
@@ -297,6 +297,29 @@ logging.getLogger("earthscope_sdk").setLevel(logging.INFO)
 
 # Every 2026 weight - jma_wc, original, obs - declares sampling_rate 100.
 TARGET_SAMPLING_RATE = 100.0
+
+
+def _empty(reason: str) -> obspy.Stream:
+    """An empty stream that says why it is empty.
+
+    Every failed read used to return a bare `obspy.Stream()`, which is also
+    what a read of a quiet, absent or filtered-out object returns. After the
+    fact the two were indistinguishable: a denied credential, a timeout and a
+    genuinely missing day all left the same nothing behind. The reason rides
+    on the object so the caller can record it as the station-day's outcome.
+    """
+    st = obspy.Stream()
+    st.fault = reason
+    return st
+
+
+# Outcomes a station-day can end with. FINAL ones are facts about the archive
+# or the plan; the others mean "we did not manage to read it", and a shard that
+# has any is written to review/ so a repair can target exactly those days.
+FINAL_OUTCOMES = frozenset({"loaded", "no_data", "no_channel", "empty_read",
+                            "not_found", "denied", "done"})
+UNREAD_OUTCOMES = frozenset({"refused", "throttled", "timeout", "read_error",
+                             "too_big"})
 
 
 def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
@@ -1146,6 +1169,7 @@ class S3DataSource:
             self.networks = list(set([s.split(".")[0] for s in self.stations]))
         self.db = db
         self._logged = set()                  # see `_log_once`
+        self.outcomes: list[dict] = []        # see `_outcome`
         self.s3helper = CompositeS3ObjectHelper()
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
@@ -1235,6 +1259,25 @@ class S3DataSource:
                 f"SCEDC/NCEDC only."
             ) from exc
 
+    def _outcome(self, station: str, day, status: str, channel=None,
+                 detail: Optional[str] = None) -> None:
+        """Record what happened to one planned station-day.
+
+        Every (station, day) of the shard gets exactly one of these, whether or
+        not it produced data. Until 2026-10-06 only station-days that reached
+        the picker left a trace (the manifest's `records`), so a day the reader
+        skipped - wrong band, denied credential, timeout, nothing in the
+        archive - vanished. 3.4 million planned western-fill station-days had
+        no record, and a sample showed 13% of them had data at EarthScope.
+        """
+        rec = {"tid": station, "yr": int(day.year),
+               "doy": int(day.strftime("%j")), "status": status}
+        if channel:
+            rec["cha"] = channel
+        if detail:
+            rec["detail"] = detail[:120]
+        self.outcomes.append(rec)
+
     async def load_waveforms(self) -> AsyncIterator[list]:
         """
         Load the waveforms. This function is async to allow loading data in parallel with processing.
@@ -1242,7 +1285,10 @@ class S3DataSource:
         The iterator returns data by station and within each station day by day.
         Data from all channels of a station is returned simultaneously.
         This matches the typical access pattern required for single-station phase pickers.
+
+        Every planned station-day ends in `self.outcomes` (see `_outcome`).
         """
+        self.outcomes = []
         days = np.arange(self.start, self.end, datetime.timedelta(days=1))
 
         for day in days:
@@ -1251,6 +1297,9 @@ class S3DataSource:
             # ls can be slow, but it merges many small open request
             # and effectively reduced the total number of requests
             avail_uri = {}
+            # Why a network's listing gave nothing, when it did not simply
+            # succeed. Recorded against every station of that network-day.
+            list_fault = {}
             for net in self.networks:
                 avail_uri[net] = []
                 prefix = self.s3helper.get_prefix(
@@ -1286,6 +1335,7 @@ class S3DataSource:
                     self._log_once(f"denied:{net}",
                                    f"{net}: {exc} Skipping this network for "
                                    f"the rest of the shard.")
+                    list_fault[net] = "denied"
                     continue
                 except EarthScopeNetworkYearNotFound as exc:
                     # The archive has no such network-year. Quiet, and answered
@@ -1293,6 +1343,7 @@ class S3DataSource:
                     # than re-asked - 5A/2018 alone would otherwise have sent
                     # one credential request per day it does not exist for.
                     logger.debug(f"{net} {day:%Y.%j}: {exc}")
+                    list_fault[net] = "not_found"
                 except (EarthScopeScopeRefused,
                         EarthScopeRequestRefused) as exc:
                     # 400. Either the scope is wrong in a way escalation could
@@ -1302,106 +1353,116 @@ class S3DataSource:
                     # retried.
                     self._log_once(f"scope:{net}:{day.year}",
                                    f"{net} {day.year}: {exc}")
+                    list_fault[net] = "refused"
                 except EarthScopeExchangeThrottled as exc:
                     # Our own rate limit, not EarthScope's answer. Nothing was
-                    # sent; skip the day and let the window reopen.
+                    # sent; skip the day and let the window reopen. Recorded as
+                    # unread, so the day is found and re-run later.
                     logger.warning(f"{net} {day:%Y.%j}: {exc}")
+                    list_fault[net] = "throttled"
                 except FileNotFoundError:
                     logger.debug(f"Path does not exist {prefix}")
-                    pass
                 except PermissionError as e:
                     logger.debug(e.args[0])
                     raise e
 
             for station in self.stations:
-                # One channel code per station-location, chosen by the fixed
-                # order in constants.CHANNEL_PRIORITY. Picking every band a
-                # station carries duplicates the same ground motion at different
-                # sampling rates: 2.83x the inference on SCEDC's permanent
-                # stations, and it includes bands like LH at 1 Hz that cannot
-                # produce a usable arrival at all. Location codes stay separate,
-                # as in the 2025 study - they are genuinely different sensors.
+                net, sta, loc = station.split(".")
+                # Pickable bands this station offers, best first. The table's
+                # `channels` is the union over every epoch the station had, so
+                # the best band overall is not necessarily one that existed on
+                # this day: UU stations listed as EH,EN,HH recorded EH for years
+                # before the HH upgrade, and choosing HH once for the whole
+                # campaign read nothing on every EH day - 10 of 19 data-bearing
+                # unread days in the 2026-10-06 sample. So the band is chosen
+                # per day, from what the archive actually holds, falling back
+                # down the same priority order. Still one band per
+                # station-location-day: picking several bands duplicates the
+                # same ground motion (2.83x the inference on SCEDC).
                 offered = self.meta.loc[station, "channels"].split(",")
-                channel = select_channel(offered, weight=self.weight)
-                if channel is None:
+                order = channel_priority(self.weight)
+                bands = sorted({str(c).strip()[:2] for c in offered} & set(order),
+                               key=order.index)
+                if not bands:
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} "
                         f"< no pickable channel among {','.join(offered)}"
                     )
+                    self._outcome(station, day, "no_channel")
                     continue
-                all_channels = [channel]
-                if len(offered) > 1:
-                    logger.debug(
-                        f"{station}: picking {channel} of {','.join(offered)}"
-                    )
-                check = {
-                    cha: self.db.get_picks_record(
-                        station, day, cha, {"_id": 1}
-                    )  # return _id would be sufficient
-                    for cha in all_channels
-                }
-                # if all channel got results
-                if all(check.values()):
+                # Resume: a band already picked for this station-day is done.
+                picked = [c for c in bands
+                          if self.db.get_picks_record(station, day, c, {"_id": 1})]
+                if picked:
                     logger.info(
-                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {picked[0]} channel"
                     )
+                    self._outcome(station, day, "done", picked[0])
+                    continue
+                if net in list_fault:
+                    self._outcome(station, day, list_fault[net])
                     continue
 
-                net, sta, loc = station.split(".")
                 dc = self.s3helper.get_data_center(net)
-                logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
-                stream = obspy.Stream()
+                stream, used, fault = obspy.Stream(), None, None
 
                 if dc in ["scedc", "ncedc", "geonet"]:
-                    for channel in all_channels:
-                        if check[channel]:
-                            logger.debug(
-                                f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} < picks found at {channel} channel"
-                            )
+                    # One object per channel: the listing says which bands
+                    # exist today, so the first one present is the band.
+                    for channel in bands:
+                        uris = [u for u in self._generate_waveform_uris(
+                            net, sta, loc, channel, day) if u in avail_uri[net]]
+                        if not uris:
                             continue
-                        for uri in self._generate_waveform_uris(
-                            net, sta, loc, channel, day
-                        ):
-                            if uri in avail_uri[net]:
-                                stream += await self._read_with_timeout(
-                                    uri, net, station, day
-                                )
+                        logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} {channel} @ {dc}")
+                        for uri in uris:
+                            s = await self._read_with_timeout(uri, net, station, day)
+                            fault = fault or getattr(s, "fault", None)
+                            stream += s
+                        used = channel
+                        break
+                    found = used is not None
                 elif dc == "earthscope":
                     # use the first one: they should be all same
                     r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
                     # earthscope object name has version number
                     uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
-                    if len(uri) > 0:
-                        # Ask libmseed for the bands we will keep, so the rest
-                        # is never decoded. One EarthScope object holds every
-                        # channel for the station-day - a UW sample had 214
-                        # traces across 38 codes - and decoding all of them is
-                        # what made --procs 4 exceed 16 GB (OPTIMISE item 0d).
-                        wanted = [c for c in all_channels if not check[c]]
-                        if not wanted:
-                            continue
-                        # obspy takes ONE pattern - a "a|b" form raises rather
-                        # than matching both - so filter only in the single-band
-                        # case, which is what CHANNEL_PRIORITY always yields.
-                        # More than one band falls back to a full read, which is
-                        # correct, just not lean.
-                        sel = (f"{net}.{sta}.{loc}.{wanted[0]}?"
-                               if len(wanted) == 1 else None)
-                        s = await self._read_with_timeout(
-                            uri[0], net, station, day, sourcename=sel
-                        )
-                        for channel in wanted:
-                            stream += s.select(channel=f"{channel}?", location=loc)
-
+                    found = len(uri) > 0
+                    if found:
+                        logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
+                        # One object holds every channel of the station-day, so
+                        # the bands are tried in order against the same object
+                        # with a libmseed selector, which decodes only the band
+                        # asked for (OPTIMISE item 0d: decoding all of them is
+                        # what made --procs 4 exceed 16 GB). A fallback re-reads
+                        # the object; that costs a GET only on the days the
+                        # first band is absent.
+                        for channel in bands:
+                            s = await self._read_with_timeout(
+                                uri[0], net, station, day,
+                                sourcename=f"{net}.{sta}.{loc}.{channel}?")
+                            fault = getattr(s, "fault", None)
+                            s = s.select(channel=f"{channel}?", location=loc)
+                            if len(s) > 0:
+                                stream, used = s, channel
+                                break
+                            if fault and fault != "empty_read":
+                                break       # the object itself failed; another band will too
                 else:
                     raise NotImplemented(f"Data center not supported: {dc}")
 
                 if len(stream) > 0:
+                    if used != bands[0]:
+                        logger.info(f"{station} {day:%Y.%j}: picking {used}; "
+                                    f"{bands[0]} absent that day")
+                    self._outcome(station, day, "loaded", used)
                     # yield stream with all candidate channels for one station, day long stream, with metadata
                     yield [stream, station, day]
                 else:
+                    status = (fault or "empty_read") if found else "no_data"
+                    self._outcome(station, day, status)
                     logger.info(
-                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}"
+                        f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc} < {status}"
                     )
 
     def _log_once(self, key: str, message: str) -> None:
@@ -1451,7 +1512,7 @@ class S3DataSource:
                 f"{station} {day.strftime('%Y.%j')}; abandoning this "
                 f"station-day so the shard can continue."
             )
-            return obspy.Stream()
+            return _empty("timeout")
 
     def _read_waveform_from_s3(self, uri, net, sourcename=None,
                                year=None) -> obspy.Stream:
@@ -1496,12 +1557,13 @@ class S3DataSource:
                     EarthScopeRequestRefused,
                     EarthScopeExchangeThrottled) as exc:
                 logger.error(f"No credential for {uri}: {exc}")
-                return obspy.Stream()
+                return _empty("denied" if isinstance(exc, EarthScopeNoAccess)
+                              else "refused")
             except FileNotFoundError:
-                return obspy.Stream()
+                return _empty("not_found")
             except RuntimeError as exc:
                 logger.error(f"No credential for {uri}: {exc}")
-                return obspy.Stream()
+                return _empty("refused")
             try:
                 # Separately timed: this is a HEAD round trip before every GET,
                 # which is pure latency and doubles the request count.
@@ -1510,7 +1572,7 @@ class S3DataSource:
                 bytes_mb = size / 1024**2
                 if self.limit_mb is not None and bytes_mb > self.limit_mb:
                     logger.warning(f"mSEED is too big (%.3f MB): %s" % (bytes_mb, uri))
-                    return obspy.Stream()
+                    return _empty("too_big")
                 else:
                     with stage("s3.get", unit=size, unit_name="bytes"):
                         raw = fs.read_bytes(uri)
@@ -1564,9 +1626,9 @@ class S3DataSource:
                             f"later object on this scope is skipped without "
                             f"asking EarthScope again."
                         )
-                    return obspy.Stream()
+                    return _empty("denied")
                 if denied > ES_DENIED_ATTEMPTS:
-                    return obspy.Stream()
+                    return _empty("denied")
                 logger.debug(e.args[0])
                 # First denial: assume an expired token and re-request the same
                 # scope. Second: assume the scope was missing its year and add
@@ -1580,24 +1642,24 @@ class S3DataSource:
                 except ES_TERMINAL as exc:
                     # EarthScope has now answered definitively. Stop.
                     logger.error(f"Cannot renew the credential for {uri}: {exc}")
-                    return obspy.Stream()
+                    return _empty("denied")
                 except EarthScopeExchangeThrottled as exc:
                     logger.warning(f"{exc}")
-                    return obspy.Stream()
+                    return _empty("throttled")
                 except RuntimeError as exc:
                     logger.error(f"Cannot renew the credential for {uri}: {exc}")
-                    return obspy.Stream()
+                    return _empty("refused")
                 logger.warning(
                     f"Credential refreshed after access denied "
                     f"({denied}/{ES_DENIED_ATTEMPTS}) for {uri}; scope now "
                     f"{self.s3helper.es_scope(net, year)}"
                 )
             except FileNotFoundError:
-                return obspy.Stream()
+                return _empty("not_found")
             except OSError as e:
                 if e.errno == 5:
                     logger.warning(f"Not authorized to access this resource: {uri}")
-                    return obspy.Stream()
+                    return _empty("denied")
                 # Any other OSError used to fall through without returning and
                 # spin the loop. Treat it as the transient it usually is, under
                 # the same budget as a busy S3.
@@ -1608,7 +1670,7 @@ class S3DataSource:
                         f"giving up on this object rather than holding the "
                         f"shard open."
                     )
-                    return obspy.Stream()
+                    return _empty("read_error")
                 time.sleep(self._backoff(busy))
             except ClientError:
                 busy += 1
@@ -1618,7 +1680,7 @@ class S3DataSource:
                         f"giving up on this object rather than holding the "
                         f"shard open."
                     )
-                    return obspy.Stream()
+                    return _empty("read_error")
                 delay = self._backoff(busy)
                 logger.warning(
                     f"S3 might be busy ({busy}/{S3_BUSY_ATTEMPTS}). "
@@ -1626,14 +1688,16 @@ class S3DataSource:
                 )
                 time.sleep(delay)
             except (ValueError, TypeError):
-                return obspy.Stream()
+                # Corrupt or empty miniSEED. A fact about the object, not a
+                # failure to reach it: re-reading returns the same bytes.
+                return _empty("empty_read")
             except Exception:
                 # `except Exception`, never a bare `except:`. A bare clause also
                 # catches BaseException, which is what `worker.Preempted` is -
                 # so a preemption landing on this read would have been turned
                 # into an empty stream and the shard would have carried on
                 # working after being told to stop.
-                return obspy.Stream()
+                return _empty("read_error")
 
     def _generate_waveform_uris(
         self, net: str, sta: str, loc: str, cha: str, date: datetime.date
