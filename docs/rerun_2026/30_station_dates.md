@@ -103,3 +103,47 @@ window whether the table holds floats, strings or dates.
 - The deployed image predates this fix. Planning happens locally, so the
   repair queues can be written today; workers only need the fix if they
   re-plan, which they never do.
+
+## Addendum 2026-10-06: the fill queues were never date-repaired
+
+`western-dates` was planned on 2026-09-29 from the 24,008-row
+`western/stations.parquet`, which did not yet hold the `western-fill` and
+`western-fill2` stations (they were merged into it on 10-02, commit 5c4a662).
+Those two queues had been planned on 09-21 with the misreading planner, so
+their stations kept the short windows. For 54 of them the misread end fell
+*before* the start (every one ends on a day-of-year divisible by ten, e.g.
+`1A.LBB2` 2020-06-16 to 2020-11-05, end read as day 31), and the planner
+dropped them outright: no shard in any of the 19 queues names them.
+
+`plan_date_repair.py` now subtracts every queue that wrote into the catalogue
+(`western-fill2`, `western-dates` and the repairs were missing from its list)
+and takes `--queue` for a second pass. Re-run against the complete table:
+
+| | station-locations | station-days |
+|---|--:|--:|
+| never planned or cut short, inside 1986.001 to 2026.251 | 284 | 25,919 |
+| of which dropped outright | 54 | 2,798 |
+
+Top networks UU 9,611, TA 4,003, AR 2,939, MB 1,643, NP 1,448 station-days.
+Queue `_queues/western-dates2/` (178 shards, writes into `western/`). A random
+sample of 25 network-months (6,152 planned station-days) had no picks in the
+bucket on any of them.
+
+## Addendum 2026-10-06: station codes, the same disease in another column
+
+The code columns carried CSV-parse damage too: `location_code` `"0.0"` for
+`00` (2,753 western rows, 8,652 global, 9 obs), `station_code` `"1"` for `001`
+(639 global, networks 6L and 2Q), and network `NA` stored as `""`. `id` was
+right in every row, and planning and picking key on `id` only
+(`shard_planner._network_groups`, `S3DataSource` indexes by `id`), so no
+station-day was lost to it. Readers joining the table to picks on the code
+columns lost those stations. Found from a collaborator's missing-station list.
+
+Fix: `utils.read_station_csv` keeps identifiers as text;
+`utils.normalize_station_codes` rebuilds the three code columns from `id` and
+is called by `write_stations`, `merge_station_tables.py` and
+`fill_missing_stations.py`; `tests/test_station_codes.py` fails on any script
+that writes a `stations.parquet` without it; `preflight.py` warns when a
+published table's codes disagree with `id`. The bucket tables are rewritten by
+`scripts/fix_station_codes.py --write` (originals to
+`_archive/stations-before-codefix-20261006/`).

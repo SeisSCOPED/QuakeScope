@@ -37,6 +37,61 @@ def filter_station_by_start_end_date(
     return stations.iloc[match]
 
 
+# Station identifiers are SEED codes: text, never numbers, and never containing
+# a dot. A CSV read with pandas' defaults turns them into numbers or NaN:
+# location "00" -> 0.0 -> "0.0", "01" -> "1.0", station "001" -> 1, network
+# "NA" -> NaN -> "". Until 2026-10-05 every station table carried that damage in
+# its code columns (2,065 western rows, 6,597 global; the `id` column was always
+# right, which is why picking was unaffected). Read with `read_station_csv`, and
+# let `normalize_station_codes` rebuild the codes from `id` before writing.
+STATION_CODE_COLUMNS = ("network_code", "station_code", "location_code")
+STATION_TEXT_COLUMNS = ("id",) + STATION_CODE_COLUMNS + ("channels",)
+_NUMBER_LIKE_RE = re.compile(r"^\d+\.\d*$")
+
+
+def read_station_csv(path, **kwargs) -> pd.DataFrame:
+    """A station CSV with every identifier kept as the text it was written as."""
+    return pd.read_csv(path, dtype={c: str for c in STATION_TEXT_COLUMNS},
+                       keep_default_na=False, na_values={"latitude": [""],
+                       "longitude": [""], "elevation": [""]}, **kwargs)
+
+
+def normalize_station_codes(stations: pd.DataFrame) -> pd.DataFrame:
+    """Make `id` and the three code columns agree, with `id` as the authority.
+
+    With an `id` column, the codes are rebuilt by splitting it on its two dots;
+    SEED codes cannot contain a dot, so the split is exact. Without one, the
+    id is built from the codes, and a code that reads like a number that went
+    through a float (`"0.0"`, `"1.0"`) is refused, because its leading zeros
+    are gone and cannot be recovered from that column alone.
+    """
+    stations = stations.copy()
+    for c in STATION_TEXT_COLUMNS:
+        if c in stations.columns:
+            stations[c] = stations[c].fillna("").astype(str)
+    if "id" in stations.columns:
+        parts = stations["id"].str.split(".", expand=True)
+        if parts.shape[1] != 3 or parts.isna().any(axis=None):
+            bad = stations["id"][stations["id"].str.count(r"\.") != 2]
+            raise ValueError(f"{len(bad)} station id(s) are not NET.STA.LOC: "
+                             f"{list(bad[:5])}")
+        for i, c in enumerate(STATION_CODE_COLUMNS):
+            stations[c] = parts[i]
+        return stations
+    missing = [c for c in STATION_CODE_COLUMNS if c not in stations.columns]
+    if missing:
+        raise ValueError(f"station table has no `id` and no {missing}")
+    for c in STATION_CODE_COLUMNS:
+        bad = stations[c][stations[c].str.match(_NUMBER_LIKE_RE)]
+        if len(bad):
+            raise ValueError(f"{len(bad)} {c} value(s) went through a float "
+                             f"({sorted(bad.unique())[:5]}); re-read the source "
+                             f"with read_station_csv")
+    stations["id"] = (stations["network_code"] + "." + stations["station_code"]
+                      + "." + stations["location_code"])
+    return stations
+
+
 def parse_year_day(x: str) -> datetime.date:
     """A `%Y.%j` STRING, as the shard queue writes it: always three digits."""
     return datetime.datetime.strptime(x, "%Y.%j").date()

@@ -35,9 +35,16 @@ from sb_catalog.src.utils import station_date            # noqa: E402
 BUCKET = "quakescope-picks-2026"
 # Catalogue -> (the queues that fed it, the span they cover).
 FED_BY = {
-    "western": (["western-early", "western", "western-2026", "western-fill"],
+    # Every queue that ever wrote into the catalogue, repairs included, so a
+    # day already planned anywhere is not planned again. western-fill2 and
+    # western-dates were missing until 2026-10-06; the first omission was what
+    # hid 54 fill stations the misread had dropped outright.
+    "western": (["western-early", "western", "western-2026", "western-fill",
+                 "western-fill2", "western-dates", "western-repair",
+                 "western-2026-repair"],
                 (datetime.date(1986, 1, 1), datetime.date(2026, 9, 8))),
-    "obs": (["obs-early", "obs", "obs-2026"],
+    "obs": (["obs-early", "obs", "obs-2026", "obs-dates", "obs-fill", "obs-el",
+             "obs-repair", "obs-early-repair"],
             (datetime.date(1993, 1, 1), datetime.date(2026, 1, 1))),
     "global": (["global", "global-2026"],
                (datetime.date(2010, 1, 1), datetime.date(2026, 9, 8))),
@@ -57,6 +64,9 @@ def main() -> None:
     ap.add_argument("--catalogue", required=True, choices=sorted(FED_BY))
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true"); g.add_argument("--write", action="store_true")
+    ap.add_argument("--queue", help="queue name under _queues/ (default <catalogue>-dates; "
+                                    "a queue is immutable, so a second pass needs a new name)")
+    ap.add_argument("--dump", help="also write the planned shards to this local .jsonl")
     a = ap.parse_args()
     cat = a.catalogue
     queues, (c0, c1) = FED_BY[cat]
@@ -135,10 +145,13 @@ def main() -> None:
                                n_station_days=len(group) * ndays))
     total = sum(s["n_station_days"] for s in shards)
     print(f"queue: {len(shards):,} shards, {total:,} station-days, largest {max(s['n_station_days'] for s in shards)}")
+    if a.dump:
+        Path(a.dump).write_text("\n".join(json.dumps(s) for s in shards) + "\n")
+        print(f"plan written to {a.dump}")
     if a.dry_run:
         return
 
-    repair = f"{cat}-dates"
+    repair = a.queue or f"{cat}-dates"
     key = f"_queues/{repair}/shards.jsonl"
     try:
         s3.head_object(Bucket=BUCKET, Key=key)
@@ -147,8 +160,11 @@ def main() -> None:
         pass
     s3.put_object(Bucket=BUCKET, Key=key, ContentType="application/x-ndjson",
                   Body="\n".join(json.dumps(s) for s in shards).encode() + b"\n")
-    s3.copy_object(Bucket=BUCKET, Key=f"_queues/{repair}/stations.parquet",
-                   CopySource={"Bucket": BUCKET, "Key": f"{cat}/stations.parquet"})
+    import io
+    from sb_catalog.src.utils import normalize_station_codes
+    buf = io.BytesIO()
+    normalize_station_codes(st).to_parquet(buf, index=False)
+    s3.put_object(Bucket=BUCKET, Key=f"_queues/{repair}/stations.parquet", Body=buf.getvalue())
     s3.put_object(Bucket=BUCKET, Key=f"_queues/{repair}/README.json", ContentType="application/json",
                   Body=json.dumps(dict(
                       purpose="station-days a mis-decoded station date kept out of the original queues; "

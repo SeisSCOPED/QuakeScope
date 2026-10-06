@@ -11,7 +11,7 @@ import pytz
 from botocore.config import Config
 
 from .parameters import *
-from .utils import SeisBenchDatabase, filter_station_by_start_end_date
+from .utils import SeisBenchDatabase, filter_station_by_start_end_date, read_station_csv
 
 logger = logging.getLogger("submit_helper")
 handler = logging.StreamHandler()
@@ -215,7 +215,7 @@ def read_station_file(path: str) -> list[str]:
     with open(path) as f:
         first = f.readline()
     if "id" in [c.strip() for c in first.split(",")]:
-        ids = pd.read_csv(path)["id"].astype(str).str.strip()
+        ids = read_station_csv(path)["id"].str.strip()
         return sorted(set(ids[ids != ""]))
     ids = []
     with open(path) as f:

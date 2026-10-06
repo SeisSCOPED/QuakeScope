@@ -43,7 +43,7 @@ from botocore.config import Config as BotoConfig
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
-from .utils import station_date
+from .utils import normalize_station_codes, station_date
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger("s3_state")
@@ -237,8 +237,9 @@ class S3CampaignState:
     # "1001" (nodal deployments) parse as int64 and location codes like "00"
     # as either int or NaN, which makes the column mixed-type and Arrow refuses
     # to write it. Worse, when it does write, "00" comes back as 0 and the
-    # object key built from it no longer matches anything in S3.
-    _ID_COLUMNS = ("id", "network_code", "station_code", "location_code", "channels")
+    # object key built from it no longer matches anything in S3. Casting to
+    # str afterwards is too late: 0.0 becomes "0.0". `normalize_station_codes`
+    # rebuilds the codes from `id` instead (utils.STATION_CODE_COLUMNS).
 
     def write_stations(self, stations: pd.DataFrame) -> str:
         """Persist station metadata. Replaces the `stations` collection.
@@ -267,10 +268,7 @@ class S3CampaignState:
                 f"channels, earliest start, latest end) before writing."
             )
         uri = self.uri("stations.parquet")
-        stations = stations.copy()
-        for c in self._ID_COLUMNS:
-            if c in stations.columns:
-                stations[c] = stations[c].fillna("").astype(str)
+        stations = normalize_station_codes(stations)
         stations = prepare_station_dates(stations)
         stations.to_parquet(uri, index=False)
         logger.info(f"Wrote {len(stations)} stations to {uri}")
