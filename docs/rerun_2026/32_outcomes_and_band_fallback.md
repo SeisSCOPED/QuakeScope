@@ -62,3 +62,48 @@ our account over S3 (TD 151,682 and EO 4,176 station-days). It would send
 about 155,000 day-long dataselect requests to EarthScope; after the
 2026-09-04 incident that needs their agreement first. Asking them to extend
 the account to TD and EO gets the same data through the existing reader.
+
+## Dry tests in Batch (2026-10-06)
+
+**`quakescope_2026_western:28` (image 60ef31b), `_archive/dryrun-uu-20261006`:**
+26 of 30 EarthScope station-days ended `read_error` within milliseconds. The
+outcome records exposed a second, older defect: libmseed **raises** when no
+record matches the `sourcename` selector, and the read path's catch-all
+returned an empty stream. In every image to date, an EarthScope day whose
+object lacked the one chosen band vanished. Fixed in d0ccf9b (#51): bands are
+tried in order against the downloaded bytes, one GET.
+
+**`:29` (d0ccf9b), `_archive/dryrun-uu2-20261006`, 27 station-days:**
+
+| expected from FDSN | outcome | n |
+|---|---|--:|
+| data | loaded (UU on EH; TA, IU, CN, MX on BH) | 10 |
+| data | empty_read: object holds only LN or EN | 3 |
+| data | not_found: XH 2004, YW 2005 absent from EarthScope S3 | 2 |
+| no data | no_data / no_channel | 9 |
+| no data | loaded (S3 holds what a 10-min FDSN probe missed) | 2 |
+| no data | too_big (UU.UTSC.29, over 200 MB) | 1 |
+
+**Yield sample, `_archive/dryrun-yield-20261006`:** 3,049 never-recorded
+station-days, stratified over 94 networks, 430 shards, 8 workers: loaded 299
+(9.8%), no_data 2,425, not_found 277, empty_read 27, too_big 21. 3.42 vCPU-h,
+$0.073 at $0.0213/vCPU-h. NP: 0 of 1,408 loaded.
+
+## The re-read queue
+
+Western manifests (101,005, all read) record 14.0M station-days; FDSN epochs
+hold 53.6M pickable ones outside TD/EO/LH. `scripts/plan_unread_repair.py`
+plans the never-recorded ones, excluding NP (no yield in 1,408), on a fixed
+20-day grid, 800 station-days per shard (the 2025 grouping):
+
+| | station-days |
+|---|--:|
+| never recorded, inside epochs | 39,598,017 |
+| excluding NP | 16,305,513 |
+| queued as `_queues/western-reread`, 57,683 shards | 15,631,837 |
+| held out: runs under 20 station-days per shard | 673,676 |
+
+Expected to load about 3 million (sample yield scaled per network); expected
+cost $390 to $720. The held-out holes would be 110,654 tiny shards, one FDSN
+inventory request each; they wait for an image that takes per-station day
+lists. `western-dates2` and `western-unread` (never launched) are superseded.
