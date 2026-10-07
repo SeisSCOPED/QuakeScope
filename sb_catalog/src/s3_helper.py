@@ -1434,9 +1434,10 @@ class S3DataSource:
                         # the bands are tried in order against the same object
                         # with a libmseed selector, which decodes only the band
                         # asked for (OPTIMISE item 0d: decoding all of them is
-                        # what made --procs 4 exceed 16 GB). A fallback re-reads
-                        # the object; that costs a GET only on the days the
-                        # first band is absent.
+                        # what made --procs 4 exceed 16 GB). The object is
+                        # downloaded once; `_read_first_matching` tries each
+                        # band's selector against those bytes, so a fallback
+                        # band costs another parse, never another GET.
                         s = await self._read_with_timeout(
                             uri[0], net, station, day,
                             sourcename=[f"{net}.{sta}.{loc}.{b}?" for b in bands])

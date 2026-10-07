@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
-from typing import Optional
 import hashlib
 import logging
+from typing import Optional
 
 import pandas as pd
 
