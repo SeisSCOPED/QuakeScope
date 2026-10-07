@@ -26,10 +26,10 @@ Usage (normally invoked by the Batch job definition, not by hand):
 from __future__ import annotations
 
 import argparse
-import ctypes
-import gc
 import collections
+import ctypes
 import datetime
+import gc
 import logging
 import multiprocessing as mp
 import os
