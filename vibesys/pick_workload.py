@@ -49,6 +49,8 @@ def _load_by_path(name: str):
 
 #: Startup attribution (sb_catalog.src.startup_diag): log-only, in every process and every arm.
 startup_diag = _load_by_path("startup_diag")
+#: QS_IMPORT_PREFETCH (sb_catalog.src.import_prefetch): standard library only, loaded by path.
+import_prefetch = _load_by_path("import_prefetch")
 
 #: Worker layout, named for the 8 vCPU shape: BLAS/OpenMP threads per worker process.
 #: The process count is vcpus // threads. "4x2" is the fleet.json production layout;
@@ -193,6 +195,16 @@ GLUE = os.environ.get("QS_GLUE", "fused")
 EARLY_ARMS = ("off", "stdlib")
 EARLY = os.environ.get(
     "QS_EARLY", "stdlib" if (STARTUP, LIST, STARTUP2) == ("overlap", "station", "v3") else "off")
+#: Worker bytecode reads (sb_catalog.src.import_prefetch): "mem" starts reader threads over the worker's
+#: manifest of stdlib/site-packages bytecode files at pick_group entry, before anything else is imported,
+#: and serves the stock source/sourceless loaders' get_data from those bytes until model_ready, so a
+#: network-mounted interpreter's per-open round trips overlap instead of serializing on the importing
+#: thread; "off" is the stock import path. Each group logs the arm, the filesystem of the stdlib and
+#: site-packages roots and, under "mem", the hit/late/miss counters and the uninstall. "mem" is the default
+#: (round 29): in the 3-pair local A/B (site-packages on tmpfs, only the stdlib on NFS) its median wall was
+#: 0.968x off's, CPU 0.966x, imports mark 0.08 s earlier, 1555/1555 hits per group, picks bitwise equal.
+IMPORT_PREFETCH_ARMS = ("off", "mem")
+IMPORT_PREFETCH = os.environ.get("QS_IMPORT_PREFETCH", "mem")
 #: Modules the stdlib arm keeps out of a worker until a request falls back to s3fs; each group logs
 #: whether they were loaded at model_ready and at its first classify.
 EARLY_MODULES = ("s3fs", "aiohttp", "botocore")
@@ -319,6 +331,9 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     started = time.time()
     entry_usage, entry_load = startup_diag.usage(), startup_diag.loadavg()
     import_clock = startup_diag.ImportClock(started).install()
+    prefetch = None
+    if IMPORT_PREFETCH == "mem":
+        prefetch = import_prefetch.ImportPrefetch(import_prefetch.load_manifest(), t0=started).start().install()
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
@@ -430,6 +445,11 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         timeline.mark("model_ready")
         at_model_ready = {name: name in sys.modules for name in EARLY_MODULES}
         import_clock.uninstall()
+        prefetch_summary = "-"
+        if prefetch is not None:
+            prefetch.uninstall()
+            prefetch_summary = prefetch.summary()
+            prefetch = None
         bridge.run_picking()
     finally:
         # Done or failed: this worker's cores go to the peers still running.
@@ -514,6 +534,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{k}={v}" for k, v in source.stdlib_counters.items()),
         ",".join(source.fallback_reasons) or "-",
     )
+    logger.info("group %d: QS_IMPORT_PREFETCH=%s fstype %s; %s", index, IMPORT_PREFETCH,
+                import_prefetch.root_fstypes(), prefetch_summary)
     logger.info(
         "group %d: startup2=%s first_sd_source=%s parent %s; amp signal %s (asked %s) slim %s; "
         "modules at end %s", index, STARTUP2, source.first_sd_source,
@@ -589,6 +611,8 @@ def main() -> int:
         parser.error(f"unknown QS_GLUE {GLUE!r}; expected one of {list(GLUE_ARMS)}")
     if EARLY not in EARLY_ARMS:
         parser.error(f"unknown QS_EARLY {EARLY!r}; expected one of {list(EARLY_ARMS)}")
+    if IMPORT_PREFETCH not in IMPORT_PREFETCH_ARMS:
+        parser.error(f"unknown QS_IMPORT_PREFETCH {IMPORT_PREFETCH!r}; expected one of {list(IMPORT_PREFETCH_ARMS)}")
     if EARLY == "stdlib" and (STARTUP, LIST, STARTUP2) != ("overlap", "station", "v3"):
         parser.error("QS_EARLY=stdlib needs QS_STARTUP=overlap, QS_LIST=station and QS_STARTUP2=v3")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
