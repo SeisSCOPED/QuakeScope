@@ -105,7 +105,8 @@ class ImportClock:
     def __init__(self, t0: float, watch: tuple = WATCH) -> None:
         self.t0 = t0
         self.watch = frozenset(watch)
-        #: name -> (start offset from t0, wall s, thread CPU s, thread majflt, thread minflt)
+        #: name -> (start offset from t0, wall s, thread CPU s, thread majflt, thread minflt,
+        #: importing thread's name)
         self.records: dict[str, tuple] = {}
         self._pending: set[str] = set()
         self._lock = threading.Lock()
@@ -153,7 +154,8 @@ class ImportClock:
                 end = time.time()
                 ru2 = resource.getrusage(resource.RUSAGE_THREAD)
                 clock.records[name] = (start - clock.t0, end - start, time.thread_time() - cpu,
-                                       ru2.ru_majflt - ru.ru_majflt, ru2.ru_minflt - ru.ru_minflt)
+                                       ru2.ru_majflt - ru.ru_majflt, ru2.ru_minflt - ru.ru_minflt,
+                                       threading.current_thread().name)
                 try:
                     del loader.exec_module
                 except AttributeError:
@@ -166,9 +168,11 @@ class ImportClock:
         return spec
 
     def line(self) -> str:
-        """`name=±start/wall/cpu/majflt/minflt` per timed module, in import order; the
+        """`name=±start/wall/cpu/majflt/minflt` per timed module, in import order, with
+        `@thread` appended when a thread other than the main thread imported it; the
         sb_catalog.src. prefix is shortened to sb."""
         items = sorted(self.records.items(), key=lambda kv: kv[1][0])
         return " ".join(
             f"{name.replace('sb_catalog.src.', 'sb.')}={s:+.3f}/{w:.3f}/{c:.3f}/{mj}/{mn}"
-            for name, (s, w, c, mj, mn) in items) or "-"
+            f"{'' if thread == 'MainThread' else '@' + thread}"
+            for name, (s, w, c, mj, mn, thread) in items) or "-"

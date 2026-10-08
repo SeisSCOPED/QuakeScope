@@ -160,6 +160,18 @@ EXIT = os.environ.get("QS_EXIT", "fast")
 #: `threads` until it ends, the round-14 behaviour.
 TAIL_ARMS = ("widen", "static")
 TAIL = os.environ.get("QS_TAIL", "widen")
+#: A worker's import chain (round 19): "threads" starts one daemon thread ("imp") at pick_group
+#: entry, after the thread-count variables and sys.path are set, that imports torch, pandas and
+#: pyarrow, then the worker modules the main thread imports after its early network startup
+#: (import_par_modules), while the main thread runs its early imports and starts the S3/FDSN
+#: reads unchanged; the main thread joins it before its own picker import. The round-18 official
+#: log had the workers' I/O done by +1.6 s but their imports at +2.9 s, torch starting at +1.04 s
+#: and half its 1.86 s wall waiting. The thread runs imports only, no torch op. Anything it raises
+#: (an importlib _DeadlockError included), or a main-thread early import failing while it runs,
+#: is logged and counted (import_fallbacks) and the imports then run serially on the main thread.
+#: QS_IMPORT_PAR=off is the round-18 serial order.
+IMPORT_PAR_ARMS = ("threads", "off")
+IMPORT_PAR = os.environ.get("QS_IMPORT_PAR", "threads")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -272,6 +284,76 @@ def fast_exit(code: int) -> None:
     os._exit(code)
 
 
+def import_par_modules(imports: str = IMPORTS, amp_signal: str = AMP_SIGNAL) -> tuple[str, ...]:
+    """What the QS_IMPORT_PAR=threads import thread imports, in order: torch, pandas and pyarrow
+    first, then the worker modules the main thread imports after its early startup, and those
+    the bridge's construction imports (the fast graph and annotate; the slim amp modules)."""
+    full = ("seisbench.models", "sb_catalog.src.classifier") if imports == "full" else ()
+    slim = (("scipy.fft", "obspy.core.inventory", "sb_catalog.src.slim_evalresp",
+             "sb_catalog.src.slim_signal") if amp_signal == "slim" else ())
+    return ("torch", "torch.nn", "torch.nn.functional", "pandas", "pyarrow", "pyarrow.parquet",
+            "seisbench", "seisbench.util", *full, "sb_catalog.src.picker",
+            "sb_catalog.src.profiling", "sb_catalog.src.s3_helper", "sb_catalog.src.utils",
+            "sb_catalog.src.lean_phasenet", "sb_catalog.src.amplitude_extractor",
+            "sb_catalog.src.fast_forward", "sb_catalog.src.fast_annotate", *slim)
+
+
+class ImportThread:
+    """QS_IMPORT_PAR=threads: one daemon thread importing ``modules`` in order, recording its
+    start and end (wall epoch), its thread CPU, and anything it raised."""
+
+    def __init__(self, modules: tuple[str, ...]) -> None:
+        import threading
+
+        self.modules = modules
+        self.start = self.end = self.cpu = None
+        self.error: BaseException | None = None
+        self.done = 0
+        self.join_wait = 0.0
+        self.thread = threading.Thread(target=self._run, name="imp", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        import importlib
+
+        self.start = time.time()
+        cpu = time.thread_time()
+        try:
+            for name in self.modules:
+                importlib.import_module(name)
+                self.done += 1
+        except BaseException as exc:                  # e.g. importlib's _DeadlockError
+            self.error = exc
+        finally:
+            self.cpu = time.thread_time() - cpu
+            self.end = time.time()
+
+    def join(self) -> None:
+        """Wait for the thread (once); the wait adds to join_wait."""
+        begin = time.time()
+        self.thread.join()
+        self.join_wait += time.time() - begin
+
+    def summary(self, t0: float) -> str:
+        """`start=+s end=+s cpu=s modules=done/total join_wait_ms=ms`, marks relative to ``t0``."""
+        mark = (lambda t: f"{t - t0:+.3f}" if t is not None else "-")
+        return (f"start={mark(self.start)} end={mark(self.end)} "
+                f"cpu={self.cpu if self.cpu is not None else float('nan'):.3f} "
+                f"modules={self.done}/{len(self.modules)} join_wait_ms={self.join_wait * 1000:.0f}")
+
+
+def early_imports():
+    """The overlap startup's network imports, before the S3/FDSN reads start: obspy, s3fs and
+    the readers the background threads will call; returns S3DataSource."""
+    import obspy.clients.fdsn  # noqa: F401
+    import obspy.io.mseed.core  # noqa: F401
+    import obspy.io.stationxml.core  # noqa: F401
+
+    from sb_catalog.src.s3_helper import S3DataSource
+
+    return S3DataSource
+
+
 def pick_group(index: int, stations: list[dict], config: PickJobConfig,
                tail_state: tuple | None = None, first_sd: tuple | None = None) -> None:
     """Run one production worker loop over a subset of the workload's stations.
@@ -293,16 +375,29 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     )
 
     workload = config.workload
+    importer = None
+    import_fallbacks = []
+    if IMPORT_PAR == "threads":
+        # numpy on this thread first: every import on both threads needs it.
+        import numpy  # noqa: F401
+
+        importer = ImportThread(import_par_modules())
     source = None
     if STARTUP == "overlap":
         # The network work first, with only what it needs imported: obspy, s3fs and
         # the readers it will call, so the background threads import nothing while
         # this thread imports torch and SeisBench.
-        import obspy.clients.fdsn  # noqa: F401
-        import obspy.io.mseed.core  # noqa: F401
-        import obspy.io.stationxml.core  # noqa: F401
-
-        from sb_catalog.src.s3_helper import S3DataSource
+        try:
+            S3DataSource = early_imports()
+        except Exception as exc:
+            if importer is None:
+                raise
+            # Raced with the import thread (e.g. a _DeadlockError): let it finish, then serially.
+            importer.join()
+            import_fallbacks.append(f"main:{type(exc).__name__}")
+            logger.warning("group %d: early imports failed beside the import thread (%r); "
+                           "importing serially", index, exc)
+            S3DataSource = early_imports()
 
         source = S3DataSource(
             stations=",".join(s["id"] for s in stations),
@@ -315,6 +410,14 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             parent_first=first_sd,
         )
 
+    if importer is not None:
+        importer.join()
+        if importer.error is not None:
+            # Whatever it did not import, the serial imports below import.
+            import_fallbacks.append(f"thread:{type(importer.error).__name__}")
+            logger.warning(
+                "group %d: import thread failed after %d of %d modules (%r); importing serially",
+                index, importer.done, len(importer.modules), importer.error)
     if IMPORTS == "full":
         # The round-13 import set: picker.py imported SeisBench's model package,
         # QuakeXNet's module and pandas (through utils) at module level.
@@ -460,8 +563,13 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
     logger.info(
-        "startup-diag group %d: startup2=%s imports=%s start=%+.3f entry=%+.3f load=%s marks module=%s "
-        "entry=%s %s; imports %s; bytecode %s", index, STARTUP2, IMPORTS,
+        "group %d: import_par=%s thread %s import_fallbacks=%d %s", index, IMPORT_PAR,
+        importer.summary(started) if importer is not None else "-", len(import_fallbacks),
+        ",".join(import_fallbacks) or "-",
+    )
+    logger.info(
+        "startup-diag group %d: startup2=%s imports=%s import_par=%s start=%+.3f entry=%+.3f load=%s "
+        "marks module=%s entry=%s %s; imports %s; bytecode %s", index, STARTUP2, IMPORTS, IMPORT_PAR,
         startup_diag.process_start() - config.launched if config.launched else float("nan"),
         started - config.launched if config.launched else float("nan"), entry_load,
         startup_diag.fmt_usage(MODULE_USAGE, started), startup_diag.fmt_usage(entry_usage, started),
@@ -511,6 +619,8 @@ def main() -> int:
         parser.error(f"unknown QS_TAIL {TAIL!r}; expected one of {list(TAIL_ARMS)}")
     if STARTUP2 not in STARTUP2_ARMS:
         parser.error(f"unknown QS_STARTUP2 {STARTUP2!r}; expected one of {list(STARTUP2_ARMS)}")
+    if IMPORT_PAR not in IMPORT_PAR_ARMS:
+        parser.error(f"unknown QS_IMPORT_PAR {IMPORT_PAR!r}; expected one of {list(IMPORT_PAR_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
