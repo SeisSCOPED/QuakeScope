@@ -119,10 +119,15 @@ def list_station_day(prefix: str, stem: str) -> tuple[list[str], int]:
         params["continuation-token"] = root.findtext(S3_NS + "NextContinuationToken")
 
 
-def get_object(uri: str, target: Path) -> int:
-    """GET one `bucket/key` into `target` (via `target.part`); returns its size."""
+def get_object(uri: str, target: Path, marks: list | None = None) -> int:
+    """GET one `bucket/key` into `target` (via `target.part`); returns its size. `marks`, when
+    given, gets the wall times of the request's start, its response headers and its end."""
     _, _, key = uri.partition("/")
+    if marks is not None:
+        marks.append(time.time())
     response = _request("/" + urllib.parse.quote(key))
+    if marks is not None:
+        marks.append(time.time())
     expected = response.getheader("Content-Length")
     part = target.with_name(target.name + ".part")
     size = 0
@@ -134,6 +139,8 @@ def get_object(uri: str, target: Path) -> int:
         os.unlink(part)
         raise OSError(f"GET {uri}: {size} of {expected} bytes")
     os.replace(part, target)
+    if marks is not None:
+        marks.append(time.time())
     return size
 
 
@@ -153,6 +160,8 @@ class FirstSDFetch:
         self.dirs = [str(self.root / f"group-{i}") for i in range(len(groups))]
         #: Per group: {"source": parent|none|failed, "list_s", "ready_s", "objects", "bytes", "error"}.
         self.report: list[dict] = [{"source": "none"} for _ in groups]
+        #: Per group, per wanted object in order: [start, headers, end] wall times (startup-diag).
+        self.object_marks: list[list[list[float]]] = [[] for _ in groups]
         self.t0 = None
         self._threads: list[threading.Thread] = []
 
@@ -186,15 +195,18 @@ class FirstSDFetch:
             manifest["list_requests"] = requests
             wanted = [uri for uri in plan["uris"] if uri in listing]
             results: dict = {}
+            marks = self.object_marks[index]
 
-            def fetch(uri):
+            def fetch(uri, times):
                 name = uri.rsplit("/", 1)[1]
                 try:
-                    results[uri] = (name, get_object(uri, folder / name), None)
+                    results[uri] = (name, get_object(uri, folder / name, times), None)
                 except Exception as exc:             # the worker reads this one itself
                     results[uri] = (None, 0, f"{type(exc).__name__}: {exc}")
 
-            threads = [threading.Thread(target=fetch, args=(uri,), daemon=True) for uri in wanted]
+            marks += [[] for _ in wanted]
+            threads = [threading.Thread(target=fetch, args=(uri, times), daemon=True)
+                       for uri, times in zip(wanted, marks)]
             for thread in threads:
                 thread.start()
             for thread in threads:
@@ -225,5 +237,8 @@ class FirstSDFetch:
             self.events[index].set()
 
     def summary(self, index: int) -> str:
+        """The group's report, then `objs=start/headers/end,...` per object, seconds from start()."""
         r = self.report[index]
-        return " ".join(f"{k}={v}" for k, v in r.items())
+        objs = ",".join("/".join(f"{t - self.t0:.3f}" for t in times) or "-"
+                        for times in self.object_marks[index]) if self.t0 is not None else ""
+        return " ".join(f"{k}={v}" for k, v in r.items()) + f" objs={objs or '-'}"

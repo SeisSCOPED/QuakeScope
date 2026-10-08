@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import logging
 import multiprocessing as mp
@@ -35,6 +36,19 @@ if TYPE_CHECKING:
     import pandas as pd
 
 QUAKESCOPE_ROOT = Path(__file__).resolve().parent / "quakescope"
+
+
+def _load_by_path(name: str):
+    """A sb_catalog/src module loaded by path, so this process's sys.path stays as it is."""
+    spec = importlib.util.spec_from_file_location(
+        f"_{name}", QUAKESCOPE_ROOT / "sb_catalog" / "src" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: Startup attribution (sb_catalog.src.startup_diag): log-only, in every process and every arm.
+startup_diag = _load_by_path("startup_diag")
 
 #: Worker layout, named for the 8 vCPU shape: BLAS/OpenMP threads per worker process.
 #: The process count is vcpus // threads. "4x2" is the fleet.json production layout;
@@ -105,13 +119,23 @@ IMPORT_ARMS = ("lean", "full")
 #: (c) The parent, idle after the launch and with a GIL of its own, LISTs and GETs every group's
 #: first station-day into a directory under TMPDIR (sb_catalog.src.parent_fetch); the worker's
 #: startup waits up to s3_helper.PARENT_FIRST_WAIT for it and parses the local bytes, or reads
-#: them itself (counted). QS_STARTUP2=off is the round-15 startup. The default: in the round-16 same-session
-#: 4+4 A/B, v2's first classify came 0.86 s earlier and the median wall was 3.3% lower (17.25 vs 17.84 s),
-#: picks bitwise equal.
+#: them itself (counted). QS_STARTUP2=off, the default, is the round-15 startup. v2 is not the default:
+#: in the round-16 same-session 4+4 A/B its first classify came 0.86 s earlier and the median wall was
+#: 3.3% lower (17.25 vs 17.84 s), picks bitwise equal, but the round-16 official run was 21.54 s against
+#: round 15's 19.97 s at equal CPU-s: its workers reached the early startup at +2.0-2.4 s (0.47 s locally)
+#: and their imports at +5.0 s (1.39 s), with every parent fetch ready at 1.90 s.
 STARTUP2_ARMS = ("v2", "off")
-STARTUP2 = os.environ.get("QS_STARTUP2", "v2")
+STARTUP2 = os.environ.get("QS_STARTUP2", "off")
 IMPORTS = os.environ.get("QS_IMPORTS", "lean" if STARTUP2 == "v2" else "full")
 AMP_SIGNAL = "slim" if STARTUP2 == "v2" else "scipy"
+#: (label, timeline mark) whose first mark's CPU, faults and context switches a worker's
+#: startup-diag line reports.
+DIAG_MARKS = (
+    ("early", "early_started"), ("imports", "imports_done"), ("source", "source_ready"),
+    ("model", "model_ready"), ("parent_wait", "parent_wait"), ("parent_ready", "parent_ready"),
+    ("first_sd", "sd_loaded"), ("first_classify", "classify_start"), ("first_amp", "amp_start"),
+    ("end", "end"),
+)
 #: Modules a worker reports at its end; under v2 none of them may be loaded.
 END_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
 #: How a process ends once its work is durably done: "fast" flushes the log streams, shuts
@@ -249,6 +273,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     (QS_STARTUP2=v2), or None.
     """
     started = time.time()
+    entry_usage, entry_load = startup_diag.usage(), startup_diag.loadavg()
+    import_clock = startup_diag.ImportClock(started).install()
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
@@ -340,6 +366,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             amp_signal=AMP_SIGNAL,
         )
         timeline.mark("model_ready")
+        import_clock.uninstall()
         bridge.run_picking()
     finally:
         # Done or failed: this worker's cores go to the peers still running.
@@ -425,6 +452,14 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
     logger.info(
+        "startup-diag group %d: startup2=%s imports=%s start=%+.3f entry=%+.3f load=%s marks module=%s "
+        "entry=%s %s; imports %s; bytecode %s", index, STARTUP2, IMPORTS,
+        startup_diag.process_start() - config.launched if config.launched else float("nan"),
+        started - config.launched if config.launched else float("nan"), entry_load,
+        startup_diag.fmt_usage(MODULE_USAGE, started), startup_diag.fmt_usage(entry_usage, started),
+        timeline.usage_line(started, DIAG_MARKS), import_clock.line(), startup_diag.bytecode_probe(),
+    )
+    logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
     )
@@ -439,6 +474,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
 def main() -> int:
     """Pick every station-day of a workload with the production worker layout."""
     main_entry = time.time()
+    diag = {"entry": startup_diag.usage()}
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -532,11 +568,15 @@ def main() -> int:
         for i, group in enumerate(groups)
     ]
     try:
+        diag["starts"] = []
         for worker in workers:
+            begin = time.time()
             worker.start()
+            diag["starts"].append(time.time() - begin)
+        diag["started"] = time.time()
         if fetch is not None:
             fetch.start()
-        return _run_parent(workers, config, main_entry, cache_root, fetch)
+        return _run_parent(workers, config, main_entry, cache_root, fetch, diag)
     finally:
         remove_first_sd_dir(fetch)
 
@@ -555,13 +595,14 @@ def remove_first_sd_dir(fetch) -> None:
 
 
 def _run_parent(workers, config: PickJobConfig, main_entry: float, cache_root: Path,
-                fetch) -> int:
+                fetch, diag: dict) -> int:
     """The parent after the launch: SeisBench's version, join every worker, exit."""
     logger.info(
         "parent %s: pre-launch %.3f s (main entry %.3f -> launch %.3f), %d workers started %.3f s "
         "after launch", PARENT, config.launched - main_entry, main_entry, config.launched,
         len(workers), time.time() - config.launched,
     )
+    diag["sbver_start"] = time.time()
     if PARENT == "early":
         if IMPORTS == "lean":
             from importlib.metadata import version
@@ -572,9 +613,20 @@ def _run_parent(workers, config: PickJobConfig, main_entry: float, cache_root: P
 
             seisbench_version = seisbench.__version__
         logger.info("SeisBench %s, weights staged in %s", seisbench_version, cache_root)
+    diag["sbver_end"] = time.time()
     for worker in workers:
         worker.join()
     joined = time.time()
+    joined_usage = startup_diag.usage()
+    logger.info(
+        "startup-diag parent: startup2=%s imports=%s parent=%s start=%+.3f load=%s marks module=%s "
+        "entry=%s launch=%+.3f worker_starts=%s started=%+.3f sbver=%+.3f/%.3f joined=%s",
+        STARTUP2, IMPORTS, PARENT, startup_diag.process_start() - main_entry, startup_diag.loadavg(),
+        startup_diag.fmt_usage(MODULE_USAGE, main_entry), startup_diag.fmt_usage(diag["entry"], main_entry),
+        config.launched - main_entry, ",".join(f"{d:.3f}" for d in diag["starts"]),
+        diag["started"] - main_entry, diag["sbver_start"] - main_entry,
+        diag["sbver_end"] - diag["sbver_start"], startup_diag.fmt_usage(joined_usage, main_entry),
+    )
     if fetch is not None:
         for i in range(len(workers)):
             logger.info("parent startup2 group %d: first-SD fetch %s", i, fetch.summary(i))
@@ -589,6 +641,9 @@ def _run_parent(workers, config: PickJobConfig, main_entry: float, cache_root: P
         fast_exit(0)
     return 0
 
+
+#: This module's top level done (in a spawned worker: the spawn bootstrap ran it as __mp_main__).
+MODULE_USAGE = startup_diag.usage()
 
 if __name__ == "__main__":
     sys.exit(main())
