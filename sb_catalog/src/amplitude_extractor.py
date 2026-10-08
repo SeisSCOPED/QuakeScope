@@ -9,6 +9,7 @@ from typing import Optional
 
 import numpy as np
 import obspy
+from . import veliir
 from .sb_lite import sbu  # QS_SBLITE: seisbench.util under off
 
 logger = logging.getLogger("amplitude_extractor")
@@ -200,12 +201,18 @@ class AmplitudeExtractor:
         impl: str = "obspy",
         workers: Optional[int] = None,
         signal: str = "scipy",
+        vel_filter: Optional[str] = None,
     ):
         if impl not in AMP_IMPLS:
             raise ValueError(f"impl must be one of {AMP_IMPLS}, not {impl!r}")
         if signal not in AMP_SIGNALS:
             raise ValueError(f"signal must be one of {AMP_SIGNALS}, not {signal!r}")
         self.impl = impl
+        #: The fused velocity pass's zero-phase highpass (QS_VELIIR): "c" runs veliir.c's kernel
+        #: on a station's traces at once, "scipy" runs sosfilt per trace on the filter pool.
+        self.vel_filter = veliir.ARM if vel_filter is None else vel_filter
+        if self.vel_filter not in veliir.ARMS:
+            raise ValueError(f"vel_filter must be one of {veliir.ARMS}, not {self.vel_filter!r}")
         #: The signal arm asked for, and the one in use: "slim" falls back to "scipy" (counted)
         #: if its modules cannot be loaded.
         self.signal = signal
@@ -805,7 +812,10 @@ class AmplitudeExtractor:
         then sosfilt of the flipped result flipped back. The two sosfilt
         passes run as separate tasks on the filter pool (sosfilt drops the
         GIL), so a third channel's forward pass overlaps the first two
-        channels' backward passes. The divide by sensitivity is left to the
+        channels' backward passes. Under QS_VELIIR=c (`vel_filter`) the pool
+        runs only the detrend and taper, and veliir.c filters the station's
+        traces in one call, in place, bit for bit the same (`_velocity_kernel`).
+        The divide by sensitivity is left to the
         scalar peak (`_scaled_peak_from_arrays`), which is exact because
         rounding a quotient is monotonic in the dividend.
         """
@@ -853,7 +863,7 @@ class AmplitudeExtractor:
         if not kept:
             return []
 
-        def forward(tr):
+        def prep(tr):
             data = (self._detrend(tr.data) if len(tr.data)
                     else tr.data.copy())
             npts = len(data)
@@ -865,7 +875,11 @@ class AmplitudeExtractor:
                 if wlen:
                     data[:wlen] *= sides[:wlen]
                     data[npts - wlen:] *= sides[len(sides) - wlen:]
-            if hp is None or not npts:
+            return data
+
+        def forward(tr):
+            data = prep(tr)
+            if hp is None or not len(data):
                 return data, None
             fe = 0.5 * tr.stats.sampling_rate
             sos = highpass_sos(hp / fe)
@@ -876,18 +890,28 @@ class AmplitudeExtractor:
 
         pool = self._filter_pool()
         out: list = [None] * len(kept)
-        pending = {pool.submit(forward, tr): k for k, (tr, _) in enumerate(kept)}
-        second = {}
-        for fut in as_completed(pending):
-            k = pending[fut]
-            data, sos = fut.result()
-            if sos is None:
-                out[k] = data
-            else:
-                second[pool.submit(backward, data, sos)] = k
-                self.vel_counters["traces_filtered"] += 1
-        for fut, k in second.items():
-            out[k] = fut.result()
+        kernel = None
+        if self.vel_filter == "c" and hp is not None:
+            kernel = veliir.kernel()
+            if not kernel.ready():
+                kernel.fallback(kernel.why_not(), len(kept))
+                kernel = None
+        if kernel is not None:
+            self._velocity_kernel(kernel, kept, list(pool.map(prep, [tr for tr, _ in kept])),
+                                  hp, highpass_sos, sosfilt, out)
+        else:
+            pending = {pool.submit(forward, tr): k for k, (tr, _) in enumerate(kept)}
+            second = {}
+            for fut in as_completed(pending):
+                k = pending[fut]
+                data, sos = fut.result()
+                if sos is None:
+                    out[k] = data
+                else:
+                    second[pool.submit(backward, data, sos)] = k
+                    self.vel_counters["traces_filtered"] += 1
+            for fut, k in second.items():
+                out[k] = fut.result()
         self.vel_counters["stations"] += 1
 
         # _as_arrays(kept, _taper_length(kept, fraction)), plus sensitivity.
@@ -901,6 +925,39 @@ class AmplitudeExtractor:
                            start + taper_len,
                            tr.stats.endtime.timestamp - taper_len, sens))
         return arrays
+
+    def _velocity_kernel(self, kernel, kept, prepared, hp, highpass_sos, sosfilt, out) -> None:
+        """QS_VELIIR=c: the zero-phase highpass of a station's detrended, tapered traces, into
+        `out`. Traces of one length and rate (so one sos) go to the kernel together, up to
+        veliir.MAX_CHANNELS per call, filtered in place; an sos the kernel does not take (not
+        (nsec <= MAX_SECTIONS, 6) with a0 == 1) runs the scipy path inline, counted."""
+        batches: dict = {}
+        for k, ((tr, _), data) in enumerate(zip(kept, prepared)):
+            if not len(data):
+                out[k] = data
+                continue
+            rate = tr.stats.sampling_rate
+            sos = highpass_sos(hp / (0.5 * rate))
+            arr = np.asarray(sos)
+            if (arr.dtype != np.float64 or arr.ndim != 2 or arr.shape[1] != 6
+                    or not 0 < arr.shape[0] <= veliir.MAX_SECTIONS or not (arr[:, 3] == 1).all()):
+                kernel.fallback("sos_shape")
+                out[k] = np.flip(sosfilt(sos, np.flip(sosfilt(sos, data, axis=-1), axis=-1),
+                                         axis=-1), axis=-1)
+                self.vel_counters["traces_filtered"] += 1
+                continue
+            arr = np.ascontiguousarray(arr)
+            # sosfilt computes in float64 (result_type of the sos and the data) on a C-order
+            # copy; the detrended data is this pass's own array, so it is filtered in place.
+            batch = batches.setdefault((len(data), rate, arr.tobytes()), (arr, []))
+            batch[1].append((k, np.ascontiguousarray(data, dtype=np.float64)))
+        for arr, items in batches.values():
+            for j in range(0, len(items), veliir.MAX_CHANNELS):
+                chunk = items[j:j + veliir.MAX_CHANNELS]
+                kernel.filtfilt([data for _, data in chunk], arr)
+                for k, data in chunk:
+                    out[k] = data
+                    self.vel_counters["traces_filtered"] += 1
 
     def _scaled_peak_from_arrays(self, arrays: list[tuple], pick: sbu.Pick):
         """`_peak_from_arrays(mean=False)` on data that is still in counts:

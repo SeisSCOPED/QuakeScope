@@ -238,6 +238,16 @@ EARLY_RANGES = os.environ.get("QS_EARLY_RANGES", "1")
 #: role's 6.1-6.4 CPU-s per run gone), 4 of 4 pairs faster on both, picks bitwise equal.
 BLAS_ARMS = ("2", "1")
 BLAS = os.environ.get("QS_BLAS", "1")
+#: The fused velocity pass's zero-phase highpass (sb_catalog.src.veliir): "c" runs the vendored C kernel
+#: (veliir.c: scipy's sosfilt recurrence in the same per-sample operation order, forward and backward in place
+#: with no flip copies, a station's channels as the lanes of one loop), compiled once per run by the parent into
+#: a fresh directory under TMPDIR (background thread, 5 s timeout) and loaded by each worker at its first velocity
+#: pass; until then, or if the build or load fails, the pass takes the scipy path, counted with its reason.
+#: "scipy" is scipy's sosfilt on the filter pool, the round-31 path. Each group logs the arm and the counters.
+#: "c" is the default (round 32): in the 4-pair local A/B its median wall was 0.930x scipy's, CPU 0.926x (amp_pool
+#: 16.2 -> 7.1 CPU-s per run), 4 of 4 pairs faster on both, picks and amp/amp_vel bitwise equal.
+VELIIR_ARMS = ("c", "scipy")
+VELIIR = os.environ.get("QS_VELIIR", "c")
 #: Import-prefetch manifest per QS_SBLITE arm (sb_catalog/src/).
 PREFETCH_MANIFESTS = {"off": "import_prefetch_manifest.txt", "on": "import_prefetch_manifest_lite.txt"}
 #: Modules QS_SBLITE=on keeps out of a worker; each group logs them at model_ready, first classify and end.
@@ -383,6 +393,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         prefetch = import_prefetch.ImportPrefetch(import_prefetch.load_manifest(str(manifest)),
                                                   t0=started).start().install()
     os.environ["QS_SBLITE"] = SBLITE
+    os.environ["QS_VELIIR"] = VELIIR
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
@@ -620,6 +631,9 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
     logger.info("group %d: %s", index, pin.summary())
+    veliir = sys.modules.get("sb_catalog.src.veliir")
+    logger.info("group %d: QS_VELIIR=%s %s", index, VELIIR,
+                veliir.kernel().summary() if veliir is not None else "kernel=- (module not loaded)")
     logger.info("group %d: QS_BLAS=%s torch_threads=%s %s", index, BLAS, torch_threads,
                 thread_cpu.summary(pin.classify_tid))
     logger.info("group %d: %s", index, pin.reset_line())
@@ -689,6 +703,8 @@ def main() -> int:
         parser.error(f"unknown QS_EARLY_RANGES {EARLY_RANGES!r}; expected one of {list(EARLY_RANGES_ARMS)}")
     if BLAS not in BLAS_ARMS:
         parser.error(f"unknown QS_BLAS {BLAS!r}; expected one of {list(BLAS_ARMS)}")
+    if VELIIR not in VELIIR_ARMS:
+        parser.error(f"unknown QS_VELIIR {VELIIR!r}; expected one of {list(VELIIR_ARMS)}")
     if EARLY == "stdlib" and (STARTUP, LIST, STARTUP2) != ("overlap", "station", "v3"):
         parser.error("QS_EARLY=stdlib needs QS_STARTUP=overlap, QS_LIST=station and QS_STARTUP2=v3")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -710,6 +726,10 @@ def main() -> int:
     else:
         write_seisbench_config(cache_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    global _veliir_build
+    if VELIIR == "c" and AMP_IMPL == "fused":
+        # Before the launch: the spawned workers inherit QS_VELIIR_SO; the compile overlaps their imports.
+        _veliir_build = _load_by_path("veliir").start_build()
     logger.info(
         "picking %d stations with %d procs x %d threads (layout %s, data queue %d)",
         len(stations), len(groups), threads, LAYOUT, data_queue_size,
@@ -768,6 +788,22 @@ def main() -> int:
         return _run_parent(workers, config, main_entry, cache_root, fetch, diag)
     finally:
         remove_first_sd_dir(fetch)
+        remove_veliir_build()
+
+
+#: The parent's QS_VELIIR=c build (sb_catalog.src.veliir.Build), or None.
+_veliir_build = None
+
+
+def remove_veliir_build() -> None:
+    """Nothing outlives the run: remove the kernel's build directory (a no-op without one, or once removed)."""
+    global _veliir_build
+    if _veliir_build is None:
+        return
+    build, _veliir_build = _veliir_build, None
+    status = build.remove()
+    logger.info("parent QS_VELIIR: build directory %s removed=%s; build %s", build.dir,
+                not os.path.exists(build.dir), json.dumps(status, separators=(",", ":")))
 
 
 def remove_first_sd_dir(fetch) -> None:
@@ -825,6 +861,7 @@ def _run_parent(workers, config: PickJobConfig, main_entry: float, cache_root: P
         return 1
     logger.info("parent exit=%s imports=%s startup2=%s: workers joined %.3f, exit %.3f", EXIT,
                 IMPORTS, STARTUP2, joined, time.time())
+    remove_veliir_build()
     if EXIT == "fast":
         remove_first_sd_dir(fetch)
         fast_exit(0)
