@@ -9,6 +9,7 @@ it, so it is kept rather than deleted.
 
 import datetime
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -23,6 +24,14 @@ from .utils import parse_year_day
 logger = logging.getLogger("picker")
 
 
+RETIREMENT_NOTICE = (
+    "The 2025 QuakeScope DocumentDB catalogue is retired on 2026-10-12. Its picks "
+    "are being published as anonymous public Parquet in s3://quakescope-picks-2026, "
+    "same layout as the 2026 catalogues; see "
+    "https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/data_access.md"
+)
+
+
 class SeisBenchDatabase(pymongo.MongoClient):
     """
     A MongoDB Client designed to handle all necessary tables for creating a simple earthquake catalog.
@@ -30,6 +39,9 @@ class SeisBenchDatabase(pymongo.MongoClient):
     """
 
     def __init__(self, db_uri: str, database: str, **kwargs: Any) -> None:
+        # DocumentDB cannot send a custom message to a client, so the notice
+        # lives here, where anyone connecting through this repository sees it.
+        warnings.warn(RETIREMENT_NOTICE, FutureWarning, stacklevel=2)
         super().__init__(db_uri, **kwargs)
 
         self.db_uri = db_uri

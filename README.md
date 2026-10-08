@@ -1,5 +1,14 @@
 # Cloud-native Machine Learning workflow for earthquake event detection and phase picking
 
+> **The 2025 DocumentDB catalogue is retired on Monday 2026-10-12.**
+> The database that served the 2025 QuakeScope picks (Ni et al., 2025) will be
+> shut down on that date. Its picks are being converted to public Parquet files
+> in the same layout as the 2026 catalogues, readable anonymously from
+> `s3://quakescope-picks-2026` with no account or database; the location will be
+> announced in [the pinned issue](https://github.com/SeisSCOPED/QuakeScope/issues?q=is%3Aissue+is%3Apinned)
+> and in [docs/data_access.md](docs/data_access.md). The 2026 catalogues are
+> already there.
+
 
 A cloud-native workflow for automated seismic phase picking and earthquake detection using deep learning, deployed on AWS with containerized models and managed infrastructure.
 
