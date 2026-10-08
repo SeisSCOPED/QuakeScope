@@ -171,7 +171,7 @@ training corpora.</p>
   temporary networks that omitted the year and could only be refused. Five
   defects in one file, each linked to the line that caused it and the line that
   replaced it, with a self-test that runs on any EarthScope account.</p>
-  <div class="meta">Fixed and merged · validated by two bounded dry runs · campaigns still stopped</div>
+  <div class="meta">Fixed and merged · validated by two bounded dry runs · campaigns resumed 2026-09</div>
 </a>
 
 <a class="card" href="granular_credentials.html">
@@ -190,13 +190,25 @@ training corpora.</p>
   <div class="meta">Picks per station and per day, progress by campaign, compute and spend. Rebuilt hourly from S3 and Batch.</div>
 </a>
 
+<a class="card" href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/32_outcomes_and_band_fallback.md">
+  <h3>Where the catalogues stand — October 2026</h3>
+  <p>An audit found that the reader chose one channel band per station for the
+  whole campaign, so days when that band was absent were never read. From image
+  d0ccf9b every planned station-day records an outcome (loaded, no data, not
+  read and why), and <code>western-reread2</code> and <code>obs-reread</code>
+  are re-reading about 15.9 million station-days inside the stations' operating
+  epochs. Picks land in the same prefixes; counts grow while they run.</p>
+  <div class="meta">Re-read running from 2026-10-08 · progress on the dashboard · data access guide updated</div>
+</a>
+
 <a class="card" href="read_the_catalogue.html">
   <h3>Reading the pick catalogue — start here</h3>
   <p>The picks are public-read Parquet on S3: no account, no credentials, no
-  database. Mirror one month of the finished <code>western</code> campaign,
+  database. Mirror one month of the <code>western</code> catalogue,
   plot what is in it, fetch the original waveforms from FDSN with ObsPy and
-  draw the picks on the record, then the three rules that keep 1.3 billion
-  picks readable.</p>
+  draw the picks on the record, then the three rules that keep a catalogue of
+  billions of picks readable. Western is being re-read from 2026-10-08 to add
+  station-days a reader defect skipped; current counts are on the dashboard.</p>
   <div class="meta">Runs anonymously · <a href="https://colab.research.google.com/github/SeisSCOPED/QuakeScope/blob/main/tutorials/read_the_catalogue.ipynb">open in Colab</a> · ~5 min</div>
 </a>
 
@@ -412,7 +424,7 @@ keep the ordering of the table above with wider gaps: <code>obstransformer</code
   </thead>
   <tbody>
     <tr><td>AACSE 2018, 65 OBS stations</td><td class="best">0.86</td><td class="best">0.86</td><td>1 s</td><td>analyst, manual picks</td></tr>
-    <tr><td>AACSE 2018, 30 land stations, same weight</td><td>0.91</td><td>0.85</td><td>1 s</td><td>analyst, manual picks</td></tr>
+    <tr><td>AACSE 2018, 30 land stations, same weight (picks now in <code>_archive/obs-land/</code>, not public)</td><td>0.91</td><td>0.85</td><td>1 s</td><td>analyst, manual picks</td></tr>
     <tr><td>Axial 2015–2025, short-period EH</td><td>0.21</td><td>0.04</td><td>0.5 s</td><td>UW automatic picks</td></tr>
     <tr><td>Axial 2015–2025, broadband HH</td><td>0.30</td><td>0.01</td><td>0.5 s</td><td>UW automatic picks</td></tr>
   </tbody>

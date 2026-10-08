@@ -1232,6 +1232,7 @@ def render(g, examples):
             f'<i style="width:{p:.2f}%"></i></span></td>'
             f'<td class="num">{c["done"]:,}</td><td class="num">{c["shards"]:,}</td>'
             f'<td class="num">{p:.2f}%</td>'
+            f'<td class="num">{c.get("planned_sd", 0):,}</td>'
             f'<td class="num">'
             + (f'{c["picks"]:,}' if c["picks"] is not None
                else (f'<span class="unread" title="this queue writes into the '
@@ -1666,15 +1667,15 @@ planned day has data; the <b>expected</b> column applies a {HIT_RATE:.0%} hit
 rate. The authoritative model,
 <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/24_cost_model.md">24_cost_model.md</a>,
 re-priced 2026-09-09 at the billed rate with western, obs and obs-early
-measured outright, puts global at <b>$9,450-$13,700</b> and the whole campaign
-at about <b>$15,000</b>. Hit rates are measured for 61% of global's readable
+measured outright, put global at <b>$9,450-$13,700</b> and the whole campaign
+at about <b>$15,000</b> (a 2026-09-09 estimate, before the re-reads). Hit rates are measured for 61% of global's readable
 station-days, NP included at 0.5%; the rest sits on tier defaults.</p>
-<p class="cap">Nothing is blocked. The EarthScope restricted access point was
+<p class="cap">As of 2026-09-09: the EarthScope restricted access point was
 never stalling: the credential request was unscoped, so it could LIST but not
 GET, and every read returned AccessDenied instantly. Scoping it to
 <code>network=FDSN:&lt;NET&gt;</code> fixed it, and restricted reads now run at
 96-98 MB/s - the same rate as Open Data.</p>
-<p class="cap">Two things the plan still carries that will not produce picks:
+<p class="cap">As of 2026-09-09, two things the plan still carries that will not produce picks:
 <b>~3.67M station-days</b> on network-years EarthScope does not hold, which
 complete empty and are harmless; and <b>49 networks</b> that answer 403, which
 were dropped from <code>global</code> on 2026-09-03 and can be restored if
@@ -1690,9 +1691,17 @@ EarthScope grants access.</p>
 <h2>Progress by campaign</h2>
 <p class="cap">Bar length is the size of the queue; the filled part is what is
 complete.</p>
+<p class="cap"><strong>The re-reads.</strong> <code>western-reread2</code> and
+<code>obs-reread</code>, launched 2026-10-08, re-read station-days that sit
+inside a station's operating epochs but were never recorded: until image
+d0ccf9b the reader chose one channel band per station for the whole campaign,
+and an EarthScope day object lacking that band raised inside libmseed and came
+back empty. From d0ccf9b on, every planned station-day has an outcome in its
+shard manifest. Picks from the re-reads land in the same catalogues.
+<a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/32_outcomes_and_band_fallback.md">Why, and how it was sized</a>.</p>
 <table><thead><tr><th>campaign</th><th>queue</th><th class="num">done</th>
-<th class="num">shards</th><th class="num">%</th><th class="num">picks</th></tr></thead>
-<tbody>{rows or '<tr><td colspan="6" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
+<th class="num">shards</th><th class="num">%</th><th class="num">planned station-days</th><th class="num">picks</th></tr></thead>
+<tbody>{rows or '<tr><td colspan="7" class="empty">No campaign has written anything yet.</td></tr>'}</tbody></table>
 
 <h2>What it has cost <span class="est">estimated</span></h2>
 {spend_block}
@@ -1713,39 +1722,39 @@ with ObsPy to draw the picks on the record.</p>
 <div class="row"><span>manifests</span><code>s3://{BUCKET}/&lt;campaign&gt;/manifests/&lt;shard&gt;.json</code></div>
 <div class="row"><span>run metadata</span><code>s3://{BUCKET}/&lt;campaign&gt;/runs/&lt;run_id&gt;.json</code></div>
 </div>
-<pre class="snip">pip install pandas pyarrow s3fs
+<pre class="snip">pip install pandas pyarrow awscli
 
 # ---------------------------------------------------------------
+# Copy the partitions you want, then read locally. Measured on CI 2019-07
+# (271 objects, 149 MB): sync 9 s + read 0.8 s, against 86 s for a
+# filtered read straight from S3. Put network/year/month in the path;
+# never glob picks/** (it lists every object in the catalogue first).
+#
+#   aws s3 sync --no-sign-request --region {REGION} \
+#     s3://{BUCKET}/western/picks/network=CI/year=2019/month=07/ \
+#     picks/network=CI/year=2019/month=07/
+
 import pandas as pd
-
-# anon=True is REQUIRED and is the whole point: the read is
-# unauthenticated. Without it pandas looks for credentials that a
-# reader has no reason to have, and fails before reaching S3.
-ANON = {{"anon": True}}
-
-# one month, with partition pruning - only matching files are fetched
-df = pd.read_parquet(
-    "s3://{BUCKET}/global/picks/",
-    filters=[("network", "=", "CI"), ("year", "=", 2014), ("month", "=", 9)],
-    storage_options=ANON,
-)
+df = pd.read_parquet("picks/")          # network/year/month become columns
+ANON = {{"anon": True}}                  # for the small JSON reads below
 
 # which model made them, and at what thresholds
 import json, urllib.request
 run = json.load(urllib.request.urlopen(
-    "https://{BUCKET}.s3.{REGION}.amazonaws.com/global/runs/"
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/western/runs/"
     + df["rid"].iloc[0] + ".json"))
 
 # or exactly the objects one shard wrote, from its manifest
 m = json.load(urllib.request.urlopen(
-    "https://{BUCKET}.s3.{REGION}.amazonaws.com/global/manifests/&lt;shard&gt;.json"))
+    "https://{BUCKET}.s3.{REGION}.amazonaws.com/western/manifests/&lt;shard&gt;.json"))
 df = pd.concat(pd.read_parquet(f["path"], storage_options=ANON)
                for f in m["files"])</pre>
-<p class="cap">The three campaigns are <code>global</code>, <code>obs</code>
-and <code>western</code>. The <strong>previous run</strong> is still readable
-under <code>scedc</code>, <code>ncedc</code>, <code>earthscope</code> and
-<code>western-a</code> - those prefixes were merged into <code>global</code> for
-the 2026 run, not deleted.</p>
+<p class="cap">The three catalogues are <code>global</code>, <code>obs</code>
+(offshore stations only since 2026-10-03; the land stations' picks moved to
+<code>_archive/obs-land/</code>) and <code>western</code>. Earlier 2026 test and
+era prefixes (<code>scedc</code>, <code>ncedc</code>, <code>earthscope</code>,
+<code>western-a</code>, ...) are kept under <code>_archive/</code>, which is not
+public-read. The 2025 run is in a database, not in this bucket.</p>
 <p class="cap"><strong>Columns.</strong> <code>tid</code> trace id
 <code>NET.STA.LOC</code> &middot; <code>cha</code> band &middot;
 <code>pha</code> P or S &middot; <code>peak</code> the arrival time &middot;
@@ -1756,6 +1765,18 @@ velocity in m/s &middot; <code>start</code> and <code>end</code> the pick window
 <code>runs/</code>. <code>conf</code> is a detection score, not a probability
 of correctness; the 0.2 floor is permissive on purpose so you can pick your
 own threshold.</p>
+<p class="cap"><strong>Manifests.</strong> <code>records</code> lists every
+station-day that reached the picker (<code>tid, cha, yr, doy, npks</code>).
+Shards run on image d0ccf9b or later also carry <code>outcomes</code>, one per
+planned station-day, with a <code>status</code>: <code>loaded</code>,
+<code>no_data</code>, <code>no_channel</code>, <code>empty_read</code>,
+<code>not_found</code>, <code>denied</code>, <code>done</code> (final), or
+<code>refused</code>, <code>throttled</code>, <code>timeout</code>,
+<code>read_error</code>, <code>too_big</code> (not read; queued for repair).
+That is how "no data" is told apart from "not read". Join the station table
+to picks on <code>id</code> = <code>tid</code>: until the 2026-10 fix the
+<code>location_code</code> column held floats such as <code>0.0</code> for
+<code>00</code>.</p>
 
 <h2>Scoring picks against analyst arrivals</h2>
 <p class="cap"><strong>One script, two CSV files, no account and no AWS.</strong>
@@ -1830,7 +1851,9 @@ def main():
     # finds would bury the live campaign among them. Pass --campaigns to look at
     # a historical one - western-a still holds 106M picks.
     ap.add_argument("--campaigns",
-                    default="global,obs,western,obs-early,western-early,obs-2026,western-2026,global-2026")
+                    default="global,obs,western,obs-early,western-early,obs-2026,western-2026,global-2026,"
+                            "western-fill,western-fill2,western-dates,western-reread2,"
+                            "obs-fill,obs-el,obs-reread")
     a = ap.parse_args()
     # The hourly job shares S3 with the fleet. At 1,500 workers the dashboard
     # is the small, interruptible client in that contention, so it backs off
