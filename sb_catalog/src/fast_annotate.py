@@ -66,8 +66,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 import obspy
-import seisbench
-import seisbench.util as sbu
+from .sb_lite import sbu, seisbench  # QS_SBLITE: the SeisBench originals under off
 import torch
 from numpy.lib.stride_tricks import as_strided
 

@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 import obspy
-import seisbench.util as sbu
+from .sb_lite import sbu  # QS_SBLITE: seisbench.util under off
 
 logger = logging.getLogger("amplitude_extractor")
 

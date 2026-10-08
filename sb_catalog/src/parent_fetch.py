@@ -19,7 +19,9 @@ The same client serves a worker's own startup under pick_workload QS_EARLY=stdli
 the worker imports this module and calls `prepare()` on its main thread, starts the "qs-early-io"
 thread, which LISTs and GETs its first station-day into memory and imports nothing, and only then
 imports torch. S3DataSource also LISTs and GETs its later SCEDC station-days through `list_station_day`
-and `get_bytes` on that arm, with the s3fs read as the counted fallback.
+and `get_bytes` on that arm, with the s3fs read as the counted fallback. With `ranges` > 1 (pick_workload
+QS_EARLY_RANGES) EarlyFetch reads each first-SD object as that many concurrent byte-range GETs sized from
+the LIST (`get_bytes_ranged`), and falls back to the whole-object GET on any error, counted.
 """
 
 from __future__ import annotations
@@ -115,20 +117,24 @@ def first_station_day(stations: list[dict], start: str, components: str) -> dict
     }
 
 
-def _request(path: str) -> http.client.HTTPResponse:
+def _request(path: str, headers: dict | None = None, status: int = 200) -> http.client.HTTPResponse:
     conn = http.client.HTTPSConnection(SCEDC_HOST, timeout=TIMEOUT, context=_context)
-    conn.request("GET", path)
+    if headers:
+        conn.request("GET", path, headers=headers)
+    else:
+        conn.request("GET", path)
     response = conn.getresponse()
-    if response.status != 200:
+    if response.status != status:
         body = response.read(512)
         conn.close()
         raise OSError(f"GET {path}: HTTP {response.status} {body[:200]!r}")
     return response
 
 
-def list_station_day(prefix: str, stem: str) -> tuple[list[str], int]:
+def list_station_day(prefix: str, stem: str, sizes: dict | None = None) -> tuple[list[str], int]:
     """S3Helper.list_station_day over HTTPS: ListObjectsV2 with the stem as the Prefix and "/" as
-    the delimiter, every page; sorted `bucket/key` names, and the request count."""
+    the delimiter, every page; sorted `bucket/key` names, and the request count. `sizes`, when
+    given, gets each name's listed Size in bytes."""
     bucket, _, key = prefix.partition("/")
     params = {"list-type": "2", "prefix": f"{key}{stem}", "delimiter": "/"}
     names, requests = [], 0
@@ -136,8 +142,11 @@ def list_station_day(prefix: str, stem: str) -> tuple[list[str], int]:
         response = _request("/?" + urllib.parse.urlencode(params))
         root = ET.fromstring(response.read())
         requests += 1
-        names += [f"{bucket}/{item.findtext(S3_NS + 'Key')}"
-                  for item in root.iter(S3_NS + "Contents")]
+        for item in root.iter(S3_NS + "Contents"):
+            name = f"{bucket}/{item.findtext(S3_NS + 'Key')}"
+            names.append(name)
+            if sizes is not None:
+                sizes[name] = int(item.findtext(S3_NS + "Size"))
         if root.findtext(S3_NS + "IsTruncated") != "true":
             return sorted(names), requests
         params["continuation-token"] = root.findtext(S3_NS + "NextContinuationToken")
@@ -193,6 +202,66 @@ def get_bytes(uri: str, marks: list | None = None, limit: int | None = None) -> 
     return raw
 
 
+def get_range(uri: str, first: int, last: int, size: int) -> bytes:
+    """GET bytes `first`..`last` (inclusive) of a `bucket/key` of `size` bytes: a 206 whose
+    Content-Range is exactly that range of that size, and exactly that many bytes, or OSError."""
+    _, _, key = uri.partition("/")
+    response = _request("/" + urllib.parse.quote(key), {"Range": f"bytes={first}-{last}"}, status=206)
+    expected = f"bytes {first}-{last}/{size}"
+    if response.getheader("Content-Range") != expected:
+        got = response.getheader("Content-Range")
+        response.close()
+        raise OSError(f"GET {uri}: Content-Range {got!r}, expected {expected!r}")
+    chunks = []
+    while chunk := response.read(CHUNK):
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if len(raw) != last - first + 1:
+        raise OSError(f"GET {uri} range {first}-{last}: {len(raw)} of {last - first + 1} bytes")
+    return raw
+
+
+def get_bytes_ranged(uri: str, size: int, parts: int, marks: list | None = None,
+                     done: list | None = None) -> bytes:
+    """One `bucket/key` of `size` bytes (its LIST Size) as `parts` concurrent byte-range GETs, in
+    order: the bytes `get_bytes` returns, or OSError if any range fails or the assembled length is
+    not `size`. Range 0 runs on the calling thread. `marks` gets the start, the first range's
+    response and the end, as for `get_bytes`; `done`, each range's end wall time in range order."""
+    bounds = [(size * i // parts, size * (i + 1) // parts - 1) for i in range(parts)]
+    pieces: list = [None] * parts
+    ends: list = [None] * parts
+    errors: list = []
+    if marks is not None:
+        marks.append(time.time())
+
+    def fetch(i):
+        try:
+            pieces[i] = get_range(uri, *bounds[i], size)
+        except Exception as exc:
+            errors.append(f"range {i}: {type(exc).__name__}: {exc}")
+        ends[i] = time.time()
+
+    threads = [threading.Thread(target=fetch, args=(i,), name="qs-early-range", daemon=True)
+               for i in range(1, parts)]
+    for thread in threads:
+        thread.start()
+    fetch(0)
+    if marks is not None:
+        marks.append(ends[0])
+    for thread in threads:
+        thread.join()
+    if done is not None:
+        done += ends
+    if errors:
+        raise OSError("; ".join(errors))
+    raw = b"".join(pieces)
+    if len(raw) != size:
+        raise OSError(f"GET {uri}: assembled {len(raw)} of {size} bytes")
+    if marks is not None:
+        marks.append(time.time())
+    return raw
+
+
 class EarlyFetch:
     """A worker's own first station-day, fetched before it imports torch (QS_EARLY=stdlib).
 
@@ -201,10 +270,16 @@ class EarlyFetch:
     sets `event` with `manifest` complete: the FirstSDFetch manifest with `objects` mapping a uri to
     its bytes instead of a file name. S3DataSource (parent_first=(this, event)) takes the manifest
     once, `take()`, so the bytes are dropped as soon as they are parsed. Call `prepare()` first.
+    `ranges` > 1 reads each object as that many byte-range GETs (`get_bytes_ranged`), sized from
+    the LIST, and on any error reads it whole (`get_bytes`), counted in `range_reports`.
     """
 
-    def __init__(self, stations: list[dict], workload: dict, t0: float):
+    def __init__(self, stations: list[dict], workload: dict, t0: float, ranges: int = 1):
         self.t0 = t0
+        self.ranges = ranges
+        #: Per wanted object, in order (ranges > 1): {"size", "ranges", "done" (per-range end
+        #: times), "bytes" (assembled length), "fallback" (the error, or None)}.
+        self.range_reports: list[dict] = []
         self.event = threading.Event()
         try:
             self.plan = first_station_day(stations, workload["start"], workload["components"])
@@ -234,23 +309,41 @@ class EarlyFetch:
         try:
             net, prefix, stem = plan["key"]
             list_start = time.time()
-            listing, requests = list_station_day(prefix, stem)
+            sizes: dict = {}
+            listing, requests = list_station_day(prefix, stem, sizes)
             report["list_s"] = f"{list_start - self.t0:.3f}/{time.time() - self.t0:.3f}"
             manifest["listing"] = listing
             manifest["list_requests"] = requests
             wanted = [uri for uri in plan["uris"] if uri in listing]
             results: dict = {}
 
-            def fetch(uri, times):
+            def fetch(uri, times, ranged):
                 try:
+                    if ranged is not None:
+                        try:
+                            raw = get_bytes_ranged(uri, ranged["size"], ranged["ranges"], times,
+                                                   ranged["done"])
+                            ranged["bytes"] = len(raw)
+                            results[uri] = (raw, None)
+                            return
+                        except Exception as exc:     # read it whole, as the single-GET arm does
+                            ranged["fallback"] = f"{type(exc).__name__}: {exc}"
+                            times.clear()
                     results[uri] = (get_bytes(uri, times), None)
                 except Exception as exc:             # the worker reads this one itself
                     results[uri] = (None, f"{type(exc).__name__}: {exc}")
 
             self.object_marks += [[] for _ in wanted]
-            threads = [threading.Thread(target=fetch, args=(uri, times), name="qs-early-get",
+            if self.ranges > 1:
+                self.range_reports += [
+                    {"size": sizes.get(uri), "ranges": self.ranges, "done": [], "bytes": None,
+                     "fallback": None if sizes.get(uri, 0) >= self.ranges else "no LIST size"}
+                    for uri in wanted]
+            ranged_args = [r if r["fallback"] is None else None for r in self.range_reports] \
+                if self.ranges > 1 else [None] * len(wanted)
+            threads = [threading.Thread(target=fetch, args=(uri, times, ranged), name="qs-early-get",
                                         daemon=True)
-                       for uri, times in zip(wanted, self.object_marks)]
+                       for uri, times, ranged in zip(wanted, self.object_marks, ranged_args)]
             for thread in threads:
                 thread.start()
             for thread in threads:
@@ -279,6 +372,22 @@ class EarlyFetch:
         objs = ",".join("/".join(f"{t - self.t0:.3f}" for t in times) or "-"
                         for times in self.object_marks)
         return " ".join(f"{k}={v}" for k, v in self.report.items()) + f" objs={objs or '-'}"
+
+    def ranges_summary(self) -> str:
+        """`objects=<n> range_fallbacks=<k>`, then per object
+        `size/ranges/assembled_equal/done1:done2:...` (seconds from t0) or `size/ranges/fallback`."""
+        reports = self.range_reports
+        fallbacks = sum(r["fallback"] is not None for r in reports)
+        objs = []
+        for r in reports:
+            if r["fallback"] is None:
+                done = ":".join(f"{t - self.t0:.3f}" for t in r["done"]) or "-"
+                objs.append(f"{r['size']}/{r['ranges']}/{int(r['bytes'] == r['size'])}/{done}")
+            else:
+                objs.append(f"{r['size']}/{r['ranges']}/fallback")
+        reasons = ";".join(r["fallback"] for r in reports if r["fallback"] is not None)
+        return (f"objects={len(reports)} range_fallbacks={fallbacks} objs={','.join(objs) or '-'}"
+                f" reasons={reasons or '-'}")
 
 
 class FirstSDFetch:

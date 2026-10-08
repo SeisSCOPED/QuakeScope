@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import obspy
-import seisbench
-import seisbench.util as sbu
+from .sb_lite import sbu, seisbench  # QS_SBLITE: the SeisBench originals under off
 import torch
 
 from .amplitude_extractor import AmplitudeExtractor
@@ -240,6 +239,8 @@ IMPORT_MODES = ("lean", "full")
 #: Modules whose presence at the first classify shows which import mode ran.
 ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib",
                       "s3fs", "aiohttp", "botocore")
+#: Modules QS_SBLITE=on keeps out of a worker (sb_lite); recorded apart, as the first classify starts.
+SBLITE_MODULES = ("seisbench", "seisbench.util", "pandas")
 
 
 def apply_annotate_impl(model: sbm.WaveformModel, impl: str, glue: str = "off"
@@ -549,6 +550,8 @@ class S3MongoSBBridge:
         self.imports = imports
         #: {module: loaded?} for ACTIVATION_MODULES, as the first classify starts.
         self.modules_at_first_classify: Optional[dict[str, bool]] = None
+        #: {module: loaded?} for SBLITE_MODULES, as the first classify starts.
+        self.sblite_modules_at_first_classify: Optional[dict[str, bool]] = None
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
         # database. Station metadata and picks_record stay in the database:
@@ -974,6 +977,8 @@ class S3MongoSBBridge:
             if self.modules_at_first_classify is None:
                 self.modules_at_first_classify = {
                     name: name in sys.modules for name in ACTIVATION_MODULES}
+                self.sblite_modules_at_first_classify = {
+                    name: name in sys.modules for name in SBLITE_MODULES}
             if self.imports == "lean":
                 self.amp_extor.start_warm_up()
             if self.pin is not None:

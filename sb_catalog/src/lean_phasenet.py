@@ -42,12 +42,11 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 import obspy
-import seisbench
+from .sb_lite import seisbench, stream_slice  # QS_SBLITE: the SeisBench originals under off
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from packaging import version
-from seisbench.util.trace_ops import stream_slice
 
 
 def is_phasenet(model: Any) -> bool:

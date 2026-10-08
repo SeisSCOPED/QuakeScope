@@ -205,6 +205,31 @@ EARLY = os.environ.get(
 #: 0.968x off's, CPU 0.966x, imports mark 0.08 s earlier, 1555/1555 hits per group, picks bitwise equal.
 IMPORT_PREFETCH_ARMS = ("off", "mem")
 IMPORT_PREFETCH = os.environ.get("QS_IMPORT_PREFETCH", "mem")
+#: SeisBench in a worker (sb_catalog.src.sb_lite): "on" gives the worker modules (picker,
+#: amplitude_extractor, fast_annotate, lean_phasenet) verbatim copies of the SeisBench names they use
+#: (the package's cache root, config, version and logger; ClassifyOutput, PickList, Pick; stream_slice)
+#: and the station table without pandas, so a worker on the lean imports imports neither the
+#: `seisbench` package nor pandas (which `seisbench.util` imports at module level); the import-prefetch
+#: manifest is the one recorded for that import set. "off" imports SeisBench as before, with the
+#: round-29 manifest. pick_group exports the arm as QS_SBLITE before its first sb_catalog import; the
+#: Parquet writer then encodes from numpy-filled Arrow buffers (pyarrow's object conversion imports pandas).
+#: "on" is the default (round 30): in the 3-pair local A/B its median wall was 0.958x off's, CPU 0.947x,
+#: imports mark 0.21 s earlier (sb.picker import 0.27 -> 0.06 s), seisbench/pandas absent at first classify
+#: and at end in every group, picks bitwise equal.
+SBLITE_ARMS = ("off", "on")
+SBLITE = os.environ.get("QS_SBLITE", "on")
+#: The early fetch's first-SD GETs (sb_catalog.src.parent_fetch.EarlyFetch, QS_EARLY=stdlib): N > 1
+#: reads each object as N concurrent byte-range GETs sized from the LIST, assembled in order and
+#: checked against the LIST size, with the whole-object GET as the counted fallback; "1" is one GET
+#: per object, the round-27 path, and the default: in the round-30 probe (4 pinned processes importing torch
+#: while fetching) the first-SD ready time was GIL-bound, not bandwidth-bound (median 1.550/1.562/1.506 s
+#: for N = 1/2/4; the same fetch alone took 0.61 s). Later station-days are unchanged.
+EARLY_RANGES_ARMS = tuple(str(n) for n in range(1, 9))
+EARLY_RANGES = os.environ.get("QS_EARLY_RANGES", "1")
+#: Import-prefetch manifest per QS_SBLITE arm (sb_catalog/src/).
+PREFETCH_MANIFESTS = {"off": "import_prefetch_manifest.txt", "on": "import_prefetch_manifest_lite.txt"}
+#: Modules QS_SBLITE=on keeps out of a worker; each group logs them at model_ready, first classify and end.
+SBLITE_MODULES = ("seisbench", "seisbench.util", "pandas")
 #: Modules the stdlib arm keeps out of a worker until a request falls back to s3fs; each group logs
 #: whether they were loaded at model_ready and at its first classify.
 EARLY_MODULES = ("s3fs", "aiohttp", "botocore")
@@ -229,15 +254,23 @@ class StationTable:
 
     def __init__(self, stations: list[dict]) -> None:
         """Build an in-memory station table from the workload's station records."""
-        import pandas as pd
+        self._lite = SBLITE == "on"
+        if self._lite:
+            from sb_catalog.src.sb_lite import StationFrame
 
-        self._stations = pd.DataFrame(stations)
+            self._stations = StationFrame(stations)
+        else:
+            import pandas as pd
+
+            self._stations = pd.DataFrame(stations)
         self.db_uri = "local"
         self.database = None
 
     def get_station_metadata(self, stations: list[str], _key: dict | None = None) -> pd.DataFrame:
         """Return the metadata rows for the given station ids."""
         frame = self._stations
+        if self._lite:
+            return frame.select(stations)
         return frame[frame["id"].isin(stations)].reset_index(drop=True)
 
     def get_stations(self, _extent: object = None, _network: object = None) -> pd.DataFrame:
@@ -333,7 +366,10 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     import_clock = startup_diag.ImportClock(started).install()
     prefetch = None
     if IMPORT_PREFETCH == "mem":
-        prefetch = import_prefetch.ImportPrefetch(import_prefetch.load_manifest(), t0=started).start().install()
+        manifest = QUAKESCOPE_ROOT / "sb_catalog" / "src" / PREFETCH_MANIFESTS[SBLITE]
+        prefetch = import_prefetch.ImportPrefetch(import_prefetch.load_manifest(str(manifest)),
+                                                  t0=started).start().install()
+    os.environ["QS_SBLITE"] = SBLITE
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
@@ -357,7 +393,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         from sb_catalog.src import parent_fetch
 
         parent_fetch.prepare()
-        early = parent_fetch.EarlyFetch(stations, workload, t0=started)
+        early = parent_fetch.EarlyFetch(stations, workload, t0=started, ranges=int(EARLY_RANGES))
         early.start()
         import torch  # noqa: F401
     if STARTUP == "overlap":
@@ -444,6 +480,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         )
         timeline.mark("model_ready")
         at_model_ready = {name: name in sys.modules for name in EARLY_MODULES}
+        sblite_at_model_ready = {name: name in sys.modules for name in SBLITE_MODULES}
         import_clock.uninstall()
         prefetch_summary = "-"
         if prefetch is not None:
@@ -536,6 +573,19 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     )
     logger.info("group %d: QS_IMPORT_PREFETCH=%s fstype %s; %s", index, IMPORT_PREFETCH,
                 import_prefetch.root_fstypes(), prefetch_summary)
+    picker_import = import_clock.records.get("sb_catalog.src.picker")
+    logger.info(
+        "group %d: QS_SBLITE=%s at model_ready %s at first_classify %s at end %s; sb.picker=%s; encode %s; "
+        "QS_EARLY_RANGES=%s %s", index, SBLITE,
+        " ".join(f"{name}={int(loaded)}" for name, loaded in sblite_at_model_ready.items()),
+        " ".join(f"{name}={int(loaded)}" for name, loaded in
+                 (bridge.sblite_modules_at_first_classify or {}).items()) or "-",
+        " ".join(f"{name}={int(name in sys.modules)}" for name in SBLITE_MODULES),
+        "{:+.3f}/{:.3f}/{:.3f}".format(*picker_import[:3]) if picker_import else "-",
+        " ".join(f"{k}={v}" for k, v in bridge._parquet.encode_counters.items())
+        if bridge._parquet is not None else "-",
+        EARLY_RANGES, early.ranges_summary() if early is not None and early.ranges > 1 else "-",
+    )
     logger.info(
         "group %d: startup2=%s first_sd_source=%s parent %s; amp signal %s (asked %s) slim %s; "
         "modules at end %s", index, STARTUP2, source.first_sd_source,
@@ -613,6 +663,10 @@ def main() -> int:
         parser.error(f"unknown QS_EARLY {EARLY!r}; expected one of {list(EARLY_ARMS)}")
     if IMPORT_PREFETCH not in IMPORT_PREFETCH_ARMS:
         parser.error(f"unknown QS_IMPORT_PREFETCH {IMPORT_PREFETCH!r}; expected one of {list(IMPORT_PREFETCH_ARMS)}")
+    if SBLITE not in SBLITE_ARMS:
+        parser.error(f"unknown QS_SBLITE {SBLITE!r}; expected one of {list(SBLITE_ARMS)}")
+    if EARLY_RANGES not in EARLY_RANGES_ARMS:
+        parser.error(f"unknown QS_EARLY_RANGES {EARLY_RANGES!r}; expected one of {list(EARLY_RANGES_ARMS)}")
     if EARLY == "stdlib" and (STARTUP, LIST, STARTUP2) != ("overlap", "station", "v3"):
         parser.error("QS_EARLY=stdlib needs QS_STARTUP=overlap, QS_LIST=station and QS_STARTUP2=v3")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
