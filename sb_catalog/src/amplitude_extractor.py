@@ -40,6 +40,14 @@ WOOD_ANDERSON = {
 #: separate forward/backward sosfilt tasks on a small thread pool, sensitivity
 #: divided into the scalar peaks); the picker also overlaps its two passes.
 AMP_IMPLS = ("fast", "obspy", "fused")
+#: Where the fast/fused passes take their scipy.signal and obspy.signal functions from.
+#: "scipy" imports those packages (scipy.signal's __init__, and obspy.signal's, which pulls in
+#: PPSD and matplotlib). "slim" uses the verbatim copies in slim_signal / slim_evalresp, scipy's
+#: own sosfilt kernel loaded from its extension file and a table of the Butterworth highpass
+#: sections, so neither package is executed (pick_workload QS_STARTUP2=v2; fused arm only). A slim miss (a corner
+#: outside the table, a float32 detrend, the kernel or libevresp failing to load) uses scipy or
+#: obspy for that call, and is counted in `slim_counters`.
+AMP_SIGNALS = ("scipy", "slim")
 
 
 class _Fallback(Exception):
@@ -54,6 +62,15 @@ def _import_fused_modules() -> None:
     from obspy.core.util.base import _get_function_from_entry_point
     from obspy.signal import invsim, util  # noqa: F401
     _get_function_from_entry_point("taper", "cosine")
+
+
+def _import_slim_modules() -> None:
+    """Import what the passes need on the "slim" signal arm: no scipy.signal, no obspy.signal."""
+    import scipy.fft  # noqa: F401
+    from obspy.core.inventory import PolynomialResponseStage  # noqa: F401
+
+    from . import slim_evalresp, slim_signal  # noqa: F401
+    slim_signal.load()
 
 
 def _linear_detrend(data: np.ndarray) -> np.ndarray:
@@ -182,10 +199,21 @@ class AmplitudeExtractor:
         vel_highpass: float = 0.2,
         impl: str = "obspy",
         workers: Optional[int] = None,
+        signal: str = "scipy",
     ):
         if impl not in AMP_IMPLS:
             raise ValueError(f"impl must be one of {AMP_IMPLS}, not {impl!r}")
+        if signal not in AMP_SIGNALS:
+            raise ValueError(f"signal must be one of {AMP_SIGNALS}, not {signal!r}")
         self.impl = impl
+        #: The signal arm asked for, and the one in use: "slim" falls back to "scipy" (counted)
+        #: if its modules cannot be loaded.
+        self.signal = signal
+        self._slim = signal == "slim" and impl == "fused"
+        #: Slim arm: SOS table hits and misses, float32 detrends sent to scipy, load failures,
+        #: and evalresp calls answered by the vendored copy.
+        self.slim_counters = {"sos_hits": 0, "sos_misses": 0, "detrend_f32": 0,
+                              "load_failures": 0, "evalresp": 0}
         # Fast-path counters, cumulative over the extractor's life: spectrum
         # cache hits/misses, evalresp evaluations, per-pick obspy fallbacks.
         self.wa_counters = defaultdict(int)
@@ -288,7 +316,18 @@ class AmplitudeExtractor:
 
         def run():
             try:
-                _import_fused_modules()
+                if self._slim:
+                    try:
+                        _import_slim_modules()
+                    except (ImportError, OSError, AttributeError) as exc:
+                        # Not silent: count it, say it, and run the scipy/obspy imports.
+                        self.slim_counters["load_failures"] += 1
+                        self._slim = False
+                        logger.warning(f"slim signal modules failed to load ({exc!r}); "
+                                       f"using scipy.signal/obspy.signal")
+                        _import_fused_modules()
+                else:
+                    _import_fused_modules()
             except BaseException as exc:
                 future.set_exception(exc)
             else:
@@ -306,6 +345,17 @@ class AmplitudeExtractor:
         if self.impl == "fused":
             self._start_warm_up("first pass")
             self._warm_up.result()
+
+    @property
+    def signal_in_use(self) -> str:
+        """"slim" or "scipy": the arm the passes actually take."""
+        return "slim" if self._slim else "scipy"
+
+    def _detrend(self, data: np.ndarray) -> np.ndarray:
+        """`_linear_detrend`, counting the float32 case the slim arm leaves to scipy.signal."""
+        if self._slim and data.dtype == np.float32:
+            self.slim_counters["detrend_f32"] += 1
+        return _linear_detrend(data)
 
     @property
     def workers(self) -> int:
@@ -522,9 +572,15 @@ class AmplitudeExtractor:
         """
         import scipy.fft
         from obspy.core.inventory import PolynomialResponseStage
-        from obspy.signal.invsim import (cosine_sac_taper, cosine_taper,
-                                         invert_spectrum, paz_to_freq_resp)
-        from obspy.signal.util import _npts2nfft
+        slim = self._slim
+        if slim:
+            from . import slim_evalresp
+            from .slim_signal import (_npts2nfft, cosine_sac_taper, cosine_taper,
+                                      invert_spectrum, paz_to_freq_resp)
+        else:
+            from obspy.signal.invsim import (cosine_sac_taper, cosine_taper,
+                                             invert_spectrum, paz_to_freq_resp)
+            from obspy.signal.util import _npts2nfft
 
         t = pick.peak_time
         window = _slice_like_obspy(station_stream.traces, t - half, t + half)
@@ -593,8 +649,13 @@ class AmplitudeExtractor:
                         self.wa_counters["misses"] += 1
                         self.wa_counters["evalresp"] += 1
                         try:
-                            freq_response, freqs = responses[k].get_evalresp_response(
-                                delta, nfft, output="VEL")
+                            if slim:
+                                self.slim_counters["evalresp"] += 1
+                                freq_response, freqs = slim_evalresp.get_evalresp_response(
+                                    responses[k], delta, nfft, output="VEL")
+                            else:
+                                freq_response, freqs = responses[k].get_evalresp_response(
+                                    delta, nfft, output="VEL")
                         except Exception:
                             raise _Fallback("evalresp")
                         taper = (cosine_sac_taper(freqs, flimit=pre_filt)
@@ -613,7 +674,7 @@ class AmplitudeExtractor:
                     inverse.append(entry[2])
 
                 # detrend("linear") on the window, then remove_response.
-                data = _linear_detrend(np.stack([window[k][1] for k in rows]))
+                data = self._detrend(np.stack([window[k][1] for k in rows]))
                 data = np.asarray(data, dtype=np.float64)
                 data -= data.mean(axis=-1, keepdims=True)
                 data *= tapers[0]
@@ -748,12 +809,34 @@ class AmplitudeExtractor:
         scalar peak (`_scaled_peak_from_arrays`), which is exact because
         rounding a quotient is monotonic in the dividend.
         """
-        from obspy.core.util.base import _get_function_from_entry_point
-        from scipy.signal import iirfilter, sosfilt
+        if self._slim:
+            from . import slim_signal
+
+            cosine = slim_signal.cosine_taper
+            sosfilt = slim_signal.sosfilt
+            counters = self.slim_counters
+
+            def highpass_sos(wn):
+                sos = slim_signal.butter_highpass_sos(wn)
+                if sos is not None:
+                    counters["sos_hits"] += 1
+                    return sos
+                counters["sos_misses"] += 1
+                from scipy.signal import iirfilter
+                return iirfilter(4, wn, rp=None, rs=None, btype="highpass",
+                                 ftype="butter", output="sos")
+        else:
+            from obspy.core.util.base import _get_function_from_entry_point
+            from scipy.signal import iirfilter, sosfilt
+
+            cosine = _get_function_from_entry_point("taper", "cosine")
+
+            def highpass_sos(wn):
+                return iirfilter(4, wn, rp=None, rs=None, btype="highpass",
+                                 ftype="butter", output="sos")
 
         fraction = self._taper_fraction(selected)
         _, hp = self._fit_to_nyquist(selected, highpass=self.vel_highpass)
-        cosine = _get_function_from_entry_point("taper", "cosine")
         # Traces without a usable sensitivity are dropped as the fast arm
         # drops them, but before any filtering.
         kept = []
@@ -771,7 +854,7 @@ class AmplitudeExtractor:
             return []
 
         def forward(tr):
-            data = (_linear_detrend(tr.data) if len(tr.data)
+            data = (self._detrend(tr.data) if len(tr.data)
                     else tr.data.copy())
             npts = len(data)
             if npts:
@@ -785,8 +868,7 @@ class AmplitudeExtractor:
             if hp is None or not npts:
                 return data, None
             fe = 0.5 * tr.stats.sampling_rate
-            sos = iirfilter(4, hp / fe, rp=None, rs=None, btype="highpass",
-                            ftype="butter", output="sos")
+            sos = highpass_sos(hp / fe)
             return np.flip(sosfilt(sos, data, axis=-1), axis=-1), sos
 
         def backward(first, sos):

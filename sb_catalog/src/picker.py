@@ -536,6 +536,7 @@ class S3MongoSBBridge:
         deconv_impl: str = "transpose",
         imports: str = "full",
         tail: Optional[TailShare] = None,
+        amp_signal: str = "scipy",
     ):
         if imports not in IMPORT_MODES:
             raise ValueError(f"imports {imports!r} is not one of {IMPORT_MODES}")
@@ -599,7 +600,7 @@ class S3MongoSBBridge:
             self.classifier = QuakeXNet.from_pretrained("base")
         else:
             self.classifier = None
-        self.amp_extor = AmplitudeExtractor(impl=amp_impl)
+        self.amp_extor = AmplitudeExtractor(impl=amp_impl, signal=amp_signal)
         # Tail widening (tail_share.TailShare, or None for "static"): the
         # forward runs on one dedicated thread whose intra-op thread count
         # follows this worker's claim, set before every batch; the fused
@@ -612,9 +613,11 @@ class S3MongoSBBridge:
             self._classify_executor = ThreadPoolExecutor(1, thread_name_prefix="classify")
             if self.model is not None and getattr(self.model, "fast_graph", None) is not None:
                 self.model.fast_graph.tail_hook = self._tail_batch
-        if imports == "full":
+        if imports == "full" or amp_signal == "slim":
             # The round-13 order: the fused arm's scipy/obspy.signal imports
             # happen here. Lean: on a thread started by the first classify.
+            # Slim (amplitude_extractor.AMP_SIGNALS): its few modules, here,
+            # before the first classify rather than beside it.
             self.amp_extor.warm_up()
         # Fused arm: station-days whose two amplitude passes ran, and how many
         # of them had both passes in flight at once.

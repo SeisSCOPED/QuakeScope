@@ -276,6 +276,12 @@ S3_BUSY_ATTEMPTS = int(os.environ.get("S3_BUSY_ATTEMPTS", "6"))
 # Hard ceiling on one station-day. A worker that blocks past this loses one
 # station-day; a worker with no ceiling loses the whole shard and its lease.
 STATION_DAY_TIMEOUT = float(os.environ.get("STATION_DAY_TIMEOUT", "900"))
+#: How long a worker's startup waits for the parent's first station-day fetch
+#: (pick_workload QS_STARTUP2=v2, parent_fetch.py) before it LISTs and GETs it itself.
+#: The wait starts ~0.4 s after the parent's fetch does, and the 4 groups' first
+#: station-days (~25-30 MB each, fetched together) were on disk 1.2-1.9 s after it
+#: started (round-16 stage 1); a timeout restarts that GET from nothing.
+PARENT_FIRST_WAIT = 2.5
 
 # Socket-level timeouts. Without these a stalled connection never raises: a
 # profiling shard held a single GET open for 447 minutes and logged nothing
@@ -1230,6 +1236,7 @@ class S3DataSource:
         limit_mb: Optional[int] = 200,
         early_channels: Optional[dict[str, str]] = None,
         list_mode: str = "day",
+        parent_first: Optional[tuple] = None,
     ):
         if list_mode not in LIST_MODES:
             raise ValueError(f"unknown list_mode {list_mode!r}; expected one of {list(LIST_MODES)}")
@@ -1266,6 +1273,14 @@ class S3DataSource:
             "prefetched": 0, "prefetch_consumed": 0, "prefetch_fallbacks": 0,
             "prefetch_unused": 0, "max_reads_in_flight": 0,
         }
+        # The parent's first station-day fetch: (directory, event) from
+        # pick_workload, or None. `first_sd_source` says who read the first
+        # station-day's objects: "parent" (all of them local), "worker", or
+        # "-" when there was no parent fetch to take.
+        self._parent_first = parent_first
+        self.first_sd_source = "-"
+        self.parent_counters = {"waited_ms": 0, "listing": 0, "objects": 0,
+                                "fallbacks": 0, "object_fallbacks": 0}
         # Every LIST this source issued, either mode. `requests` is counted on
         # the station path; on the day path it is the page count implied by
         # the keys (S3_LIST_PAGE), since `fs.ls` pages internally.
@@ -1367,12 +1382,24 @@ class S3DataSource:
         component reads, each on its own thread. Results and exceptions are
         both kept for `load_waveforms`, which consumes each once."""
         outcomes = {}
+        parent = None
+        if self._parent_first is not None and self.stations:
+            first_net, first_sta, _ = self.stations[0].split(".")
+            if self._lists_stations(first_net):
+                parent = self._await_parent_first(
+                    (first_net,
+                     self.s3helper.get_prefix(first_net, day.strftime("%Y"), day.strftime("%j")),
+                     self.s3helper.station_stem(first_net, first_sta)))
         try:
             for key in listings:
                 net, prefix = key[:2]
                 try:
-                    listing = (self._list_network_day(net, day, prefix) if len(key) == 2
-                               else self._list_station_day(net, day, prefix, key[2]))
+                    if parent is not None and len(key) == 3 and list(key) == parent["key"]:
+                        listing = list(parent["listing"])
+                        self.parent_counters["listing"] += 1
+                    else:
+                        listing = (self._list_network_day(net, day, prefix) if len(key) == 2
+                                   else self._list_station_day(net, day, prefix, key[2]))
                     outcomes[key] = (listing, None)
                 except BaseException as exc:
                     outcomes[key] = (None, exc)
@@ -1385,14 +1412,28 @@ class S3DataSource:
                                 if key[0] == net), None)
                 if (self.s3helper.get_data_center(net) in ["scedc", "ncedc", "geonet"]
                         and channel is not None and listing is not None):
+                    local = parent["objects"] if parent is not None else {}
+                    sources = set()
                     for uri in self._generate_waveform_uris(net, sta, loc, channel, day):
                         if uri in listing:
                             key = (uri, net, None, day.year)
                             self._prefetch_targets.add(key)
-                            self._prefetched[key] = in_background(
-                                "qs-prefetch-get", self._read_waveform_from_s3,
-                                uri, net, None, day.year)
+                            if uri in local:
+                                self._prefetched[key] = in_background(
+                                    "qs-prefetch-local", self._read_parent_object,
+                                    os.path.join(parent["dir"], local[uri]), uri, net, day.year)
+                                self.parent_counters["objects"] += 1
+                                sources.add("parent")
+                            else:
+                                if parent is not None:
+                                    self.parent_counters["object_fallbacks"] += 1
+                                self._prefetched[key] = in_background(
+                                    "qs-prefetch-get", self._read_waveform_from_s3,
+                                    uri, net, None, day.year)
+                                sources.add("worker")
                             self.startup_counters["prefetched"] += 1
+                    if self._parent_first is not None and sources:
+                        self.first_sd_source = "parent" if sources == {"parent"} else "worker"
         finally:
             # A listing this thread never reached resolves to None, which the
             # loader answers with its own LIST.
@@ -1402,6 +1443,69 @@ class S3DataSource:
                     future.set_exception(exc)
                 else:
                     future.set_result(listing)
+
+    def _await_parent_first(self, key: tuple) -> Optional[dict]:
+        """The parent's fetch of this source's first station-day: wait for its
+        event (at most PARENT_FIRST_WAIT) and return its manifest plus the
+        directory, or None - late, failed, or not this station-day - in which
+        case the caller LISTs and GETs it itself, counted as a fallback."""
+        directory, event = self._parent_first
+        timeline.mark("parent_wait")
+        t0 = time.perf_counter()
+        ready = event.wait(PARENT_FIRST_WAIT)
+        self.parent_counters["waited_ms"] = round(1000 * (time.perf_counter() - t0))
+        timeline.mark("parent_ready")
+        manifest = None
+        if ready:
+            try:
+                with open(os.path.join(directory, "manifest.json")) as fmanifest:
+                    manifest = json.load(fmanifest)
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Parent first station-day manifest unreadable: {exc}")
+        if (manifest is None or manifest.get("listing") is None
+                or manifest.get("key") != list(key)):
+            self.parent_counters["fallbacks"] += 1
+            logger.info(f"Parent first station-day fetch not used "
+                        f"({'late' if not ready else 'failed or other key'}); reading it here")
+            return None
+        for error in manifest.get("errors", []):
+            logger.info(f"Parent first station-day fetch: {error}")
+        manifest["dir"] = directory
+        return manifest
+
+    def _read_parent_object(self, path, uri, net, year) -> obspy.Stream:
+        """One object the parent fetched: `_read_waveform_attempts` on the local
+        bytes (the size limit, obspy.read, downsample_to_target), the file
+        removed once read. Anything that goes wrong reads it from S3 instead."""
+        with self._inflight_lock:
+            self._inflight += 1
+            counters = self.startup_counters
+            counters["max_reads_in_flight"] = max(
+                counters["max_reads_in_flight"], self._inflight)
+        timeline.mark("read_start")
+        try:
+            size = os.path.getsize(path)
+            if self.limit_mb is not None and size / 1024**2 > self.limit_mb:
+                logger.warning(f"mSEED is too big (%.3f MB): %s" % (size / 1024**2, uri))
+                return obspy.Stream()
+            with open(path, "rb") as fobj:
+                raw = fobj.read()
+            os.unlink(path)
+            buff = io.BytesIO(raw)
+            with stage("mseed.parse", unit=size, unit_name="bytes"):
+                st = obspy.read(buff)
+            self.s3helper.clear_access_denied(net, year)
+            with stage("resample"):
+                return downsample_to_target(st)
+        except Exception as exc:
+            self.parent_counters["object_fallbacks"] += 1
+            logger.warning(f"Parent-fetched {uri} unusable ({type(exc).__name__}: {exc}); "
+                           f"reading it from S3")
+            return self._read_waveform_attempts(uri, net, None, year)
+        finally:
+            timeline.mark("read_end")
+            with self._inflight_lock:
+                self._inflight -= 1
 
     def release_prefetch(self) -> None:
         """Drop whatever the startup fetched and nobody used."""

@@ -98,7 +98,22 @@ PARENT = os.environ.get("QS_PARENT", "early")
 #: importing 0.90 s earlier, but the import thread slowed the first classify (first amplitude pass
 #: 0.56 s later) and lean+fast exit ran 2.9% slower than full+normal (19.06 vs 18.52 s median).
 IMPORT_ARMS = ("lean", "full")
-IMPORTS = os.environ.get("QS_IMPORTS", "full")
+#: Startup v2 (round 16): "v2" makes three changes to the overlap startup. (a) The lean imports
+#: (QS_IMPORTS defaults to lean; an explicit QS_IMPORTS still selects). (b) The fused amplitude passes take their signal functions from
+#: sb_catalog.src.slim_signal / slim_evalresp (amplitude_extractor.AMP_SIGNALS "slim"), imported
+#: before the first classify, so no worker executes scipy.signal, obspy.signal or matplotlib.
+#: (c) The parent, idle after the launch and with a GIL of its own, LISTs and GETs every group's
+#: first station-day into a directory under TMPDIR (sb_catalog.src.parent_fetch); the worker's
+#: startup waits up to s3_helper.PARENT_FIRST_WAIT for it and parses the local bytes, or reads
+#: them itself (counted). QS_STARTUP2=off is the round-15 startup. The default: in the round-16 same-session
+#: 4+4 A/B, v2's first classify came 0.86 s earlier and the median wall was 3.3% lower (17.25 vs 17.84 s),
+#: picks bitwise equal.
+STARTUP2_ARMS = ("v2", "off")
+STARTUP2 = os.environ.get("QS_STARTUP2", "v2")
+IMPORTS = os.environ.get("QS_IMPORTS", "lean" if STARTUP2 == "v2" else "full")
+AMP_SIGNAL = "slim" if STARTUP2 == "v2" else "scipy"
+#: Modules a worker reports at its end; under v2 none of them may be loaded.
+END_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
 #: How a process ends once its work is durably done: "fast" flushes the log streams, shuts
 #: logging down and calls os._exit, skipping interpreter teardown (torch/oneDNN, module GC) in
 #: each worker after its Parquet writer is closed, and in the parent after every worker joined
@@ -226,10 +241,12 @@ def fast_exit(code: int) -> None:
 
 
 def pick_group(index: int, stations: list[dict], config: PickJobConfig,
-               tail_state: tuple | None = None) -> None:
+               tail_state: tuple | None = None, first_sd: tuple | None = None) -> None:
     """Run one production worker loop over a subset of the workload's stations.
 
     ``tail_state`` is the parent's (lock, shared int array) for QS_TAIL=widen, or None.
+    ``first_sd`` is the parent's (directory, event) for this group's first station-day
+    (QS_STARTUP2=v2), or None.
     """
     started = time.time()
     mallopt_rc = apply_malloc()
@@ -261,6 +278,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             db=None,
             early_channels={s["id"]: s["channels"] for s in stations},
             list_mode=LIST,
+            parent_first=first_sd,
         )
 
     if IMPORTS == "full":
@@ -319,6 +337,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             deconv_impl=DECONV,
             imports=IMPORTS,
             tail=tail,
+            amp_signal=AMP_SIGNAL,
         )
         timeline.mark("model_ready")
         bridge.run_picking()
@@ -369,6 +388,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             ("read_start", "read_start", "first"), ("first_sd", "sd_loaded", "first"),
             ("first_data", "data_enqueued", "first"), ("first_classify", "classify_start", "first"),
             ("first_amp", "amp_start", "first"), ("amp_imports", "amp_imports_done", "first"),
+            ("parent_wait", "parent_wait", "first"), ("parent_ready", "parent_ready", "first"),
             ("inv_joined", "inventory_joined", "first"),
             ("last_pick", "pick_written", "last"), ("end", "end", "first"),
         ]),
@@ -388,6 +408,14 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         (bridge.amp_extor.warm_up_mode or "-").replace(" ", "_"),
         " ".join(f"{name}={int(loaded)}" for name, loaded in first.items()) or "-",
         "seisbench.models" in sys.modules,
+    )
+    logger.info(
+        "group %d: startup2=%s first_sd_source=%s parent %s; amp signal %s (asked %s) slim %s; "
+        "modules at end %s", index, STARTUP2, source.first_sd_source,
+        " ".join(f"{k}={v}" for k, v in source.parent_counters.items()),
+        bridge.amp_extor.signal_in_use, bridge.amp_extor.signal,
+        " ".join(f"{k}={v}" for k, v in bridge.amp_extor.slim_counters.items()),
+        " ".join(f"{name}={int(name in sys.modules)}" for name in END_MODULES),
     )
     extor = bridge.amp_extor
     logger.info(
@@ -437,6 +465,8 @@ def main() -> int:
         parser.error(f"unknown QS_EXIT {EXIT!r}; expected one of {list(EXIT_ARMS)}")
     if TAIL not in TAIL_ARMS:
         parser.error(f"unknown QS_TAIL {TAIL!r}; expected one of {list(TAIL_ARMS)}")
+    if STARTUP2 not in STARTUP2_ARMS:
+        parser.error(f"unknown QS_STARTUP2 {STARTUP2!r}; expected one of {list(STARTUP2_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
@@ -482,12 +512,51 @@ def main() -> int:
         tail_share = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tail_share)
         tail_state = (context.Lock(), context.RawArray("i", tail_share.array_size(len(groups))))
+    fetch = None
+    first_sds = [None] * len(groups)
+    if STARTUP2 == "v2" and STARTUP == "overlap" and LIST == "station":
+        # Loaded by path, as tail_share: the parent's sys.path stays as it is.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_parent_fetch", QUAKESCOPE_ROOT / "sb_catalog" / "src" / "parent_fetch.py")
+        parent_fetch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(parent_fetch)
+        events = [context.Event() for _ in groups]
+        fetch = parent_fetch.FirstSDFetch(tempfile.mkdtemp(prefix="qs-firstsd-"), groups,
+                                          workload, events)
+        first_sds = [(fetch.dirs[i], events[i]) if fetch.plans[i] is not None else None
+                     for i in range(len(groups))]
     workers = [
-        context.Process(target=pick_group, args=(i, group, config, tail_state))
+        context.Process(target=pick_group, args=(i, group, config, tail_state, first_sds[i]))
         for i, group in enumerate(groups)
     ]
-    for worker in workers:
-        worker.start()
+    try:
+        for worker in workers:
+            worker.start()
+        if fetch is not None:
+            fetch.start()
+        return _run_parent(workers, config, main_entry, cache_root, fetch)
+    finally:
+        remove_first_sd_dir(fetch)
+
+
+def remove_first_sd_dir(fetch) -> None:
+    """Nothing outlives the run: remove the parent's first-SD directory, with any object a
+    worker did not consume (QS_STARTUP2=v2; a no-op otherwise, or once removed)."""
+    if fetch is None or not fetch.root.exists():
+        return
+    import shutil
+
+    fetch.join(timeout=0.5)
+    shutil.rmtree(fetch.root, ignore_errors=True)
+    logger.info("parent startup2: fetch directory %s removed=%s", fetch.root,
+                not fetch.root.exists())
+
+
+def _run_parent(workers, config: PickJobConfig, main_entry: float, cache_root: Path,
+                fetch) -> int:
+    """The parent after the launch: SeisBench's version, join every worker, exit."""
     logger.info(
         "parent %s: pre-launch %.3f s (main entry %.3f -> launch %.3f), %d workers started %.3f s "
         "after launch", PARENT, config.launched - main_entry, main_entry, config.launched,
@@ -506,13 +575,17 @@ def main() -> int:
     for worker in workers:
         worker.join()
     joined = time.time()
+    if fetch is not None:
+        for i in range(len(workers)):
+            logger.info("parent startup2 group %d: first-SD fetch %s", i, fetch.summary(i))
     failed = [i for i, worker in enumerate(workers) if worker.exitcode != 0]
     if failed:
         logger.error("worker groups %s failed", failed)
         return 1
-    logger.info("parent exit=%s imports=%s: workers joined %.3f, exit %.3f", EXIT, IMPORTS,
-                joined, time.time())
+    logger.info("parent exit=%s imports=%s startup2=%s: workers joined %.3f, exit %.3f", EXIT,
+                IMPORTS, STARTUP2, joined, time.time())
     if EXIT == "fast":
+        remove_first_sd_dir(fetch)
         fast_exit(0)
     return 0
 
