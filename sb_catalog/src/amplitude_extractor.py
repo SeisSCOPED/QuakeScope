@@ -1,6 +1,7 @@
 import logging
 import sys
 import threading
+import time
 import warnings
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -195,6 +196,8 @@ class AmplitudeExtractor:
         # intra-op thread count (the worker's core budget), resolved lazily.
         self._workers = workers
         self._pool: Optional[ThreadPoolExecutor] = None
+        #: (time, from, to) per filter-pool resize (set_workers; tail widening).
+        self.width_events: list[tuple[float, int, int]] = []
         # The fused arm runs both passes on two threads at once, and their lazy
         # imports race: a first import of scipy from two threads can see a
         # partially initialised module. So the fused modules are imported once,
@@ -311,6 +314,23 @@ class AmplitudeExtractor:
             torch = sys.modules.get("torch")
             self._workers = max(1, torch.get_num_threads()) if torch else 1
         return self._workers
+
+    def set_workers(self, workers: int) -> None:
+        """Resize the fused arm's filter pool to `workers` (tail widening).
+
+        Called between station-days, from the thread that starts the passes,
+        never while a pass is running: the old pool is shut down without
+        waiting (it is idle; its threads exit) and the next pass creates one
+        of the new size. A no-op when the size is unchanged.
+        """
+        workers = max(1, int(workers))
+        if workers == self.workers:
+            return
+        self.width_events.append((time.time(), self.workers, workers))
+        self._workers = workers
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
 
     def _filter_pool(self) -> ThreadPoolExecutor:
         """One pool per extractor, created on first use; see close()."""

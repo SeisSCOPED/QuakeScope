@@ -264,9 +264,17 @@ class FastAnnotator:
         sums = [np.zeros((c1 - c0, blk.offsets[-1] + W), dtype=np.float32) for blk in blocks]
         itemsize = np.dtype(np.float32).itemsize
         first_batch = True
+        # Tail widening (tail_share): called before every batch with (batches
+        # run, batches in this call), in this thread, so it can change this
+        # thread's intra-op thread count between forwards. None when static.
+        hook = getattr(graph, "tail_hook", None)
+        if hook is not None:
+            n_batches = -(-sum(len(block.offsets) for block in blocks) // batch_size)
 
         with torch.inference_mode():
-            for segments in self._segments(blocks, batch_size):
+            for batch_index, segments in enumerate(self._segments(blocks, batch_size)):
+                if hook is not None:
+                    hook(batch_index, n_batches)
                 n = sum(j1 - j0 for _, j0, j1 in segments)
                 # torch's allocator, as torch.as_tensor gives SeisBench's batch
                 batch = torch.empty((n, blocks[segments[0][0]].data.shape[0], W),

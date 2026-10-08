@@ -106,6 +106,13 @@ IMPORTS = os.environ.get("QS_IMPORTS", "full")
 #: raises always takes the normal path, so its exit code stays nonzero.
 EXIT_ARMS = ("fast", "normal")
 EXIT = os.environ.get("QS_EXIT", "fast")
+#: Cores of finished workers (sb_catalog.src.tail_share): "widen" lets the workers still running
+#: claim them, under a lock-protected table the parent shares with every worker, and run their
+#: forward (per batch, in the classify thread) and fused filter pool (per station-day) on
+#: threads + claim, never more than --vcpus in total; QS_TAIL=static keeps every worker at
+#: `threads` until it ends, the round-14 behaviour.
+TAIL_ARMS = ("widen", "static")
+TAIL = os.environ.get("QS_TAIL", "widen")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -183,6 +190,8 @@ class PickJobConfig:
     threads: int
     data_queue_size: int
     launched: float = 0.0
+    vcpus: int = 0
+    workers: int = 1
 
 
 def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tuple[int, list[list[dict]], int]:
@@ -216,8 +225,12 @@ def fast_exit(code: int) -> None:
     os._exit(code)
 
 
-def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
-    """Run one production worker loop over a subset of the workload's stations."""
+def pick_group(index: int, stations: list[dict], config: PickJobConfig,
+               tail_state: tuple | None = None) -> None:
+    """Run one production worker loop over a subset of the workload's stations.
+
+    ``tail_state`` is the parent's (lock, shared int array) for QS_TAIL=widen, or None.
+    """
     started = time.time()
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
@@ -279,27 +292,40 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
             raise RuntimeError(f"startup dates {source.start}..{source.end} != {start}..{end}")
         source.attach_db(db)
     timeline.mark("source_ready")
-    bridge = S3MongoSBBridge(
-        s3=source,
-        db=db,
-        model=workload["model"],
-        weight=workload["weight"],
-        p_threshold=workload["p_threshold"],
-        s_threshold=workload["s_threshold"],
-        data_queue_size=config.data_queue_size,
-        pick_queue_size=PICK_QUEUE_SIZE,
-        classifier=False,
-        parquet_uri=config.output_dir,
-        job_id=f"group-{index}",
-        infer_precision=INFER_PRECISION,
-        amp_impl=AMP_IMPL,
-        classify_impl=CLASSIFY_IMPL,
-        annotate_impl=ANNOTATE_IMPL,
-        deconv_impl=DECONV,
-        imports=IMPORTS,
-    )
-    timeline.mark("model_ready")
-    bridge.run_picking()
+    tail = None
+    if tail_state is not None:
+        from sb_catalog.src.tail_share import TailShare
+
+        tail = TailShare(*tail_state, index=index, workers=config.workers, vcpus=config.vcpus,
+                         base=config.threads, total_units=len(stations) * max(1, (end - start).days),
+                         t0=started)
+    try:
+        bridge = S3MongoSBBridge(
+            s3=source,
+            db=db,
+            model=workload["model"],
+            weight=workload["weight"],
+            p_threshold=workload["p_threshold"],
+            s_threshold=workload["s_threshold"],
+            data_queue_size=config.data_queue_size,
+            pick_queue_size=PICK_QUEUE_SIZE,
+            classifier=False,
+            parquet_uri=config.output_dir,
+            job_id=f"group-{index}",
+            infer_precision=INFER_PRECISION,
+            amp_impl=AMP_IMPL,
+            classify_impl=CLASSIFY_IMPL,
+            annotate_impl=ANNOTATE_IMPL,
+            deconv_impl=DECONV,
+            imports=IMPORTS,
+            tail=tail,
+        )
+        timeline.mark("model_ready")
+        bridge.run_picking()
+    finally:
+        # Done or failed: this worker's cores go to the peers still running.
+        if tail is not None:
+            tail.finish()
     for fault in bridge.signal_faults:
         logger.warning("signal fault: %s", fault)
     # Per-group start/end wall timestamps make the tail spread across groups visible.
@@ -363,6 +389,13 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         " ".join(f"{name}={int(loaded)}" for name, loaded in first.items()) or "-",
         "seisbench.models" in sys.modules,
     )
+    extor = bridge.amp_extor
+    logger.info(
+        "group %d: tail=%s %s; amp pool widths %s", index, TAIL,
+        tail.summary() if tail is not None else
+        f"0 claims, 0 events, 0 updates, max total -, threads at last batch {config.threads}; events -",
+        " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
+    )
     logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
@@ -402,6 +435,8 @@ def main() -> int:
         parser.error(f"unknown QS_IMPORTS {IMPORTS!r}; expected one of {list(IMPORT_ARMS)}")
     if EXIT not in EXIT_ARMS:
         parser.error(f"unknown QS_EXIT {EXIT!r}; expected one of {list(EXIT_ARMS)}")
+    if TAIL not in TAIL_ARMS:
+        parser.error(f"unknown QS_TAIL {TAIL!r}; expected one of {list(TAIL_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
@@ -432,10 +467,23 @@ def main() -> int:
         threads=threads,
         data_queue_size=data_queue_size,
         launched=time.time(),
+        vcpus=args.vcpus,
+        workers=len(groups),
     )
     context = mp.get_context("spawn")
+    tail_state = None
+    if TAIL == "widen" and len(groups) > 1:
+        # The table's layout is tail_share's; load the module by path, so the parent's
+        # sys.path (which the spawned workers inherit) stays as it is.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_tail_share", QUAKESCOPE_ROOT / "sb_catalog" / "src" / "tail_share.py")
+        tail_share = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tail_share)
+        tail_state = (context.Lock(), context.RawArray("i", tail_share.array_size(len(groups))))
     workers = [
-        context.Process(target=pick_group, args=(i, group, config))
+        context.Process(target=pick_group, args=(i, group, config, tail_state))
         for i, group in enumerate(groups)
     ]
     for worker in workers:

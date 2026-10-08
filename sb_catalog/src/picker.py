@@ -25,6 +25,7 @@ from .lean_phasenet import LeanPhaseNet, is_phasenet
 from .parquet_writer import ParquetPickWriter
 from .profiling import stage, timeline
 from .s3_helper import S3DataSource
+from .tail_share import TailShare
 from .utils import parse_year_day
 
 if TYPE_CHECKING:
@@ -534,6 +535,7 @@ class S3MongoSBBridge:
         annotate_impl: str = "seisbench",
         deconv_impl: str = "transpose",
         imports: str = "full",
+        tail: Optional[TailShare] = None,
     ):
         if imports not in IMPORT_MODES:
             raise ValueError(f"imports {imports!r} is not one of {IMPORT_MODES}")
@@ -598,6 +600,18 @@ class S3MongoSBBridge:
         else:
             self.classifier = None
         self.amp_extor = AmplitudeExtractor(impl=amp_impl)
+        # Tail widening (tail_share.TailShare, or None for "static"): the
+        # forward runs on one dedicated thread whose intra-op thread count
+        # follows this worker's claim, set before every batch; the fused
+        # filter pool follows it between station-days.
+        self.tail = tail
+        self._classify_executor = None
+        if tail is not None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._classify_executor = ThreadPoolExecutor(1, thread_name_prefix="classify")
+            if self.model is not None and getattr(self.model, "fast_graph", None) is not None:
+                self.model.fast_graph.tail_hook = self._tail_batch
         if imports == "full":
             # The round-13 order: the fused arm's scipy/obspy.signal imports
             # happen here. Lean: on a thread started by the first classify.
@@ -747,6 +761,21 @@ class S3MongoSBBridge:
             asyncio.run(self._run_picking_async())
         finally:
             self.amp_extor.close()
+            if self._classify_executor is not None:
+                self._classify_executor.shutdown(wait=True)
+
+    def _set_threads(self, threads: int) -> None:
+        """This thread's intra-op thread count (OpenMP's is per calling thread)."""
+        if torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+
+    def _tail_update(self, batch_fraction: float = 0.0) -> int:
+        """Publish this worker's remaining classify work and run at its claim."""
+        return self.tail.update(self.tail.remaining(batch_fraction), self._set_threads)
+
+    def _tail_batch(self, batch_index: int, n_batches: int) -> None:
+        """The fast annotate's per-batch hook, in the classify thread."""
+        self.tail.last_batch_threads = self._tail_update(batch_index / max(1, n_batches))
 
     async def _run_picking_async(self) -> None:
         """
@@ -926,13 +955,22 @@ class S3MongoSBBridge:
                     name: name in sys.modules for name in ACTIVATION_MODULES}
             if self.imports == "lean":
                 self.amp_extor.start_warm_up()
+            if self.tail is not None:
+                self._tail_update()
             with stage("model.classify"):
                 output = self.model.classify(stream)
             if graph is not None and graph.windows > windows:
                 graph.station_days += 1
+            if self.tail is not None:
+                self.tail.classified += 1
+                self._tail_update()
             return output
 
-        stream_annotations = await asyncio.to_thread(_classify)
+        if self.tail is not None:
+            stream_annotations = await asyncio.get_running_loop().run_in_executor(
+                self._classify_executor, _classify)
+        else:
+            stream_annotations = await asyncio.to_thread(_classify)
         n_picks = len(stream_annotations.picks)
         spans = {}
 
@@ -967,6 +1005,8 @@ class S3MongoSBBridge:
 
         with stage("amp.total", unit=n_picks, unit_name="pick"):
             if self.amp_extor.impl == "fused":
+                if self.tail is not None:
+                    self.amp_extor.set_workers(self.tail.threads())
                 # Both passes only read the stream, the picks and the
                 # inventory, so they run side by side on the worker's second
                 # core, after classify and never during it. An exception is
