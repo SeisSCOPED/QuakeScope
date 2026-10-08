@@ -238,7 +238,8 @@ ANNOTATE_IMPLS = ("seisbench", "fast")
 #: by the first classify.
 IMPORT_MODES = ("lean", "full")
 #: Modules whose presence at the first classify shows which import mode ran.
-ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
+ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib",
+                      "s3fs", "aiohttp", "botocore")
 
 
 def apply_annotate_impl(model: sbm.WaveformModel, impl: str, glue: str = "off"

@@ -16,10 +16,8 @@ from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 import numpy as np
 import obspy
-from botocore.exceptions import ClientError
 from obspy.clients.fdsn.header import (FDSNException,
                                        FDSNNoDataException)
-from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING, select_channel
 from .profiling import stage, timeline
@@ -82,6 +80,11 @@ ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
 #: every object of the day directly under the day prefix (SCEDC, NCEDC). Both
 #: decide existence from the archive's answer, never from the key alone.
 LIST_MODES = ("day", "station")
+#: How a SCEDC station-day is LISTed and read (`S3DataSource(early=...)`, pick_workload
+#: QS_EARLY): "off" through s3fs; "stdlib" through parent_fetch's anonymous HTTPS client, the
+#: first station-day handed over in memory by the worker's early-io thread, every other one
+#: fetched here, each request falling back to s3fs (counted, with its reason) if it fails.
+EARLY_ARMS = ("off", "stdlib")
 #: Keys per ListObjectsV2 page; `fs.ls` hides its pages, so the day listing's
 #: request count is derived from its key count.
 S3_LIST_PAGE = 1000
@@ -295,6 +298,49 @@ S3_CONFIG = {
 }
 
 logger = logging.getLogger("picker")
+
+
+def S3FileSystem(*args, **kwargs):
+    """s3fs.S3FileSystem, imported on first use: s3fs, aiobotocore, botocore and aiohttp
+    (~0.6 s of a worker's startup) load only once a filesystem is built, which on the
+    QS_EARLY=stdlib arm is never before the first classify (`CompositeS3ObjectHelper(lazy_fs=True)`)."""
+    from s3fs import S3FileSystem as cls
+
+    return cls(*args, **kwargs)
+
+
+def _client_error() -> type:
+    """botocore's ClientError, for an `except` clause reached only after an s3fs call raised
+    (so botocore is already loaded)."""
+    from botocore.exceptions import ClientError
+
+    return ClientError
+
+
+class _LazyFilesystems(dict):
+    """name -> S3FileSystem for `CompositeS3ObjectHelper(lazy_fs=True)`: the keys are there
+    from the start, each filesystem is built (and s3fs imported) on its first lookup."""
+
+    def __init__(self, factories: dict):
+        super().__init__(factories)
+        self._built: set = set()
+        self._lock = threading.Lock()
+
+    def __getitem__(self, name):
+        with self._lock:
+            if name not in self._built:
+                super().__setitem__(name, super().__getitem__(name)())
+                self._built.add(name)
+        return super().__getitem__(name)
+
+    def __setitem__(self, name, fs):
+        """A filesystem set directly is used as it is."""
+        with self._lock:
+            super().__setitem__(name, fs)
+            self._built.add(name)
+
+    def get(self, name, default=None):
+        return self[name] if name in self else default
 
 # earthscope_sdk logs credentials at DEBUG:
 #
@@ -542,7 +588,7 @@ class GeoNetS3ObjectHelper(S3ObjectHelper):
 
 
 class CompositeS3ObjectHelper(S3ObjectHelper):
-    def __init__(self):
+    def __init__(self, lazy_fs: bool = False):
         self.helpers = {
             "scedc": SCEDCS3ObjectHelper(),
             "ncedc": NCEDCS3ObjectHelper(),
@@ -558,19 +604,22 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         }
 
         self.ttl_threshold = datetime.timedelta(minutes=5)
-        self.fs = {
-            "scedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
-            "ncedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+        factories = {
+            "scedc": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+            "ncedc": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
             # Pinned to its own region: without client_kwargs s3fs signs for
             # us-east-2 and the request 301s to a redirect it does not follow.
-            "geonet": S3FileSystem(anon=True, config_kwargs=S3_CONFIG,
-                                   client_kwargs={"region_name": GEONET_REGION}),
+            "geonet": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG,
+                                           client_kwargs={"region_name": GEONET_REGION}),
+            # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
+            # credential exchange entirely when the campaign has not been configured
+            # for EarthScope, so a public-bucket run neither stalls nor fails on it.
+            # Open Data needs nothing, so it is always available.
+            "earthscope_open": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
         }
-        # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
-        # credential exchange entirely when the campaign has not been configured
-        # for EarthScope, so a public-bucket run neither stalls nor fails on it.
-        # Open Data needs nothing, so it is always available.
-        self.fs["earthscope_open"] = S3FileSystem(anon=True, config_kwargs=S3_CONFIG)
+        # Built now (the default), or each on its first use (QS_EARLY=stdlib).
+        self.fs = (_LazyFilesystems(factories) if lazy_fs
+                   else {name: build() for name, build in factories.items()})
 
         # Restricted EarthScope credentials are scoped per network (and per year
         # for temporary networks), so there is no single "the" credential: both
@@ -1237,10 +1286,14 @@ class S3DataSource:
         early_channels: Optional[dict[str, str]] = None,
         list_mode: str = "day",
         parent_first: Optional[tuple] = None,
+        early: str = "off",
     ):
         if list_mode not in LIST_MODES:
             raise ValueError(f"unknown list_mode {list_mode!r}; expected one of {list(LIST_MODES)}")
+        if early not in EARLY_ARMS:
+            raise ValueError(f"unknown early {early!r}; expected one of {list(EARLY_ARMS)}")
         self.list_mode = list_mode
+        self.early = early
         self.start = start
         self.end = end
         self.components = components
@@ -1274,18 +1327,31 @@ class S3DataSource:
             "prefetch_unused": 0, "max_reads_in_flight": 0,
         }
         # The parent's first station-day fetch: (directory, event) from
-        # pick_workload, or None. `first_sd_source` says who read the first
-        # station-day's objects: "parent" (all of them local), "worker", or
-        # "-" when there was no parent fetch to take.
+        # pick_workload, or None; on the stdlib arm (parent_fetch.EarlyFetch,
+        # event), the worker's own in-memory fetch. `first_sd_source` says who
+        # read the first station-day's objects: "parent" (all of them local),
+        # "worker", or "-" when there was no parent fetch to take; on the
+        # stdlib arm "stdlib" (all of them from the early fetch) or "s3fs".
         self._parent_first = parent_first
         self.first_sd_source = "-"
         self.parent_counters = {"waited_ms": 0, "listing": 0, "objects": 0,
                                 "fallbacks": 0, "object_fallbacks": 0}
+        # The stdlib arm's own requests (the early fetch's are parent_counters)
+        # and every fallback to s3fs, with its reason (the first few).
+        self._stdlib = None
+        if early == "stdlib":
+            from . import parent_fetch
+
+            self._stdlib = parent_fetch
+        self.stdlib_counters = {"lists": 0, "gets": 0, "bytes": 0,
+                                "list_fallbacks": 0, "get_fallbacks": 0}
+        self.fallback_reasons: list[str] = []
         # Every LIST this source issued, either mode. `requests` is counted on
         # the station path; on the day path it is the page count implied by
         # the keys (S3_LIST_PAGE), since `fs.ls` pages internally.
         self.list_counters = {"calls": 0, "requests": 0, "keys": 0, "max_keys": 0}
-        self.s3helper = CompositeS3ObjectHelper()
+        self.s3helper = (CompositeS3ObjectHelper(lazy_fs=True) if early == "stdlib"
+                         else CompositeS3ObjectHelper())
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
         # Fail before reading anything if this shard needs an archive the job
@@ -1398,8 +1464,11 @@ class S3DataSource:
                         listing = list(parent["listing"])
                         self.parent_counters["listing"] += 1
                     else:
+                        # Without the early fetch's answer the stdlib arm lists
+                        # through s3fs (the counted fallback).
                         listing = (self._list_network_day(net, day, prefix) if len(key) == 2
-                                   else self._list_station_day(net, day, prefix, key[2]))
+                                   else self._list_station_day(net, day, prefix, key[2],
+                                                               via_stdlib=False))
                     outcomes[key] = (listing, None)
                 except BaseException as exc:
                     outcomes[key] = (None, exc)
@@ -1419,21 +1488,29 @@ class S3DataSource:
                             key = (uri, net, None, day.year)
                             self._prefetch_targets.add(key)
                             if uri in local:
+                                # A file name under the parent's directory, or
+                                # the early fetch's bytes (stdlib arm).
                                 self._prefetched[key] = in_background(
                                     "qs-prefetch-local", self._read_parent_object,
-                                    os.path.join(parent["dir"], local[uri]), uri, net, day.year)
+                                    local[uri] if parent["dir"] is None
+                                    else os.path.join(parent["dir"], local[uri]),
+                                    uri, net, day.year)
                                 self.parent_counters["objects"] += 1
                                 sources.add("parent")
                             else:
                                 if parent is not None:
                                     self.parent_counters["object_fallbacks"] += 1
+                                    self._note_fallback(f"first_sd {uri.rsplit('/', 1)[1]}: not fetched early")
                                 self._prefetched[key] = in_background(
                                     "qs-prefetch-get", self._read_waveform_from_s3,
-                                    uri, net, None, day.year)
+                                    uri, net, None, day.year, False)
                                 sources.add("worker")
                             self.startup_counters["prefetched"] += 1
                     if self._parent_first is not None and sources:
-                        self.first_sd_source = "parent" if sources == {"parent"} else "worker"
+                        local_name, own_name = (("stdlib", "s3fs") if self.early == "stdlib"
+                                                else ("parent", "worker"))
+                        self.first_sd_source = (local_name if sources == {"parent"}
+                                                else own_name)
         finally:
             # A listing this thread never reached resolves to None, which the
             # loader answers with its own LIST.
@@ -1456,7 +1533,9 @@ class S3DataSource:
         self.parent_counters["waited_ms"] = round(1000 * (time.perf_counter() - t0))
         timeline.mark("parent_ready")
         manifest = None
-        if ready:
+        if ready and not isinstance(directory, str):
+            manifest = directory.take()        # the stdlib arm's in-memory fetch
+        elif ready:
             try:
                 with open(os.path.join(directory, "manifest.json")) as fmanifest:
                     manifest = json.load(fmanifest)
@@ -1465,12 +1544,15 @@ class S3DataSource:
         if (manifest is None or manifest.get("listing") is None
                 or manifest.get("key") != list(key)):
             self.parent_counters["fallbacks"] += 1
+            reason = "late" if not ready else "failed or other key"
+            self._note_fallback(f"first_sd {reason}: "
+                                f"{(manifest or {}).get('errors', ['-'])[0]}")
             logger.info(f"Parent first station-day fetch not used "
-                        f"({'late' if not ready else 'failed or other key'}); reading it here")
+                        f"({reason}); reading it here")
             return None
         for error in manifest.get("errors", []):
             logger.info(f"Parent first station-day fetch: {error}")
-        manifest["dir"] = directory
+        manifest["dir"] = directory if isinstance(directory, str) else None
         return manifest
 
     def _read_parent_object(self, path, uri, net, year) -> obspy.Stream:
@@ -1484,13 +1566,17 @@ class S3DataSource:
                 counters["max_reads_in_flight"], self._inflight)
         timeline.mark("read_start")
         try:
-            size = os.path.getsize(path)
+            in_memory = isinstance(path, bytes)    # the stdlib arm's early fetch
+            size = len(path) if in_memory else os.path.getsize(path)
             if self.limit_mb is not None and size / 1024**2 > self.limit_mb:
                 logger.warning(f"mSEED is too big (%.3f MB): %s" % (size / 1024**2, uri))
                 return obspy.Stream()
-            with open(path, "rb") as fobj:
-                raw = fobj.read()
-            os.unlink(path)
+            if in_memory:
+                raw = path
+            else:
+                with open(path, "rb") as fobj:
+                    raw = fobj.read()
+                os.unlink(path)
             buff = io.BytesIO(raw)
             with stage("mseed.parse", unit=size, unit_name="bytes"):
                 st = obspy.read(buff)
@@ -1499,6 +1585,7 @@ class S3DataSource:
                 return downsample_to_target(st)
         except Exception as exc:
             self.parent_counters["object_fallbacks"] += 1
+            self._note_fallback(f"first_sd {uri.rsplit('/', 1)[1]}: {type(exc).__name__}")
             logger.warning(f"Parent-fetched {uri} unusable ({type(exc).__name__}: {exc}); "
                            f"reading it from S3")
             return self._read_waveform_attempts(uri, net, None, year)
@@ -1814,9 +1901,14 @@ class S3DataSource:
         """Whether this network's station-days are listed one station at a time."""
         return self.list_mode == "station" and self.s3helper.lists_stations_of(net)
 
-    def _list_station_day(self, net, day, prefix, stem) -> list:
+    def _list_station_day(self, net, day, prefix, stem, via_stdlib=True) -> list:
         """One station's LIST for one day (`list_mode="station"`); the caller
-        handles what it raises, as for `_list_network_day`."""
+        handles what it raises, as for `_list_network_day`. The stdlib arm
+        LISTs SCEDC over HTTPS first (`via_stdlib`), then through s3fs."""
+        if via_stdlib and self._uses_stdlib(net):
+            listing = self._stdlib_list(prefix, stem)
+            if listing is not None:
+                return listing
         fs = self.s3helper.get_filesystem(net, day.year)
         timeline.mark("list_start")
         try:
@@ -1826,6 +1918,64 @@ class S3DataSource:
             timeline.mark("list_end")
         self._count_list(len(listing), requests)
         return listing
+
+    def _uses_stdlib(self, net) -> bool:
+        """Whether this network's LISTs and GETs go through the stdlib client first."""
+        return self._stdlib is not None and self.s3helper.get_data_center(net) == "scedc"
+
+    def _note_fallback(self, reason: str) -> None:
+        if len(self.fallback_reasons) < 5:
+            self.fallback_reasons.append(reason.replace(" ", "_").replace(",", ";")[:96])
+
+    def _stdlib_list(self, prefix, stem) -> Optional[list]:
+        """`list_station_day` over the stdlib client: the same `bucket/key`
+        names, sorted; None (counted, logged) if it raised."""
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                listing, requests = self._stdlib.list_station_day(prefix, stem)
+        except Exception as exc:
+            self.stdlib_counters["list_fallbacks"] += 1
+            self._note_fallback(f"list {stem}: {type(exc).__name__}")
+            logger.warning(f"stdlib LIST {prefix}{stem} failed ({type(exc).__name__}: "
+                           f"{exc}); listing it through s3fs")
+            return None
+        finally:
+            timeline.mark("list_end")
+        self.stdlib_counters["lists"] += 1
+        self._count_list(len(listing), requests)
+        return listing
+
+    def _stdlib_read(self, uri, net, sourcename, year) -> Optional[obspy.Stream]:
+        """`_read_waveform_attempts` over the stdlib client, without the HEAD:
+        the size limit from the GET's Content-Length, then the same parse and
+        downsample. None (counted, logged) if anything raised, and the caller
+        reads it through s3fs, whose handlers then decide."""
+        try:
+            limit = None if self.limit_mb is None else self.limit_mb * 1024**2
+            with stage("s3.get"):
+                raw = self._stdlib.get_bytes(uri, limit=limit)
+            if raw is None:
+                logger.warning(f"mSEED is too big (over %.3f MB): %s" % (self.limit_mb, uri))
+                return obspy.Stream()
+            buff = io.BytesIO(raw)
+            with stage("mseed.parse", unit=len(raw), unit_name="bytes"):
+                if sourcename:
+                    st = obspy.read(buff, format="MSEED", sourcename=sourcename)
+                else:
+                    st = obspy.read(buff)
+            self.s3helper.clear_access_denied(net, year)
+            with stage("resample"):
+                st = downsample_to_target(st)
+        except Exception as exc:
+            self.stdlib_counters["get_fallbacks"] += 1
+            self._note_fallback(f"get {uri.rsplit('/', 1)[1]}: {type(exc).__name__}")
+            logger.warning(f"stdlib GET {uri} failed ({type(exc).__name__}: {exc}); "
+                           f"reading it through s3fs")
+            return None
+        self.stdlib_counters["gets"] += 1
+        self.stdlib_counters["bytes"] += len(raw)
+        return st
 
     def _station_listing(self, net, sta, day) -> list:
         """The objects of one station-day: the startup's LIST if it ran this
@@ -1916,7 +2066,7 @@ class S3DataSource:
             return obspy.Stream()
 
     def _read_waveform_from_s3(self, uri, net, sourcename=None,
-                               year=None) -> obspy.Stream:
+                               year=None, via_stdlib=True) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
 
@@ -1952,6 +2102,10 @@ class S3DataSource:
                 counters["max_reads_in_flight"], self._inflight)
         timeline.mark("read_start")
         try:
+            if via_stdlib and self._uses_stdlib(net):
+                st = self._stdlib_read(uri, net, sourcename, year)
+                if st is not None:
+                    return st
             return self._read_waveform_attempts(uri, net, sourcename, year)
         finally:
             timeline.mark("read_end")
@@ -2087,7 +2241,7 @@ class S3DataSource:
                     )
                     return obspy.Stream()
                 time.sleep(self._backoff(busy))
-            except ClientError:
+            except _client_error():
                 busy += 1
                 if busy > S3_BUSY_ATTEMPTS:
                     logger.error(

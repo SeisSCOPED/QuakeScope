@@ -180,6 +180,22 @@ PIN = os.environ.get("QS_PIN", "classify")
 #: CPU -9.9 s, loaded classify -16%, picks identical to off's under the evaluator's rule.
 GLUE_ARMS = ("off", "fused")
 GLUE = os.environ.get("QS_GLUE", "fused")
+#: Worker startup order (sb_catalog.src.parent_fetch.EarlyFetch, s3_helper.S3DataSource early=):
+#: "stdlib" imports only the standard library's HTTPS client first, starts a "qs-early-io" thread that
+#: LISTs and GETs the group's first station-day into memory with it, then imports torch, then the rest
+#: (obspy, the S3 source and its inventory fetch, the lean picker set). The source parses the early
+#: bytes, LISTs and GETs every later SCEDC station-day with the same client and builds an s3fs filesystem
+#: (importing s3fs, aiobotocore, botocore, aiohttp) only for a request that falls back to it, counted with
+#: its reason. "off" is the round-25 order: obspy, the S3 source with s3fs, its LIST/GET threads, then torch.
+#: "stdlib" needs the overlap startup, QS_LIST=station and QS_STARTUP2=v3, and is the default there (round 27);
+#: any other startup defaults to "off". In the 4-round local A/B its median wall was 0.927x off's (15.19 vs
+#: 16.38 s, 4 of 4 rounds faster), CPU 0.942x (107.5 vs 114.1 s), first classify 0.65 s earlier, picks identical.
+EARLY_ARMS = ("off", "stdlib")
+EARLY = os.environ.get(
+    "QS_EARLY", "stdlib" if (STARTUP, LIST, STARTUP2) == ("overlap", "station", "v3") else "off")
+#: Modules the stdlib arm keeps out of a worker until a request falls back to s3fs; each group logs
+#: whether they were loaded at model_ready and at its first classify.
+EARLY_MODULES = ("s3fs", "aiohttp", "botocore")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -319,6 +335,16 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
 
     workload = config.workload
     source = None
+    early = None
+    if EARLY == "stdlib":
+        # The standard library's HTTPS client and everything a request imports lazily, here, so
+        # the early-io thread imports nothing while this thread imports torch (the M21 lesson).
+        from sb_catalog.src import parent_fetch
+
+        parent_fetch.prepare()
+        early = parent_fetch.EarlyFetch(stations, workload, t0=started)
+        early.start()
+        import torch  # noqa: F401
     if STARTUP == "overlap":
         # The network work first, with only what it needs imported: obspy, s3fs and
         # the readers it will call, so the background threads import nothing while
@@ -337,7 +363,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             db=None,
             early_channels={s["id"]: s["channels"] for s in stations},
             list_mode=LIST,
-            parent_first=first_sd,
+            parent_first=(early, early.event) if early is not None else first_sd,
+            early=EARLY,
         )
 
     if IMPORTS == "full":
@@ -401,6 +428,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             pin=pin,
         )
         timeline.mark("model_ready")
+        at_model_ready = {name: name in sys.modules for name in EARLY_MODULES}
         import_clock.uninstall()
         bridge.run_picking()
     finally:
@@ -471,8 +499,20 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         "group %d: imports=%s exit=%s model=%s amp_imports=%s at first classify %s; at end "
         "seisbench.models=%d", index, IMPORTS, EXIT, type(bridge.model).__name__,
         (bridge.amp_extor.warm_up_mode or "-").replace(" ", "_"),
-        " ".join(f"{name}={int(loaded)}" for name, loaded in first.items()) or "-",
+        " ".join(f"{name}={int(loaded)}" for name, loaded in first.items()
+                 if name not in EARLY_MODULES) or "-",
         "seisbench.models" in sys.modules,
+    )
+    torch_import = import_clock.records.get("torch")
+    logger.info(
+        "group %d: QS_EARLY=%s torch_import=%s at model_ready %s at first_classify %s; "
+        "first_sd_source=%s early %s; stdlib %s; fallbacks %s", index, EARLY,
+        "{:+.3f}/{:.3f}/{:.3f}".format(*torch_import[:3]) if torch_import else "-",
+        " ".join(f"{name}={int(loaded)}" for name, loaded in at_model_ready.items()),
+        " ".join(f"{name}={int(first.get(name, False))}" for name in EARLY_MODULES),
+        source.first_sd_source, early.summary() if early is not None else "-",
+        " ".join(f"{k}={v}" for k, v in source.stdlib_counters.items()),
+        ",".join(source.fallback_reasons) or "-",
     )
     logger.info(
         "group %d: startup2=%s first_sd_source=%s parent %s; amp signal %s (asked %s) slim %s; "
@@ -547,6 +587,10 @@ def main() -> int:
         parser.error(f"unknown QS_PIN {PIN!r}; expected one of {list(PIN_ARMS)}")
     if GLUE not in GLUE_ARMS:
         parser.error(f"unknown QS_GLUE {GLUE!r}; expected one of {list(GLUE_ARMS)}")
+    if EARLY not in EARLY_ARMS:
+        parser.error(f"unknown QS_EARLY {EARLY!r}; expected one of {list(EARLY_ARMS)}")
+    if EARLY == "stdlib" and (STARTUP, LIST, STARTUP2) != ("overlap", "station", "v3"):
+        parser.error("QS_EARLY=stdlib needs QS_STARTUP=overlap, QS_LIST=station and QS_STARTUP2=v3")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())

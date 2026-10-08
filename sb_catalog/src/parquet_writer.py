@@ -52,7 +52,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import fsspec
-import s3fs
 
 from .profiling import stage
 
@@ -138,6 +137,9 @@ class ParquetPickWriter:
         # local root works for tests and dry runs - which _ensure_parent already
         # claimed to support, but could not, because this was hardcoded.
         if self.root.startswith("s3://"):
+            # Imported here: a local root never loads s3fs/aiobotocore/aiohttp.
+            import s3fs
+
             self.fs = s3fs.S3FileSystem(**(storage_options or {}))
         else:
             self.fs = fsspec.filesystem(

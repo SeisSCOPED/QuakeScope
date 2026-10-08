@@ -14,6 +14,12 @@ Standard library only, so the parent stays light: an anonymous HTTPS client for 
 bucket (the only archive this covers; any other group gets no parent fetch). The key rules are
 s3_helper's SCEDCS3ObjectHelper ones, restated here; the H18 recipe checks them against it.
 Nothing outlives the run: the caller removes the directory once the workers have joined.
+
+The same client serves a worker's own startup under pick_workload QS_EARLY=stdlib (EarlyFetch):
+the worker imports this module and calls `prepare()` on its main thread, starts the "qs-early-io"
+thread, which LISTs and GETs its first station-day into memory and imports nothing, and only then
+imports torch. S3DataSource also LISTs and GETs its later SCEDC station-days through `list_station_day`
+and `get_bytes` on that arm, with the s3fs read as the counted fallback.
 """
 
 from __future__ import annotations
@@ -38,6 +44,24 @@ TIMEOUT = 10.0
 CHUNK = 1 << 20
 
 _constants = None
+#: The TLS context every request uses once `prepare()` ran (None: http.client builds one per request).
+_context = None
+
+
+def prepare() -> None:
+    """Import, on the calling thread, everything a request lazily imports (the idna codec that
+    getaddrinfo encodes the host with, expat for the LIST XML) and build the one TLS context, so a
+    fetch thread started afterwards imports nothing (the M21 lesson: an import on a second thread
+    time-slices with the main thread's imports)."""
+    global _context
+    import encodings.idna  # noqa: F401
+    import ssl
+    import xml.parsers.expat  # noqa: F401
+
+    if _context is None:
+        context = ssl.create_default_context()
+        context.set_alpn_protocols(["http/1.1"])      # what http.client sets on its own context
+        _context = context
 
 
 def constants():
@@ -92,7 +116,7 @@ def first_station_day(stations: list[dict], start: str, components: str) -> dict
 
 
 def _request(path: str) -> http.client.HTTPResponse:
-    conn = http.client.HTTPSConnection(SCEDC_HOST, timeout=TIMEOUT)
+    conn = http.client.HTTPSConnection(SCEDC_HOST, timeout=TIMEOUT, context=_context)
     conn.request("GET", path)
     response = conn.getresponse()
     if response.status != 200:
@@ -142,6 +166,119 @@ def get_object(uri: str, target: Path, marks: list | None = None) -> int:
     if marks is not None:
         marks.append(time.time())
     return size
+
+
+def get_bytes(uri: str, marks: list | None = None, limit: int | None = None) -> bytes | None:
+    """GET one `bucket/key` into memory, the bytes s3fs's read_bytes returns; None when its
+    Content-Length is over `limit` bytes (s3_helper's size limit, nothing read). `marks` as for
+    `get_object`."""
+    _, _, key = uri.partition("/")
+    if marks is not None:
+        marks.append(time.time())
+    response = _request("/" + urllib.parse.quote(key))
+    if marks is not None:
+        marks.append(time.time())
+    expected = response.getheader("Content-Length")
+    if limit is not None and expected is not None and int(expected) > limit:
+        response.close()
+        return None
+    chunks = []
+    while chunk := response.read(CHUNK):
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+    if expected is not None and int(expected) != len(raw):
+        raise OSError(f"GET {uri}: {len(raw)} of {expected} bytes")
+    if marks is not None:
+        marks.append(time.time())
+    return raw
+
+
+class EarlyFetch:
+    """A worker's own first station-day, fetched before it imports torch (QS_EARLY=stdlib).
+
+    `first_station_day` plans it on the caller's thread; `start()` runs the LIST on one
+    "qs-early-io" thread, then each wanted object's GET on a thread of its own, into memory, and
+    sets `event` with `manifest` complete: the FirstSDFetch manifest with `objects` mapping a uri to
+    its bytes instead of a file name. S3DataSource (parent_first=(this, event)) takes the manifest
+    once, `take()`, so the bytes are dropped as soon as they are parsed. Call `prepare()` first.
+    """
+
+    def __init__(self, stations: list[dict], workload: dict, t0: float):
+        self.t0 = t0
+        self.event = threading.Event()
+        try:
+            self.plan = first_station_day(stations, workload["start"], workload["components"])
+        except Exception:            # e.g. a bad date: the worker raises it, as before
+            self.plan = None
+        self.manifest: dict | None = None
+        #: "source" (stdlib|none|failed), "list_s" (start/end), "objects", "wanted", "bytes",
+        #: "ready_s", "errors", in seconds from t0; `object_marks`: [start, headers, end] per object.
+        self.report: dict = {"source": "none"}
+        self.object_marks: list[list[float]] = []
+
+    def start(self) -> None:
+        if self.plan is None:
+            self.event.set()            # nothing to wait for: the worker reads it itself
+            return
+        threading.Thread(target=self._fetch, name="qs-early-io", daemon=True).start()
+
+    def take(self) -> dict | None:
+        """The manifest, once: the fetcher keeps no reference to the bytes after this."""
+        manifest, self.manifest = self.manifest, None
+        return manifest
+
+    def _fetch(self) -> None:
+        plan, report = self.plan, self.report
+        manifest = {"station": plan["station"], "key": plan["key"], "listing": None,
+                    "objects": {}, "errors": []}
+        try:
+            net, prefix, stem = plan["key"]
+            list_start = time.time()
+            listing, requests = list_station_day(prefix, stem)
+            report["list_s"] = f"{list_start - self.t0:.3f}/{time.time() - self.t0:.3f}"
+            manifest["listing"] = listing
+            manifest["list_requests"] = requests
+            wanted = [uri for uri in plan["uris"] if uri in listing]
+            results: dict = {}
+
+            def fetch(uri, times):
+                try:
+                    results[uri] = (get_bytes(uri, times), None)
+                except Exception as exc:             # the worker reads this one itself
+                    results[uri] = (None, f"{type(exc).__name__}: {exc}")
+
+            self.object_marks += [[] for _ in wanted]
+            threads = [threading.Thread(target=fetch, args=(uri, times), name="qs-early-get",
+                                        daemon=True)
+                       for uri, times in zip(wanted, self.object_marks)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            for uri in wanted:
+                raw, error = results[uri]
+                if error is None:
+                    manifest["objects"][uri] = raw
+                    report["bytes"] = report.get("bytes", 0) + len(raw)
+                else:
+                    manifest["errors"].append(f"{uri}: {error}")
+            report["objects"] = len(manifest["objects"])
+            report["wanted"] = len(wanted)
+            report["source"] = "stdlib" if manifest["objects"] else "failed"
+        except Exception as exc:
+            manifest["errors"].append(f"{type(exc).__name__}: {exc}")
+            report["source"] = "failed"
+        finally:
+            report["errors"] = len(manifest["errors"])
+            report["ready_s"] = round(time.time() - self.t0, 3)
+            self.manifest = manifest
+            self.event.set()
+
+    def summary(self) -> str:
+        """The report, then `objs=start/headers/end,...` per object, seconds from t0."""
+        objs = ",".join("/".join(f"{t - self.t0:.3f}" for t in times) or "-"
+                        for times in self.object_marks)
+        return " ".join(f"{k}={v}" for k, v in self.report.items()) + f" objs={objs or '-'}"
 
 
 class FirstSDFetch:
