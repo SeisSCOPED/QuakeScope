@@ -769,6 +769,9 @@ class S3MongoSBBridge:
         self.signal_faults = []
         try:
             asyncio.run(self._run_picking_async())
+            if self.pin is not None:
+                # Log-only, before the amplitude and classify pools shut down.
+                self.pin.sample_cpu()
         finally:
             self.amp_extor.close()
             if self._classify_executor is not None:

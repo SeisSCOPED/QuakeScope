@@ -33,6 +33,8 @@ as fp32 NCW, exactly the shape and dtype `annotate_batch_post` expects.
 
 from __future__ import annotations
 
+import time
+
 import torch
 import torch.nn.functional as F
 
@@ -126,6 +128,10 @@ class PhaseNetGraph(torch.nn.Module):
         self.fused = fused
         self.deconv = deconv
         self._params = torch.nn.ParameterList()
+        #: Log-only: the forward's summed wall, and that wall times the OpenMP pool's
+        #: worker threads (intra-op threads - 1) at each call.
+        self.forward_seconds = 0.0
+        self.pool_forward_seconds = 0.0
 
         def add(conv, bn, kind, stride=1, padding=0, relu=True, input_mean=None):
             weight, bias = _fold(conv, bn)
@@ -187,6 +193,14 @@ class PhaseNetGraph(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """(batch, 3, samples) float -> (batch, 3, samples) fp32 probabilities."""
+        t0 = time.perf_counter()
+        out = self._forward(x)
+        dt = time.perf_counter() - t0
+        self.forward_seconds += dt
+        self.pool_forward_seconds += dt * (torch.get_num_threads() - 1)
+        return out
+
+    def _forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(self.dtype).unsqueeze(2).contiguous(memory_format=torch.channels_last)
         x = self._apply(self.inc, x)
         skips = []

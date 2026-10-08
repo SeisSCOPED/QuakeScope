@@ -24,11 +24,17 @@ window ends when a peer finishes or this worker first raises a tail claim
 (tail_share): every task of the worker is then reset to the inherited set,
 before the intra-op thread count widens, and the window's migrations and
 per-station-day classify times are kept for the group log.
+
+Log-only, in every mode: at the worker's end, the CPU seconds of every task
+(/proc/self/task/*/stat), split into the classify thread, its OpenMP pool,
+the BLAS threads (the unnamed native tasks present right after the imports), the
+amplitude pool, the event loop, other tasks and those that already exited.
 """
 
 from __future__ import annotations
 
 import os
+import resource
 import threading
 import time
 from typing import Optional, Sequence
@@ -38,6 +44,9 @@ PIN_MODES = ("off", "classify", "all")
 #: The classify thread's name (/proc comm): the libgomp threads it spawns
 #: inherit it, which is how its OpenMP pool is told from every other task.
 CLASSIFY_COMM = "qs-classify"
+#: The per-thread CPU split's classes, in log order.
+CPU_CLASSES = ("classify", "omp", "blas", "amp", "loop", "other", "exited")
+CLK_TCK = os.sysconf("SC_CLK_TCK")
 
 
 def worker_cores(inherited: Sequence[int], index: int, workers: int, per: int) -> list[int]:
@@ -103,6 +112,23 @@ def migrations(tid: int) -> Optional[int]:
     return None
 
 
+def cpu_seconds(tid: int) -> Optional[float]:
+    """A task's user + system CPU seconds (/proc/.../stat), or None once it has exited."""
+    text = _read(tid, "stat")
+    if text is None:
+        return None
+    fields = text.rsplit(")", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / CLK_TCK
+
+
+def blas_tasks() -> list[int]:
+    """This process's native tasks (not Python threads) that kept the main thread's name:
+    OpenBLAS's threads after numpy loads; named ones (pyarrow's jemalloc_bg_thd) are not."""
+    python = {t.native_id for t in threading.enumerate()}
+    name = comm(threading.main_thread().native_id)
+    return [t for t in tasks() if t not in python and comm(t) == name]
+
+
 def set_mask(tid: int, cores) -> bool:
     """sched_setaffinity on one task; False if it has exited."""
     try:
@@ -141,6 +167,10 @@ class CorePin:
         #: (end time, seconds) of every station-day's classify.
         self.sd_times: list[tuple[float, float]] = []
         self._lock = threading.Lock()
+        #: Native tasks right after the imports (the BLAS threads), set by the runner.
+        self.blas_tids: set[int] = set()
+        #: {class: (CPU seconds, tasks)} at the worker's end (sample_cpu).
+        self.cpu_split: Optional[dict[str, tuple[float, int]]] = None
 
     @property
     def window_open(self) -> bool:
@@ -224,6 +254,42 @@ class CorePin:
         after the first (which carries the graph's first-call setup)."""
         end = self.reset_event[0] if self.reset_event is not None else float("inf")
         return [s for t, s in self.sd_times[1:] if t <= end]
+
+    def sample_cpu(self) -> None:
+        """Before the worker's pools shut down: every task's CPU seconds, by class."""
+        names = {t.native_id: t.name for t in threading.enumerate()}
+        main = threading.main_thread().native_id
+        split = {k: [0.0, 0] for k in CPU_CLASSES}
+        live = 0.0
+        for t in tasks():
+            cpu = cpu_seconds(t)
+            if cpu is None:
+                continue
+            if t == self.classify_tid:
+                k = "classify"
+            elif t in names:
+                k = "loop" if t == main else "amp" if names[t].startswith("amp") else "other"
+            elif comm(t) == CLASSIFY_COMM:
+                k = "omp"
+            else:
+                k = "blas" if t in self.blas_tids else "other"
+            split[k][0] += cpu
+            split[k][1] += 1
+            live += cpu
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        split["exited"][0] = max(0.0, ru.ru_utime + ru.ru_stime - live)
+        self.cpu_split = {k: (round(c, 2), n) for k, (c, n) in split.items()}
+
+    def cpu_line(self, forward_s: float, pool_forward_s: float) -> str:
+        """The per-thread CPU split and the OpenMP spin-waste estimate: pool CPU
+        minus the forward wall its threads could have spent working."""
+        if self.cpu_split is None:
+            return "thread cpu - (not sampled)"
+        split = " ".join(f"{k}={c:.2f}/{n}" for k, (c, n) in self.cpu_split.items())
+        omp = self.cpu_split["omp"][0]
+        return (f"thread cpu s/tasks {split}; forward wall {forward_s:.2f} s pool-forward "
+                f"{pool_forward_s:.2f} s; spin waste omp {omp - pool_forward_s:.2f} s "
+                f"blas {self.cpu_split['blas'][0]:.2f} s")
 
     def summary(self) -> str:
         """One line for the group log."""

@@ -171,6 +171,25 @@ TAIL = os.environ.get("QS_TAIL", "widen")
 #: migrations, picks identical; "all" ran 1.15x off's (amp pools confined to the pair lengthen the tail).
 PIN_ARMS = ("off", "classify", "all")
 PIN = os.environ.get("QS_PIN", "classify")
+#: OpenMP wait policy of each worker (libgomp, torch's OpenMP runtime, reads it when torch loads):
+#: "default" leaves the policy env as it is (libgomp spins GOMP_SPINCOUNT=300k before it sleeps
+#: after each parallel region); "short" spins 10k (covers the gaps inside a forward, sleeps across
+#: the window building, overlap-add and station-day gaps between them); "passive" sleeps at once
+#: (OMP_WAIT_POLICY=PASSIVE). Both also run OpenBLAS on 1 thread: its one pool thread spins after
+#: every threaded call (the amplitude detrend's small matvec), 0.28-0.40 CPU-s per group in a
+#: 1-SD smoke (round 23, above the 0.5 CPU-s/group bar over a group's 6 station-days).
+#: A policy variable already in the environment wins over the arm (which then sets nothing).
+#: "short" is the default (round 23): in the 4-round local A/B its median CPU-s was 0.731x
+#: default's (113.1 vs 154.8) and its median wall 0.823x (18.28 vs 22.23 s), lower in all 4
+#: rounds, picks identical; "passive" cut CPU-s (0.787x) but ran 1.13x slower (its pool sleeps
+#: inside every forward). QS_SPIN=default restores the round-22 behaviour.
+SPIN_ARMS = ("default", "short", "passive")
+SPIN = os.environ.get("QS_SPIN", "short")
+SPIN_ENV = {"default": {}, "short": {"GOMP_SPINCOUNT": "10000", "OPENBLAS_NUM_THREADS": "1"},
+            "passive": {"OMP_WAIT_POLICY": "PASSIVE", "OPENBLAS_NUM_THREADS": "1"}}
+SPIN_POLICY_VARS = ("OMP_WAIT_POLICY", "GOMP_SPINCOUNT")
+#: The wait-policy env each worker logs.
+SPIN_LOG_VARS = SPIN_POLICY_VARS + ("OPENBLAS_NUM_THREADS", "OPENBLAS_THREAD_TIMEOUT")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -275,6 +294,15 @@ def apply_malloc(arm: str = MALLOC) -> dict[str, int]:
             for name, param, value in MALLOPT_PINNED}
 
 
+def apply_spin(arm: str = SPIN) -> str:
+    """Set a QS_SPIN arm's policy env (before torch loads); return where the policy came from."""
+    user = [var for var in SPIN_POLICY_VARS if var in os.environ]
+    if user:
+        return "user:" + ",".join(user)
+    os.environ.update(SPIN_ENV[arm])
+    return "arm"
+
+
 def fast_exit(code: int) -> None:
     """Flush the log streams, shut logging down and leave without interpreter teardown."""
     sys.stdout.flush()
@@ -298,7 +326,10 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+    spin_source = apply_spin()
+    spin_env = " ".join(f"{var}={os.environ.get(var, '-')}" for var in SPIN_LOG_VARS)
     sys.path.insert(0, str(QUAKESCOPE_ROOT))
+    from sb_catalog.src import core_pin
     from sb_catalog.src.core_pin import CorePin
 
     # "all": before obspy/numpy/torch start any thread, so every thread inherits the pair.
@@ -344,6 +375,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     from sb_catalog.src.utils import parse_year_day
 
     timeline.mark("imports_done")
+    # The native tasks the imports started (OpenBLAS's threads), for the per-thread CPU split.
+    pin.blas_tids = set(core_pin.blas_tasks())
     db = StationTable(stations)
     start, end = parse_year_day(workload["start"]), parse_year_day(workload["end"])
     if source is None:
@@ -480,6 +513,12 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     logger.info("group %d: %s", index, pin.summary())
     logger.info("group %d: %s", index, pin.reset_line())
     logger.info(
+        "group %d: spin=%s policy=%s env %s; blas tasks %s; %s", index, SPIN, spin_source, spin_env,
+        ",".join(f"{t}:{core_pin.comm(t)}" for t in sorted(pin.blas_tids)) or "-",
+        pin.cpu_line(graph.forward_seconds, graph.pool_forward_seconds) if graph is not None
+        else pin.cpu_line(float("nan"), float("nan")),
+    )
+    logger.info(
         "startup-diag group %d: startup2=%s imports=%s start=%+.3f entry=%+.3f load=%s marks module=%s "
         "entry=%s %s; imports %s; bytecode %s", index, STARTUP2, IMPORTS,
         startup_diag.process_start() - config.launched if config.launched else float("nan"),
@@ -533,6 +572,8 @@ def main() -> int:
         parser.error(f"unknown QS_STARTUP2 {STARTUP2!r}; expected one of {list(STARTUP2_ARMS)}")
     if PIN not in PIN_ARMS:
         parser.error(f"unknown QS_PIN {PIN!r}; expected one of {list(PIN_ARMS)}")
+    if SPIN not in SPIN_ARMS:
+        parser.error(f"unknown QS_SPIN {SPIN!r}; expected one of {list(SPIN_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
