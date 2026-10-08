@@ -159,7 +159,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/western"
     },
     "obs-reread": {
-      "target": 0,
+      "target": 10,
       "job_definition": "quakescope_2026_obs:25",
       "weight": "obs",
       "procs": 4,
