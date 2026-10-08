@@ -76,6 +76,15 @@ ES_REFRESH_WINDOW = float(os.environ.get("ES_REFRESH_WINDOW", "300"))
 # FDSN reserves codes beginning with a digit or X/Y/Z for temporary deployments,
 # and reassigns them, so a credential for one is additionally scoped by year.
 ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
+#: How a station-day's objects are found (`S3DataSource(list_mode=...)`):
+#: "day" LISTs each network's whole day prefix once (~4,000 keys on SCEDC);
+#: "station" LISTs only the station's key stem under it, where the archive puts
+#: every object of the day directly under the day prefix (SCEDC, NCEDC). Both
+#: decide existence from the archive's answer, never from the key alone.
+LIST_MODES = ("day", "station")
+#: Keys per ListObjectsV2 page; `fs.ls` hides its pages, so the day listing's
+#: request count is derived from its key count.
+S3_LIST_PAGE = 1000
 
 
 class EarthScopeNoAccess(RuntimeError):
@@ -397,6 +406,40 @@ class S3ObjectHelper:
         """
         return fs.ls(prefix)
 
+    #: Whether every object of a day sits directly under the day prefix behind
+    #: a per-station key stem (`station_stem`), so one station-day can be
+    #: listed on its own. EarthScope keys one object per station-day under a
+    #: versioned name and GeoNet adds a station directory; both keep `list_day`.
+    lists_stations = False
+
+    def station_stem(self, net, sta) -> str:
+        """The key stem every object of one station shares under a day prefix.
+
+        It must end where the station code does: SCEDC pads the code to five
+        characters and NCEDC follows it with ".", so CLC never matches CLCX.
+        """
+        raise NotImplementedError(f"{type(self).__name__} lists whole days")
+
+    def list_station_day(self, fs, prefix, stem) -> tuple[list, int]:
+        """Objects under `prefix` whose names start with `stem`, and the number
+        of LIST requests it took.
+
+        A real LIST with the stem as the server-side Prefix, so a station-day
+        exists only if the archive says it does. One level, as `list_day`: the
+        "/" delimiter keeps anything below the day prefix out, and the names
+        are the `bucket/key` strings `fs.ls` returns.
+        """
+        bucket, _, key = prefix.partition("/")
+        kwargs = dict(Bucket=bucket, Prefix=f"{key}{stem}", Delimiter="/")
+        names, requests = [], 0
+        while True:
+            page = fs.call_s3("list_objects_v2", **kwargs)
+            requests += 1
+            names += [f"{bucket}/{obj['Key']}" for obj in page.get("Contents", [])]
+            if not page.get("IsTruncated"):
+                return sorted(names), requests
+            kwargs["ContinuationToken"] = page["NextContinuationToken"]
+
 
 class SCEDCS3ObjectHelper(S3ObjectHelper):
     def get_prefix(self, net, year, day) -> str:
@@ -405,6 +448,11 @@ class SCEDCS3ObjectHelper(S3ObjectHelper):
     def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
         return f"{net}{sta.ljust(5, '_')}{cha}{comp}{loc.ljust(3, '_')}{year}{day}.ms"
 
+    lists_stations = True
+
+    def station_stem(self, net, sta) -> str:
+        return f"{net}{sta.ljust(5, '_')}"
+
 
 class NCEDCS3ObjectHelper(S3ObjectHelper):
     def get_prefix(self, net, year, day) -> str:
@@ -412,6 +460,11 @@ class NCEDCS3ObjectHelper(S3ObjectHelper):
 
     def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
         return f"{sta}.{net}.{cha}{comp}.{loc}.D.{year}.{day}"
+
+    lists_stations = True
+
+    def station_stem(self, net, sta) -> str:
+        return f"{sta}.{net}."
 
 
 class EarthScopeS3ObjectHelper(S3ObjectHelper):
@@ -677,6 +730,16 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
 
     def list_day(self, net, fs, prefix) -> list:
         return self.helpers[self.get_data_center(net)].list_day(fs, prefix)
+
+    def lists_stations_of(self, net) -> bool:
+        return self.helpers[self.get_data_center(net)].lists_stations
+
+    def station_stem(self, net, sta) -> str:
+        return self.helpers[self.get_data_center(net)].station_stem(net, sta)
+
+    def list_station_day(self, net, fs, prefix, stem) -> tuple[list, int]:
+        return self.helpers[self.get_data_center(net)].list_station_day(
+            fs, prefix, stem)
 
     def get_filesystem(self, net, year=None):
         dc = self.get_data_center(net)
@@ -1164,7 +1227,11 @@ class S3DataSource:
         db: SeisBenchDatabase = None,
         limit_mb: Optional[int] = 200,
         early_channels: Optional[dict[str, str]] = None,
+        list_mode: str = "day",
     ):
+        if list_mode not in LIST_MODES:
+            raise ValueError(f"unknown list_mode {list_mode!r}; expected one of {list(LIST_MODES)}")
+        self.list_mode = list_mode
         self.start = start
         self.end = end
         self.components = components
@@ -1183,7 +1250,10 @@ class S3DataSource:
         self._inventory_future: Optional[Future] = None
         self._inventory_lock = threading.Lock()
         self._inventory_request_early = None
-        self._early_listing: dict = {}        # (net, prefix) -> Future[list]
+        # (net, prefix) for a day listing, (net, prefix, stem) for a station
+        # listing -> Future[list]
+        self._early_listing: dict = {}
+        self._station_listings: dict = {}     # (net, prefix, stem) -> list, this run only
         self._prefetched: dict = {}           # (uri, net, sourcename, year) -> Future
         self._prefetch_targets: set = set()
         self._inflight = 0
@@ -1194,6 +1264,10 @@ class S3DataSource:
             "prefetched": 0, "prefetch_consumed": 0, "prefetch_fallbacks": 0,
             "prefetch_unused": 0, "max_reads_in_flight": 0,
         }
+        # Every LIST this source issued, either mode. `requests` is counted on
+        # the station path; on the day path it is the page count implied by
+        # the keys (S3_LIST_PAGE), since `fs.ls` pages internally.
+        self.list_counters = {"calls": 0, "requests": 0, "keys": 0, "max_keys": 0}
         self.s3helper = CompositeS3ObjectHelper()
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
@@ -1254,7 +1328,16 @@ class S3DataSource:
         for net in self.networks:
             prefix = self.s3helper.get_prefix(
                 net, day.strftime("%Y"), day.strftime("%j"))
-            self._early_listing[(net, prefix)] = Future()
+            if not self._lists_stations(net):
+                self._early_listing[(net, prefix)] = Future()
+        # Station listings: only the first station's, the one whose reads
+        # start here; every later station-day lists itself in the loader.
+        first_net, first_sta, _ = self.stations[0].split(".")
+        if self._lists_stations(first_net):
+            stem = self.s3helper.station_stem(first_net, first_sta)
+            prefix = self.s3helper.get_prefix(
+                first_net, day.strftime("%Y"), day.strftime("%j"))
+            self._early_listing[(first_net, prefix, stem)] = Future()
         # The thread gets its own view: the loader pops from `_early_listing`.
         in_background("qs-prefetch", self._prefetch_first, early_channels, day,
                       dict(self._early_listing))
@@ -1283,17 +1366,21 @@ class S3DataSource:
         both kept for `load_waveforms`, which consumes each once."""
         outcomes = {}
         try:
-            for (net, prefix) in listings:
+            for key in listings:
+                net, prefix = key[:2]
                 try:
-                    outcomes[net] = (self._list_network_day(net, day, prefix), None)
+                    listing = (self._list_network_day(net, day, prefix) if len(key) == 2
+                               else self._list_station_day(net, day, prefix, key[2]))
+                    outcomes[key] = (listing, None)
                 except BaseException as exc:
-                    outcomes[net] = (None, exc)
+                    outcomes[key] = (None, exc)
                 self.startup_counters["listing_early"] += 1
             station = self.stations[0] if self.stations else None
             if station is not None:
                 net, sta, loc = station.split(".")
                 channel = select_channel(early_channels[station].split(","))
-                listing, _ = outcomes.get(net, (None, None))
+                listing = next((outcome[0] for key, outcome in outcomes.items()
+                                if key[0] == net), None)
                 if (self.s3helper.get_data_center(net) in ["scedc", "ncedc", "geonet"]
                         and channel is not None and listing is not None):
                     for uri in self._generate_waveform_uris(net, sta, loc, channel, day):
@@ -1307,8 +1394,8 @@ class S3DataSource:
         finally:
             # A listing this thread never reached resolves to None, which the
             # loader answers with its own LIST.
-            for (net, prefix), future in listings.items():
-                listing, exc = outcomes.get(net, (None, None))
+            for key, future in listings.items():
+                listing, exc = outcomes.get(key, (None, None))
                 if exc is not None:
                     future.set_exception(exc)
                 else:
@@ -1417,6 +1504,9 @@ class S3DataSource:
             avail_uri = {}
             for net in self.networks:
                 avail_uri[net] = []
+                if self._lists_stations(net):
+                    # Listed per station-day below, just before its reads.
+                    continue
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
@@ -1518,6 +1608,8 @@ class S3DataSource:
                 dc = self.s3helper.get_data_center(net)
                 logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
                 stream = obspy.Stream()
+                avail = (self._station_listing(net, sta, day)
+                         if self._lists_stations(net) else avail_uri[net])
 
                 if dc in ["scedc", "ncedc", "geonet"] and self.concurrent_reads:
                     # Overlap arm: the station-day's component reads in flight
@@ -1529,7 +1621,7 @@ class S3DataSource:
                         for channel in all_channels if not check[channel]
                         for uri in self._generate_waveform_uris(
                             net, sta, loc, channel, day)
-                        if uri in avail_uri[net]
+                        if uri in avail
                     ]
                     parts = await asyncio.gather(
                         *(self._read_with_timeout(uri, net, station, day)
@@ -1551,7 +1643,7 @@ class S3DataSource:
                         for uri in self._generate_waveform_uris(
                             net, sta, loc, channel, day
                         ):
-                            if uri in avail_uri[net]:
+                            if uri in avail:
                                 stream += await self._read_with_timeout(
                                     uri, net, station, day
                                 )
@@ -1559,7 +1651,7 @@ class S3DataSource:
                     # use the first one: they should be all same
                     r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
                     # earthscope object name has version number
-                    uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
+                    uri = list(filter(lambda v: re.match(r, v), avail))
                     if len(uri) > 0:
                         # Ask libmseed for the bands we will keep, so the rest
                         # is never decoded. One EarthScope object holds every
@@ -1606,9 +1698,60 @@ class S3DataSource:
         timeline.mark("list_start")
         try:
             with stage("s3.list"):
-                return self.s3helper.list_day(net, fs, prefix)
+                listing = self.s3helper.list_day(net, fs, prefix)
         finally:
             timeline.mark("list_end")
+        self._count_list(len(listing), max(1, -(-len(listing) // S3_LIST_PAGE)))
+        return listing
+
+    def _lists_stations(self, net) -> bool:
+        """Whether this network's station-days are listed one station at a time."""
+        return self.list_mode == "station" and self.s3helper.lists_stations_of(net)
+
+    def _list_station_day(self, net, day, prefix, stem) -> list:
+        """One station's LIST for one day (`list_mode="station"`); the caller
+        handles what it raises, as for `_list_network_day`."""
+        fs = self.s3helper.get_filesystem(net, day.year)
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                listing, requests = self.s3helper.list_station_day(net, fs, prefix, stem)
+        finally:
+            timeline.mark("list_end")
+        self._count_list(len(listing), requests)
+        return listing
+
+    def _station_listing(self, net, sta, day) -> list:
+        """The objects of one station-day: the startup's LIST if it ran this
+        one, else a LIST now. Kept for the rest of the run, never beyond it.
+
+        A missing day prefix is a day with no data, as on the day path; a
+        LIST that fails any other way fails the shard, as it does there.
+        """
+        prefix = self.s3helper.get_prefix(net, day.strftime("%Y"), day.strftime("%j"))
+        key = (net, prefix, self.s3helper.station_stem(net, sta))
+        if key in self._station_listings:
+            return self._station_listings[key]
+        try:
+            early = (self._early_listing.pop(key, None)
+                     if self._early_listing else None)
+            listing = early.result() if early is not None else None
+            if listing is not None:
+                self.startup_counters["listing_consumed"] += 1
+            else:
+                listing = self._list_station_day(net, day, prefix, key[2])
+        except FileNotFoundError:
+            logger.debug(f"Path does not exist {prefix}{key[2]}")
+            listing = []
+        self._station_listings[key] = listing
+        return listing
+
+    def _count_list(self, keys: int, requests: int) -> None:
+        counters = self.list_counters
+        counters["calls"] += 1
+        counters["requests"] += requests
+        counters["keys"] += keys
+        counters["max_keys"] = max(counters["max_keys"], keys)
 
     def _log_once(self, key: str, message: str) -> None:
         """Say it at ERROR the first time and at DEBUG after.

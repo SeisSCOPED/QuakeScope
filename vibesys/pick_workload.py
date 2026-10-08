@@ -77,6 +77,20 @@ DECONV = os.environ.get("QS_DECONV", "transpose")
 #: activations are reused from the heap instead of being mmapped and munmapped on every batch.
 MALLOC_ARMS = ("default", "pinned")
 MALLOC = os.environ.get("QS_MALLOC", "default")
+#: How a worker finds a station-day's objects (sb_catalog.src.s3_helper.LIST_MODES): "station"
+#: LISTs only the station's key stem under the day prefix on SCEDC/NCEDC (one request, a dozen
+#: keys); QS_LIST=day LISTs the whole day prefix per network (~4,000 keys on SCEDC), the round-9
+#: path. GeoNet and EarthScope list whole days either way.
+LIST_MODES = ("station", "day")
+LIST = os.environ.get("QS_LIST", "station")
+#: Parent work before the workers launch: "early" writes SeisBench's cache config.json itself
+#: (the bytes `import seisbench` writes) and imports SeisBench only after the launch;
+#: QS_PARENT=serial imports it before the launch, the round-9 order.
+PARENT_ARMS = ("early", "serial")
+PARENT = os.environ.get("QS_PARENT", "early")
+#: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
+#: sort_keys=True) when the cache root has no config.json.
+SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
 #: (name, mallopt parameter, value) applied by the "pinned" arm.
 MALLOPT_PINNED = (("M_TRIM_THRESHOLD", -1, 1 << 30), ("M_MMAP_THRESHOLD", -3, 1 << 30))
 THREAD_ENV_VARS = (
@@ -133,6 +147,13 @@ def stage_weights(cache_root: Path) -> None:
         link = target / weight_file.name
         if not link.exists():
             link.symlink_to(weight_file)
+
+
+def write_seisbench_config(cache_root: Path) -> None:
+    """Write the config.json `import seisbench` writes into an empty cache root, so the
+    workers' imports find it and only read it, without the parent importing SeisBench."""
+    with open(cache_root / "config.json", "x") as fconfig:
+        json.dump(SEISBENCH_DEFAULT_CONFIG, fconfig, indent=4, sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -200,6 +221,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
             components=workload["components"],
             db=None,
             early_channels={s["id"]: s["channels"] for s in stations},
+            list_mode=LIST,
         )
 
     from sb_catalog.src.picker import S3MongoSBBridge
@@ -217,6 +239,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
             end=end,
             components=workload["components"],
             db=db,
+            list_mode=LIST,
         )
     else:
         if (source.start, source.end) != (start, end):
@@ -290,6 +313,10 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         ]),
     )
     logger.info(
+        "group %d: list=%s parent=%s list counters %s", index, source.list_mode, PARENT,
+        " ".join(f"{k}={v}" for k, v in source.list_counters.items()),
+    )
+    logger.info(
         "group %d: startup %s counters %s", index, STARTUP,
         " ".join(f"{k}={v}" for k, v in source.startup_counters.items()),
     )
@@ -301,6 +328,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
 
 def main() -> int:
     """Pick every station-day of a workload with the production worker layout."""
+    main_entry = time.time()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -317,6 +345,10 @@ def main() -> int:
         parser.error(f"unknown QS_DECONV {DECONV!r}; expected one of {list(DECONV_IMPLS)}")
     if MALLOC not in MALLOC_ARMS:
         parser.error(f"unknown QS_MALLOC {MALLOC!r}; expected one of {list(MALLOC_ARMS)}")
+    if LIST not in LIST_MODES:
+        parser.error(f"unknown QS_LIST {LIST!r}; expected one of {list(LIST_MODES)}")
+    if PARENT not in PARENT_ARMS:
+        parser.error(f"unknown QS_PARENT {PARENT!r}; expected one of {list(PARENT_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
@@ -327,10 +359,14 @@ def main() -> int:
     stage_weights(cache_root)
     os.environ["SEISBENCH_CACHE_ROOT"] = str(cache_root)
     # SeisBench writes its cache config.json on first import; do it once here, in the
-    # parent, so the spawned workers do not race on writing it.
-    import seisbench
+    # parent, so the spawned workers do not race on writing it. The early arm writes the
+    # same bytes without the import, which then runs after the launch and only reads them.
+    if PARENT == "serial":
+        import seisbench
 
-    logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
+        logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
+    else:
+        write_seisbench_config(cache_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
         "picking %d stations with %d procs x %d threads (layout %s, data queue %d)",
@@ -351,6 +387,15 @@ def main() -> int:
     ]
     for worker in workers:
         worker.start()
+    logger.info(
+        "parent %s: pre-launch %.3f s (main entry %.3f -> launch %.3f), %d workers started %.3f s "
+        "after launch", PARENT, config.launched - main_entry, main_entry, config.launched,
+        len(workers), time.time() - config.launched,
+    )
+    if PARENT == "early":
+        import seisbench
+
+        logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
     for worker in workers:
         worker.join()
     failed = [i for i, worker in enumerate(workers) if worker.exitcode != 0]
