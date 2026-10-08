@@ -171,15 +171,15 @@ TAIL = os.environ.get("QS_TAIL", "widen")
 #: migrations, picks identical; "all" ran 1.15x off's (amp pools confined to the pair lengthen the tail).
 PIN_ARMS = ("off", "classify", "all")
 PIN = os.environ.get("QS_PIN", "classify")
-#: oneDNN's CPU ISA cap for the bf16 forward: "amx" leaves the environment as it is (oneDNN
-#: dispatches its AMX bf16 kernels on hosts that have AMX); "avx512bf16" sets
-#: ONEDNN_MAX_CPU_ISA=AVX512_CORE_BF16 in each worker before torch loads (oneDNN reads it at
-#: its first primitive), which runs the AVX-512 BF16 kernels. A ONEDNN_MAX_CPU_ISA already in the
-#: environment wins over the arm (which then sets nothing). Each worker logs the arm, the
-#: effective env and the ISA of its first forward's convs (fast_forward.onednn_probe).
-ISA_ARMS = ("amx", "avx512bf16")
-ISA = os.environ.get("QS_ISA", "amx")
-ISA_ENV = {"amx": {}, "avx512bf16": {"ONEDNN_MAX_CPU_ISA": "AVX512_CORE_BF16"}}
+#: The classify path's memory passes around the graph (sb_catalog.src.fast_annotate.GLUE_ARMS):
+#: "fused" normalizes each batch straight from the station-day array into the first conv's
+#: bf16 channels-last layout, takes the softmax of the unblinded samples only and averages the
+#: stacked sums per run of equal window count; "off" is the round-22 path. Each group logs
+#: its arm, the active paths and the batches through each. "fused" is the default (round 25): in
+#: the 4-round local A/B its median wall was 0.933x off's (16.38 vs 17.56 s, 4 of 4 rounds faster),
+#: CPU -9.9 s, loaded classify -16%, picks identical to off's under the evaluator's rule.
+GLUE_ARMS = ("off", "fused")
+GLUE = os.environ.get("QS_GLUE", "fused")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -284,14 +284,6 @@ def apply_malloc(arm: str = MALLOC) -> dict[str, int]:
             for name, param, value in MALLOPT_PINNED}
 
 
-def apply_isa(arm: str = ISA) -> str:
-    """Set a QS_ISA arm's oneDNN env (before torch loads); return where the cap came from."""
-    if "ONEDNN_MAX_CPU_ISA" in os.environ:
-        return "user"
-    os.environ.update(ISA_ENV[arm])
-    return "arm"
-
-
 def fast_exit(code: int) -> None:
     """Flush the log streams, shut logging down and leave without interpreter teardown."""
     sys.stdout.flush()
@@ -315,7 +307,6 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
-    isa_source = apply_isa()
     sys.path.insert(0, str(QUAKESCOPE_ROOT))
     from sb_catalog.src.core_pin import CorePin
 
@@ -403,6 +394,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             classify_impl=CLASSIFY_IMPL,
             annotate_impl=ANNOTATE_IMPL,
             deconv_impl=DECONV,
+            glue=GLUE,
             imports=IMPORTS,
             tail=tail,
             amp_signal=AMP_SIGNAL,
@@ -434,6 +426,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{k}={v}" for k, v in mallopt_rc.items()) or "-",
     )
     annotator = bridge.model.fast_annotator
+    logger.info("group %d: QS_GLUE=%s %s", index, GLUE,
+                annotator.glue_summary() if annotator is not None else "inactive (SeisBench annotate)")
     logger.info(
         "group %d: annotate impl %s, %s", index, ANNOTATE_IMPL,
         annotator.summary() if annotator is not None else "SeisBench annotate",
@@ -495,11 +489,6 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         f"0 claims, 0 events, 0 updates, max total -, threads at last batch {config.threads}; events -",
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
-    logger.info(
-        "group %d: isa=%s source=%s env ONEDNN_MAX_CPU_ISA=%s; onednn %s", index, ISA, isa_source,
-        os.environ.get("ONEDNN_MAX_CPU_ISA", "-"),
-        getattr(graph, "isa_probe", None) or "-" if graph is not None else "-",
-    )
     logger.info("group %d: %s", index, pin.summary())
     logger.info("group %d: %s", index, pin.reset_line())
     logger.info(
@@ -556,8 +545,8 @@ def main() -> int:
         parser.error(f"unknown QS_STARTUP2 {STARTUP2!r}; expected one of {list(STARTUP2_ARMS)}")
     if PIN not in PIN_ARMS:
         parser.error(f"unknown QS_PIN {PIN!r}; expected one of {list(PIN_ARMS)}")
-    if ISA not in ISA_ARMS:
-        parser.error(f"unknown QS_ISA {ISA!r}; expected one of {list(ISA_ARMS)}")
+    if GLUE not in GLUE_ARMS:
+        parser.error(f"unknown QS_GLUE {GLUE!r}; expected one of {list(GLUE_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())

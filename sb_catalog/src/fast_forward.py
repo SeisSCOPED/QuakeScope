@@ -29,12 +29,12 @@ pass over the tensor.
 
 The numerics are PhaseNet's to bf16 rounding; the probabilities are returned
 as fp32 NCW, exactly the shape and dtype `annotate_batch_post` expects.
+`logits` is the same graph up to the out conv, channels-last in the compute
+dtype, for a caller that takes the softmax of only the samples it keeps
+(fast_annotate with QS_GLUE=fused).
 """
 
 from __future__ import annotations
-
-import os
-import tempfile
 
 import torch
 import torch.nn.functional as F
@@ -117,41 +117,6 @@ def _polyphase(weight4: torch.Tensor, bias: torch.Tensor, stride: int
     return weight.contiguous(memory_format=torch.channels_last), bias.repeat(stride), taps - 1
 
 
-def onednn_probe(fn, *args):
-    """Run fn(*args) once with oneDNN verbose on; return (result, "isa=<max ISA> conv=<kernels>").
-
-    oneDNN prints its verbose lines on this process's stdout (fd 1), so fd 1 goes to a
-    temporary file for the call; any other line written there meanwhile is passed through.
-    The ISA is oneDNN's "isa:" info line (the effective cap); the kernels are the
-    implementation tags of the convolutions it ran (e.g. brg_conv_fwd:avx512_core_bf16).
-    """
-    import ctypes
-
-    fd, path = tempfile.mkstemp(prefix="qs-onednn-")
-    saved = os.dup(1)
-    libc = ctypes.CDLL(None)
-    libc.fflush(None)
-    os.dup2(fd, 1)
-    try:
-        with torch.backends.mkldnn.verbose(torch.backends.mkldnn.VERBOSE_ON):
-            result = fn(*args)
-    finally:
-        libc.fflush(None)
-        os.dup2(saved, 1)
-        os.close(saved)
-        os.close(fd)
-        with open(path) as f:
-            lines = f.read().splitlines()
-        os.unlink(path)
-    other = [line for line in lines if not line.startswith("onednn_verbose")]
-    if other:
-        os.write(1, ("\n".join(other) + "\n").encode())
-    isa = next((line.split("isa:", 1)[1] for line in lines if ",info,cpu,isa:" in line), "-")
-    convs = sorted({line.split(",")[6] for line in lines
-                    if ",primitive,exec,cpu,convolution," in line and len(line.split(",")) > 6})
-    return result, f"isa={isa.replace(' ', '_')} conv={','.join(convs) or '-'}"
-
-
 class PhaseNetGraph(torch.nn.Module):
     """Inference-only PhaseNet: BN folded, (1, k) convs, channels-last."""
 
@@ -207,8 +172,6 @@ class PhaseNetGraph(torch.nn.Module):
             mean = _relu_mean(bn2)
             self.up.append((up, same))
         self.out = add(model.out, None, "conv", 1, 0, relu=False, input_mean=mean)
-        #: The oneDNN ISA and conv kernels of the first forward (onednn_probe), once it ran.
-        self.isa_probe = None
 
     def _apply(self, layer, x: torch.Tensor) -> torch.Tensor:
         kind, w, b, stride, padding, relu = layer
@@ -227,14 +190,12 @@ class PhaseNetGraph(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """(batch, 3, samples) float -> (batch, 3, samples) fp32 probabilities."""
-        if self.isa_probe is None:
-            self.isa_probe = "pending"
-            out, self.isa_probe = onednn_probe(self._forward, x)
-            return out
-        return self._forward(x)
-
-    def _forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(self.dtype).unsqueeze(2).contiguous(memory_format=torch.channels_last)
+        return torch.softmax(self.logits(x).float(), dim=1).squeeze(2).contiguous()
+
+    def logits(self, x: torch.Tensor) -> torch.Tensor:
+        """(batch, 3, 1, samples) channels-last in the compute dtype -> the out conv's
+        (batch, 3, 1, samples) logits, channels-last in the compute dtype."""
         x = self._apply(self.inc, x)
         skips = []
         for i, (same, down) in enumerate(self.down):
@@ -262,5 +223,4 @@ class PhaseNetGraph(torch.nn.Module):
             offset = (x.shape[-1] - skip.shape[-1]) // 2
             x = torch.cat([skip, x[..., offset:offset + skip.shape[-1]]], dim=1)
             x = self._apply(conv_same, x)
-        x = self._apply(self.out, x)
-        return torch.softmax(x.float(), dim=1).squeeze(2).contiguous()
+        return self._apply(self.out, x)

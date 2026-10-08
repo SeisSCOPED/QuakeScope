@@ -241,11 +241,13 @@ IMPORT_MODES = ("lean", "full")
 ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
 
 
-def apply_annotate_impl(model: sbm.WaveformModel, impl: str) -> sbm.WaveformModel:
+def apply_annotate_impl(model: sbm.WaveformModel, impl: str, glue: str = "off"
+                        ) -> sbm.WaveformModel:
     """Set how `model.classify` annotates, in place (after apply_classify_impl).
 
     The fast annotate drives the fast graph directly; without one (another
     model, or classify impl "seisbench") it keeps SeisBench's, and says so.
+    `glue` is the fast annotate's glue arm (fast_annotate.GLUE_ARMS).
     """
     if impl not in ANNOTATE_IMPLS:
         raise ValueError(
@@ -258,7 +260,7 @@ def apply_annotate_impl(model: sbm.WaveformModel, impl: str) -> sbm.WaveformMode
         return model
     from . import fast_annotate
 
-    fast_annotate.apply(model, model.fast_graph)
+    fast_annotate.apply(model, model.fast_graph, glue)
     return model
 
 
@@ -535,6 +537,7 @@ class S3MongoSBBridge:
         classify_impl: str = "seisbench",
         annotate_impl: str = "seisbench",
         deconv_impl: str = "transpose",
+        glue: str = "off",
         imports: str = "full",
         tail: Optional[TailShare] = None,
         amp_signal: str = "scipy",
@@ -588,6 +591,7 @@ class S3MongoSBBridge:
                     deconv_impl,
                 ),
                 annotate_impl,
+                glue,
             )
             if isinstance(self.model, LeanPhaseNet):
                 self.model.seisbench_factory = functools.partial(
