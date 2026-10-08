@@ -25,6 +25,8 @@ import json
 import sys
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 REGION = "us-east-2"
 BUCKET = "quakescope-picks-2026"
@@ -79,17 +81,26 @@ def read_campaign(s3, name: str) -> dict:
     # Manifests carry the authoritative pick count: the writer records what it
     # actually wrote, so this does not require opening any Parquet.
     picks = sdays = files = 0
-    n_man = 0
+    n_man = unread = 0
     for page in s3.get_paginator("list_objects_v2").paginate(
         Bucket=BUCKET, Prefix=f"{name}/manifests/"
     ):
         for o in page.get("Contents", []):
             n_man += 1
-            m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
+            try:
+                m = json.loads(s3.get_object(Bucket=BUCKET, Key=o["Key"])["Body"].read())
+            except ClientError:
+                # Throttled even after adaptive retries (the fleet writes to
+                # the same prefixes): count it as unread rather than fail the
+                # whole status page, which is what happened on 2026-10-08
+                # 22:11 with 1,000 workers scaling up.
+                unread += 1
+                continue
             picks += m.get("n_picks", 0)
             sdays += m.get("station_days", 0)
             files += len(m.get("files", []))
     d["manifests"] = n_man
+    d["manifests_unread"] = unread
     d["picks"] = picks
     d["done_station_days"] = sdays
     d["parquet_files"] = files
@@ -199,7 +210,11 @@ def main():
     ap.add_argument("--markdown", action="store_true")
     ap.add_argument("--campaigns", default=",".join(CAMPAIGNS))
     a = ap.parse_args()
-    s3 = boto3.client("s3", region_name=REGION)
+    # Adaptive retries, as the fleet uses (s3_state.py): this job reads the
+    # same prefixes a large fleet is writing, and 4 fast retries were not
+    # enough to ride out a SlowDown.
+    s3 = boto3.client("s3", region_name=REGION, config=Config(
+        retries={"max_attempts": 12, "mode": "adaptive"}))
     b = boto3.client("batch", region_name=REGION)
     rows = [read_campaign(s3, c) for c in a.campaigns.split(",") if c]
     body, sig = render(rows, read_batch(b), a.markdown)
