@@ -152,21 +152,27 @@ def apply_inference_precision(model: sbm.WaveformModel, precision: str
 #: "seisbench" is the model's own forward, with the precision set by
 #: apply_inference_precision. "fast" swaps in fast_forward.PhaseNetGraph
 #: (BatchNorm folded, channels-last (1, k) convs, weights stored in the compute
-#: dtype) at FAST_BATCH_SIZE windows per batch: the full-resolution layers are
-#: memory-bound, and 64 windows keep their activations in cache where 256 do
-#: not. Windowing, normalization, blinding, stacking and thresholds are
-#: SeisBench's, unchanged.
+#: dtype) at `batch_size` windows per batch (one of FAST_BATCH_SIZES; the
+#: library default FAST_BATCH_SIZE, the runner passes QS_CLASSIFY_BS). The
+#: full-resolution layers are memory-bound: a 64-window bf16 activation
+#: (64 x 8 x 3001 x 2 B, ~3 MB) exceeds a core's 2 MB L2. Alone on 2 cores 64
+#: is the fastest size, but with 4 workers forwarding at once 32 is faster
+#: (round 21). The batch size only chunks the same window sequence. Windowing,
+#: normalization, blinding, stacking and thresholds are SeisBench's, unchanged.
 CLASSIFY_IMPLS = ("seisbench", "fast")
+FAST_BATCH_SIZES = (16, 32, 64)
 FAST_BATCH_SIZE = 64
 
 
 def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
-                        deconv: str = "transpose") -> sbm.WaveformModel:
+                        deconv: str = "transpose", batch_size: int = FAST_BATCH_SIZE
+                        ) -> sbm.WaveformModel:
     """Set the forward-pass precision and implementation of `model`, in place.
 
     The fast graph is built for PhaseNet's exact architecture; any other model
     keeps the "seisbench" forward, and says so in the log. `deconv` is how the
-    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS).
+    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS);
+    `batch_size` is its windows per batch (FAST_BATCH_SIZES).
     """
     if impl not in CLASSIFY_IMPLS:
         raise ValueError(
@@ -182,6 +188,9 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
     if precision not in INFER_PRECISIONS:
         raise ValueError(
             f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    if batch_size not in FAST_BATCH_SIZES:
+        raise ValueError(
+            f"fast batch size {batch_size!r} is not one of {FAST_BATCH_SIZES}")
     from .fast_forward import PhaseNetGraph
 
     model.eval()
@@ -189,6 +198,7 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
         model, torch.bfloat16 if precision == "bf16" else torch.float32,
         deconv=deconv).eval()
     graph.batches = graph.windows = graph.station_days = 0
+    graph.batch_size = batch_size
     return attach_fast_graph(model, graph)
 
 
@@ -198,9 +208,10 @@ def attach_fast_graph(model: sbm.WaveformModel | LeanPhaseNet, graph: torch.nn.M
 
     A SeisBench PhaseNet keeps its own annotate around the graph. A LeanPhaseNet
     has no annotate of its own (the fast annotate drives the graph directly), so
-    it only takes the graph and the batch size.
+    it only takes the graph and the batch size (the graph's `batch_size`, so a
+    lean model's SeisBench twin runs at its batch size).
     """
-    model.default_args["batch_size"] = FAST_BATCH_SIZE
+    model.default_args["batch_size"] = getattr(graph, "batch_size", FAST_BATCH_SIZE)
     model.fast_graph = graph
     if isinstance(model, LeanPhaseNet):
         return model
@@ -534,6 +545,7 @@ class S3MongoSBBridge:
         classify_impl: str = "seisbench",
         annotate_impl: str = "seisbench",
         deconv_impl: str = "transpose",
+        classify_batch_size: int = FAST_BATCH_SIZE,
         imports: str = "full",
         tail: Optional[TailShare] = None,
         amp_signal: str = "scipy",
@@ -584,6 +596,7 @@ class S3MongoSBBridge:
                     infer_precision,
                     classify_impl,
                     deconv_impl,
+                    classify_batch_size,
                 ),
                 annotate_impl,
             )

@@ -66,7 +66,7 @@ INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
 AMP_IMPLS = ("fast", "obspy", "fused")
 AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fused")
 #: PhaseNet forward implementation (sb_catalog.src.picker.CLASSIFY_IMPLS): "fast" runs the
-#: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
+#: BN-folded channels-last graph at QS_CLASSIFY_BS windows per batch; QS_CLASSIFY_IMPL=seisbench restores
 #: SeisBench's own forward at 256.
 CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
 #: Windowing/stacking/picking around the fast graph (sb_catalog.src.picker.ANNOTATE_IMPLS):
@@ -86,6 +86,13 @@ STARTUP = os.environ.get("QS_STARTUP", "overlap")
 #: oneDNN's deconvolution, the round-9 graph and the control arm.
 DECONV_IMPLS = ("transpose", "polyphase")
 DECONV = os.environ.get("QS_DECONV", "polyphase")
+#: Windows per fast-graph batch (sb_catalog.src.picker.FAST_BATCH_SIZES), on the SeisBench and the
+#: fast annotate alike: the same window sequence, chunked differently. "32" (the default since round 21)
+#: is 6.7% slower than 64 alone on 2 cores, but 11.8% faster per station-day with 4 workers forwarding
+#: at once (round-21 replay), and the full workload ran at 15.93 vs 18.49 s median wall (2+2 A/B).
+#: QS_CLASSIFY_BS=64 is the round-4..20 size and the control arm; 16 is slower than 32 either way.
+CLASSIFY_BATCH_SIZES = ("16", "32", "64")
+CLASSIFY_BS = os.environ.get("QS_CLASSIFY_BS", "32")
 #: glibc malloc in each worker: "pinned" (the default since round 20) fixes the mmap and trim
 #: thresholds (mallopt, before torch is imported), so the forward's 3-12 MB activations are reused
 #: from the heap instead of being mmapped and munmapped on every batch; QS_MALLOC=default is
@@ -370,6 +377,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             classify_impl=CLASSIFY_IMPL,
             annotate_impl=ANNOTATE_IMPL,
             deconv_impl=DECONV,
+            classify_batch_size=int(CLASSIFY_BS),
             imports=IMPORTS,
             tail=tail,
             amp_signal=AMP_SIGNAL,
@@ -390,7 +398,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     logger.info(
         "group %d: classify impl %s, %s", index, CLASSIFY_IMPL,
         f"{graph.station_days} station-days / {graph.batches} batches / {graph.windows} windows "
-        "through the fast graph"
+        f"through the fast graph at bs {graph.batch_size}"
         if graph is not None else "SeisBench forward",
     )
     logger.info(
@@ -498,6 +506,9 @@ def main() -> int:
             f"unknown QS_ANNOTATE_IMPL {ANNOTATE_IMPL!r}; expected one of {list(ANNOTATE_IMPLS)}")
     if DECONV not in DECONV_IMPLS:
         parser.error(f"unknown QS_DECONV {DECONV!r}; expected one of {list(DECONV_IMPLS)}")
+    if CLASSIFY_BS not in CLASSIFY_BATCH_SIZES:
+        parser.error(
+            f"unknown QS_CLASSIFY_BS {CLASSIFY_BS!r}; expected one of {list(CLASSIFY_BATCH_SIZES)}")
     if MALLOC not in MALLOC_ARMS:
         parser.error(f"unknown QS_MALLOC {MALLOC!r}; expected one of {list(MALLOC_ARMS)}")
     if LIST not in LIST_MODES:
