@@ -66,6 +66,19 @@ ANNOTATE_IMPL = os.environ.get("QS_ANNOTATE_IMPL", "fast")
 #: concurrently; QS_STARTUP=serial is the round-8 order (inventory, model, then the first LIST).
 STARTUP_ARMS = ("serial", "overlap")
 STARTUP = os.environ.get("QS_STARTUP", "overlap")
+#: The fast graph's transposed convs (sb_catalog.src.fast_forward.DECONV_IMPLS): "transpose" is
+#: oneDNN's deconvolution (the round-9 graph); QS_DECONV=polyphase runs each as a stride-1 conv
+#: over its 4 output phases (1.14x faster forward in isolation, but only 1.6% wall on the 8-core
+#: workload, so not the default).
+DECONV_IMPLS = ("transpose", "polyphase")
+DECONV = os.environ.get("QS_DECONV", "transpose")
+#: glibc malloc in each worker: "default" is glibc's dynamic threshold; QS_MALLOC=pinned fixes the
+#: mmap and trim thresholds (mallopt, before torch is imported), so the forward's 3-12 MB
+#: activations are reused from the heap instead of being mmapped and munmapped on every batch.
+MALLOC_ARMS = ("default", "pinned")
+MALLOC = os.environ.get("QS_MALLOC", "default")
+#: (name, mallopt parameter, value) applied by the "pinned" arm.
+MALLOPT_PINNED = (("M_TRIM_THRESHOLD", -1, 1 << 30), ("M_MMAP_THRESHOLD", -3, 1 << 30))
 THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -145,9 +158,21 @@ def resolve_layout(vcpus: int, stations: list[dict], layout: str = LAYOUT) -> tu
     return threads, groups, data_queue_size
 
 
+def apply_malloc(arm: str = MALLOC) -> dict[str, int]:
+    """Apply a QS_MALLOC arm to this process's glibc malloc; return each mallopt's rc (1 = set)."""
+    if arm == "default":
+        return {}
+    import ctypes
+
+    mallopt = getattr(ctypes.CDLL(None), "mallopt", None)
+    return {name: mallopt(param, value) if mallopt is not None else -1
+            for name, param, value in MALLOPT_PINNED}
+
+
 def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     """Run one production worker loop over a subset of the workload's stations."""
     started = time.time()
+    mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
@@ -214,6 +239,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         amp_impl=AMP_IMPL,
         classify_impl=CLASSIFY_IMPL,
         annotate_impl=ANNOTATE_IMPL,
+        deconv_impl=DECONV,
     )
     timeline.mark("model_ready")
     bridge.run_picking()
@@ -228,6 +254,11 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         f"{graph.station_days} station-days / {graph.batches} batches / {graph.windows} windows "
         "through the fast graph"
         if graph is not None else "SeisBench forward",
+    )
+    logger.info(
+        "group %d: deconv=%s malloc=%s mallopt %s", index,
+        graph.deconv if graph is not None else "-", MALLOC,
+        " ".join(f"{k}={v}" for k, v in mallopt_rc.items()) or "-",
     )
     annotator = bridge.model.fast_annotator
     logger.info(
@@ -282,6 +313,10 @@ def main() -> int:
     if ANNOTATE_IMPL not in ANNOTATE_IMPLS:
         parser.error(
             f"unknown QS_ANNOTATE_IMPL {ANNOTATE_IMPL!r}; expected one of {list(ANNOTATE_IMPLS)}")
+    if DECONV not in DECONV_IMPLS:
+        parser.error(f"unknown QS_DECONV {DECONV!r}; expected one of {list(DECONV_IMPLS)}")
+    if MALLOC not in MALLOC_ARMS:
+        parser.error(f"unknown QS_MALLOC {MALLOC!r}; expected one of {list(MALLOC_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())

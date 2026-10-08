@@ -18,7 +18,14 @@ pass over the tensor.
   them on every batch; the folded bias stays fp32 and absorbs the mean shift
   that rounding the weights to bf16 would add (data-free bias correction from
   BatchNorm's statistics);
-- each conv and its ReLU run as one oneDNN primitive.
+- each conv and its ReLU run as one oneDNN primitive;
+- with deconv="polyphase", each stride-4 transposed conv runs as one stride-1
+  conv with 4x the output channels, one per output phase (oneDNN's bf16
+  deconvolution primitive is several times slower per MAC than its conv); the
+  phases are interleaved by a channels-last view, so the skip concatenation
+  that follows stays the only copy. The weights are the transposed conv's own
+  (rounded, bias-corrected) weights, rearranged, so the two arms differ only
+  in accumulation order.
 
 The numerics are PhaseNet's to bf16 rounding; the probabilities are returned
 as fp32 NCW, exactly the shape and dtype `annotate_batch_post` expects.
@@ -79,15 +86,45 @@ _MKLDNN = getattr(torch.ops, "mkldnn", None)
 FUSED_OPS = all(hasattr(_MKLDNN, op) for op in
                 ("_convolution_pointwise", "_convolution_transpose_pointwise"))
 
+#: How the decoder's transposed convs run (QS_DECONV in pick_workload.py):
+#: "transpose" is oneDNN's deconvolution; "polyphase" is the same layer as a
+#: stride-1 conv over output phases plus a zero-copy interleave.
+DECONV_IMPLS = ("transpose", "polyphase")
+
+
+def _polyphase(weight4: torch.Tensor, bias: torch.Tensor, stride: int
+               ) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Rearrange a transposed conv into a stride-1 conv over its output phases.
+
+    A transposed conv with weight W (in, out, 1, k) and stride s gives
+    y[s*m + r] = b + sum_j W[..., r + s*j] x[m - j]. Phase r is a stride-1 conv
+    with taps W[r + s*(taps-1)], ..., W[r] (zero past k) and padding taps - 1,
+    so stacking the s phases gives one (s*out, in, 1, taps) conv whose output
+    position m, channel r*out + c is y[s*m + r] of channel c. Returns the
+    weight (channels-last), the bias repeated per phase and the padding.
+    """
+    cin, cout, _, k = weight4.shape
+    taps = -(-k // stride)
+    weight = weight4.new_zeros(stride, cout, cin, 1, taps)
+    for r in range(stride):
+        for j in range(taps):
+            if r + stride * j < k:
+                weight[r, :, :, 0, taps - 1 - j] = weight4[:, :, 0, r + stride * j].T
+    weight = weight.reshape(stride * cout, cin, 1, taps)
+    return weight.contiguous(memory_format=torch.channels_last), bias.repeat(stride), taps - 1
+
 
 class PhaseNetGraph(torch.nn.Module):
     """Inference-only PhaseNet: BN folded, (1, k) convs, channels-last."""
 
     def __init__(self, model: torch.nn.Module, dtype: torch.dtype = torch.bfloat16,
-                 fused: bool = FUSED_OPS) -> None:
+                 fused: bool = FUSED_OPS, deconv: str = "transpose") -> None:
         super().__init__()
+        if deconv not in DECONV_IMPLS:
+            raise ValueError(f"deconv impl {deconv!r} is not one of {DECONV_IMPLS}")
         self.dtype = dtype
         self.fused = fused
+        self.deconv = deconv
         self._params = torch.nn.ParameterList()
 
         def add(conv, bn, kind, stride=1, padding=0, relu=True, input_mean=None):
@@ -96,7 +133,10 @@ class PhaseNetGraph(torch.nn.Module):
             if input_mean is not None and dtype != torch.float32:
                 bias = bias + _bias_correction(weight, weight4.squeeze(2).float(), input_mean,
                                                kind, stride)
-            if kind == "conv":
+            if kind == "convt" and deconv == "polyphase":
+                weight4, bias, padding = _polyphase(weight4, bias, stride)
+                kind, stride = "conv", 1
+            elif kind == "conv":
                 weight4 = weight4.contiguous(memory_format=torch.channels_last)
             w = torch.nn.Parameter(weight4, requires_grad=False)
             b = torch.nn.Parameter(bias if fused else bias.to(dtype), requires_grad=False)
@@ -119,8 +159,11 @@ class PhaseNetGraph(torch.nn.Module):
                 mean = _relu_mean(bn2)
             self.down.append((same, down))
         self.up = []
+        #: Per up level, the transposed conv's (stride, kernel) when it runs as phases.
+        self.up_phases = []
         for (conv_up, bn1, conv_same, bn2), skip_mean in zip(model.up_branch, skip_means[::-1]):
             up = add(conv_up, bn1, "convt", 4, 0, input_mean=mean)
+            self.up_phases.append((4, conv_up.kernel_size[0]) if deconv == "polyphase" else None)
             same = add(conv_same, bn2, "conv", 1, 3,
                        input_mean=torch.cat([skip_mean, _relu_mean(bn1)]))
             mean = _relu_mean(bn2)
@@ -158,8 +201,16 @@ class PhaseNetGraph(torch.nn.Module):
                 elif i == 3:
                     x = F.pad(x, (2, 3))
                 x = self._apply(down, x)
-        for (conv_up, conv_same), skip in zip(self.up, skips[::-1]):
+        for (conv_up, conv_same), phases, skip in zip(self.up, self.up_phases, skips[::-1]):
+            length = x.shape[-1]
             x = self._apply(conv_up, x)
+            if phases is not None:
+                # (B, s*o, 1, M) channels-last is (B, M, s, o) in memory: as (B, o, 1, s*M)
+                # it is the transposed conv's output, padded to s*M samples.
+                stride, kernel = phases
+                n, c, _, m = x.shape
+                x = x.permute(0, 2, 3, 1).view(n, 1, m * stride, c // stride).permute(0, 3, 1, 2)
+                x = x[..., :(length - 1) * stride + kernel]
             x = x[..., 1:-2]
             offset = (x.shape[-1] - skip.shape[-1]) // 2
             x = torch.cat([skip, x[..., offset:offset + skip.shape[-1]]], dim=1)

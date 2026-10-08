@@ -157,12 +157,13 @@ CLASSIFY_IMPLS = ("seisbench", "fast")
 FAST_BATCH_SIZE = 64
 
 
-def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
-                        ) -> sbm.WaveformModel:
+def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
+                        deconv: str = "transpose") -> sbm.WaveformModel:
     """Set the forward-pass precision and implementation of `model`, in place.
 
     The fast graph is built for PhaseNet's exact architecture; any other model
-    keeps the "seisbench" forward, and says so in the log.
+    keeps the "seisbench" forward, and says so in the log. `deconv` is how the
+    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS).
     """
     if impl not in CLASSIFY_IMPLS:
         raise ValueError(
@@ -180,7 +181,8 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str
 
     model.eval()
     graph = PhaseNetGraph(
-        model, torch.bfloat16 if precision == "bf16" else torch.float32).eval()
+        model, torch.bfloat16 if precision == "bf16" else torch.float32,
+        deconv=deconv).eval()
     predict_windows = model._predict_windows
 
     def forward(x, logits=False):
@@ -503,6 +505,7 @@ class S3MongoSBBridge:
         amp_impl: str = "obspy",
         classify_impl: str = "seisbench",
         annotate_impl: str = "seisbench",
+        deconv_impl: str = "transpose",
     ):
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
@@ -540,6 +543,7 @@ class S3MongoSBBridge:
                     self.create_model(model, weight, p_threshold, s_threshold),
                     infer_precision,
                     classify_impl,
+                    deconv_impl,
                 ),
                 annotate_impl,
             )
