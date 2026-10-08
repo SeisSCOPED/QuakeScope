@@ -51,6 +51,9 @@ def _load_by_path(name: str):
 startup_diag = _load_by_path("startup_diag")
 #: QS_IMPORT_PREFETCH (sb_catalog.src.import_prefetch): standard library only, loaded by path.
 import_prefetch = _load_by_path("import_prefetch")
+#: Per-thread CPU accounting (sb_catalog.src.core_pin.ThreadCpu, QS_BLAS line): loaded by path, so it can wrap
+#: threading.Thread.run at worker entry, before any worker thread starts.
+core_pin = _load_by_path("core_pin")
 
 #: Worker layout, named for the 8 vCPU shape: BLAS/OpenMP threads per worker process.
 #: The process count is vcpus // threads. "4x2" is the fleet.json production layout;
@@ -226,6 +229,15 @@ SBLITE = os.environ.get("QS_SBLITE", "on")
 #: for N = 1/2/4; the same fetch alone took 0.61 s). Later station-days are unchanged.
 EARLY_RANGES_ARMS = tuple(str(n) for n in range(1, 9))
 EARLY_RANGES = os.environ.get("QS_EARLY_RANGES", "1")
+#: numpy's OpenBLAS pool in a worker: "2" sizes it like every other thread-count variable (OPENBLAS_NUM_THREADS =
+#: threads, 2 on 4x2), so each worker carries one unpinned OpenBLAS thread that spins after every threaded BLAS
+#: call (the amp detrend's day-long `out @ xc`); "1" sets OPENBLAS_NUM_THREADS=1 only (OMP/MKL and torch's
+#: intra-op threads stay at threads), so OpenBLAS starts no pool thread. Each group logs the arm, the
+#: OpenBLAS thread count in effect, torch's intra-op count at model_ready and its CPU per thread role.
+#: "1" is the default (round 31): in the 4-pair local A/B its median wall was 0.980x 2's, CPU 0.958x (the BLAS
+#: role's 6.1-6.4 CPU-s per run gone), 4 of 4 pairs faster on both, picks bitwise equal.
+BLAS_ARMS = ("2", "1")
+BLAS = os.environ.get("QS_BLAS", "1")
 #: Import-prefetch manifest per QS_SBLITE arm (sb_catalog/src/).
 PREFETCH_MANIFESTS = {"off": "import_prefetch_manifest.txt", "on": "import_prefetch_manifest_lite.txt"}
 #: Modules QS_SBLITE=on keeps out of a worker; each group logs them at model_ready, first classify and end.
@@ -362,6 +374,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     (QS_STARTUP2=v2), or None.
     """
     started = time.time()
+    thread_cpu = core_pin.ThreadCpu().install()
     entry_usage, entry_load = startup_diag.usage(), startup_diag.loadavg()
     import_clock = startup_diag.ImportClock(started).install()
     prefetch = None
@@ -373,6 +386,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     mallopt_rc = apply_malloc()
     for var in THREAD_ENV_VARS:
         os.environ[var] = str(config.threads)
+    if BLAS == "1":
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
     sys.path.insert(0, str(QUAKESCOPE_ROOT))
     from sb_catalog.src.core_pin import CorePin
@@ -431,6 +446,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     from sb_catalog.src.utils import parse_year_day
 
     timeline.mark("imports_done")
+    # numpy (and its OpenBLAS pool) is loaded and no forward has run: its native tasks are OpenBLAS's.
+    thread_cpu.mark_blas()
     db = StationTable(stations)
     start, end = parse_year_day(workload["start"]), parse_year_day(workload["end"])
     if source is None:
@@ -479,6 +496,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             pin=pin,
         )
         timeline.mark("model_ready")
+        torch_threads = sys.modules["torch"].get_num_threads() if "torch" in sys.modules else None
         at_model_ready = {name: name in sys.modules for name in EARLY_MODULES}
         sblite_at_model_ready = {name: name in sys.modules for name in SBLITE_MODULES}
         import_clock.uninstall()
@@ -602,6 +620,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
     logger.info("group %d: %s", index, pin.summary())
+    logger.info("group %d: QS_BLAS=%s torch_threads=%s %s", index, BLAS, torch_threads,
+                thread_cpu.summary(pin.classify_tid))
     logger.info("group %d: %s", index, pin.reset_line())
     logger.info(
         "startup-diag group %d: startup2=%s imports=%s start=%+.3f entry=%+.3f load=%s marks module=%s "
@@ -667,6 +687,8 @@ def main() -> int:
         parser.error(f"unknown QS_SBLITE {SBLITE!r}; expected one of {list(SBLITE_ARMS)}")
     if EARLY_RANGES not in EARLY_RANGES_ARMS:
         parser.error(f"unknown QS_EARLY_RANGES {EARLY_RANGES!r}; expected one of {list(EARLY_RANGES_ARMS)}")
+    if BLAS not in BLAS_ARMS:
+        parser.error(f"unknown QS_BLAS {BLAS!r}; expected one of {list(BLAS_ARMS)}")
     if EARLY == "stdlib" and (STARTUP, LIST, STARTUP2) != ("overlap", "station", "v3"):
         parser.error("QS_EARLY=stdlib needs QS_STARTUP=overlap, QS_LIST=station and QS_STARTUP2=v3")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")

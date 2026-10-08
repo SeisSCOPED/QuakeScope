@@ -249,3 +249,139 @@ class CorePin:
         what = "pin reset" if self.mode != "off" else "pin window end"
         return (f"{what} at {t:.3f} ({t - self.t0:+.3f}) cause={cause} tasks_reset={reset} "
                 f"masks after {masks}")
+
+
+def schedstat(tid: int) -> Optional[tuple[int, int]]:
+    """A task's (on-CPU ns, runqueue-wait ns) from /proc schedstat, or None once it has exited."""
+    text = _read(tid, "schedstat")
+    if not text:
+        return None
+    run, wait = text.split()[:2]
+    return int(run), int(wait)
+
+
+#: Native libraries whose thread-count getter openblas_threads() asks, by symbol.
+OPENBLAS_GETTERS = ("scipy_openblas_get_num_threads64_", "scipy_openblas_get_num_threads",
+                    "openblas_get_num_threads64_", "openblas_get_num_threads")
+
+
+def openblas_threads() -> Optional[int]:
+    """The thread count in effect in the OpenBLAS this process loaded (numpy's), or None
+    when none is loaded or it exports no known getter."""
+    try:
+        with open("/proc/self/maps") as f:
+            paths = {line.split()[-1] for line in f if "openblas" in line.rsplit("/", 1)[-1]}
+    except OSError:
+        return None
+    import ctypes
+
+    for path in sorted(paths):
+        try:
+            lib = ctypes.CDLL(path)
+        except OSError:
+            continue
+        for name in OPENBLAS_GETTERS:
+            getter = getattr(lib, name, None)
+            if getter is not None:
+                return int(getter())
+    return None
+
+
+class ThreadCpu:
+    """One worker's CPU per thread, summed by role, for the QS_BLAS group line.
+
+    Live tasks are read from /proc schedstat at the end; Python threads that
+    exit before (pool, executor and fetch threads) record their own schedstat
+    as they leave, through a wrapper around threading.Thread.run installed at
+    worker entry. The classify thread's exit also records its OpenMP pool
+    (tasks named CLASSIFY_COMM), which libgomp ends with it. The OpenBLAS
+    pool's threads are the unnamed native (non-Python) tasks present once
+    numpy is loaded and before any forward (mark_blas); named native tasks
+    (jemalloc_bg_thd) are other_native. "residual" is the process's CPU no
+    thread accounts for.
+    """
+
+    ROLES = ("classify", "omp", "blas", "amp_pool", "asyncio", "loader", "import_prefetch", "main",
+             "other_native", "other")
+    #: Python thread name prefixes per role (first match wins; import_prefetch's readers are qs-prefetch-<k>).
+    NAME_ROLES = (("amp-vel", "amp_pool"), ("asyncio_", "asyncio"), ("qs-early", "loader"),
+                  ("qs-inventory", "loader"), ("qs-prefetch-local", "loader"), ("qs-prefetch-get", "loader"),
+                  ("qs-firstsd", "loader"))
+
+    def __init__(self) -> None:
+        #: (tid, Python thread name or None, schedstat, role or None) of tasks recorded as they ended.
+        self.exited: list[tuple[int, Optional[str], Optional[tuple[int, int]], Optional[str]]] = []
+        self.blas_tids: list[int] = []
+        self.blas_threads: Optional[int] = None
+
+    def install(self) -> "ThreadCpu":
+        """Wrap threading.Thread.run so every Python thread records its schedstat on exit."""
+        exited, orig = self.exited, threading.Thread.run
+
+        def run(thread: threading.Thread) -> None:
+            try:
+                orig(thread)
+            finally:
+                me = threading.get_native_id()
+                if comm(me) == CLASSIFY_COMM:
+                    exited.extend((t, None, schedstat(t), "omp") for t in tasks()
+                                  if t != me and comm(t) == CLASSIFY_COMM)
+                exited.append((thread.native_id, thread.name, schedstat(me), None))
+
+        threading.Thread.run = run
+        return self
+
+    def mark_blas(self) -> None:
+        """Once numpy is loaded, before any forward: the unnamed native tasks are OpenBLAS's pool."""
+        python = {t.native_id for t in threading.enumerate()}
+        main = comm(threading.main_thread().native_id)
+        self.blas_tids = [t for t in tasks() if t not in python and comm(t) == main]
+        self.blas_threads = openblas_threads()
+
+    def _role(self, tid: int, name: Optional[str], classify_tid: Optional[int], main_tid: int) -> str:
+        if tid == classify_tid:
+            return "classify"
+        if tid in self.blas_tids:
+            return "blas"
+        if tid == main_tid:
+            return "main"
+        if name is None:
+            return "omp" if comm(tid) == CLASSIFY_COMM else "other_native"
+        if name.startswith("qs-prefetch-") and name[len("qs-prefetch-"):].isdigit():
+            return "import_prefetch"
+        if name == "qs-prefetch":
+            return "loader"
+        for prefix, role in self.NAME_ROLES:
+            if name.startswith(prefix):
+                return role
+        return "other"
+
+    def summary(self, classify_tid: Optional[int]) -> str:
+        """CPU and runqueue wait seconds and thread counts per role, the process total and residual."""
+        main_tid = threading.main_thread().native_id
+        names = {t.native_id: t.name for t in threading.enumerate()}
+        rows = [(tid, names.get(tid), schedstat(tid), None) for tid in tasks()]
+        seen = {tid for tid, _, _, _ in rows}
+        for row in reversed(self.exited):        # a task recorded twice: its last record
+            if row[0] not in seen:
+                seen.add(row[0])
+                rows.append(row)
+        total = time.process_time()
+        cpu = dict.fromkeys(self.ROLES, 0.0)
+        wait = dict.fromkeys(self.ROLES, 0.0)
+        count = dict.fromkeys(self.ROLES, 0)
+        for tid, name, stat, role in rows:
+            if stat is None:
+                continue
+            role = role or self._role(tid, name, classify_tid, main_tid)
+            cpu[role] += stat[0] / 1e9
+            wait[role] += stat[1] / 1e9
+            count[role] += 1
+        residual = total - sum(cpu.values())
+        return (
+            f"openblas_threads={self.blas_threads} blas_tids={','.join(map(str, self.blas_tids)) or '-'}; "
+            f"cpu_s total={total:.3f} " + " ".join(f"{r}={cpu[r]:.3f}" for r in self.ROLES)
+            + f" residual={residual:.3f}; wait_s " + " ".join(f"{r}={wait[r]:.3f}" for r in self.ROLES)
+            + "; threads " + " ".join(f"{r}={count[r]}" for r in self.ROLES)
+            + f" exited={len(self.exited)}"
+        )
