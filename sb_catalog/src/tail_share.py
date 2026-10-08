@@ -94,6 +94,8 @@ class TailShare:
         self.max_total = 0
         self.last_batch_threads: Optional[int] = None
         self.updates = 0
+        #: Peers finished as of the last update (set before `apply` runs).
+        self.peers_finished = 0
         self._finished = False
 
     def _slot(self, i: int, field: int) -> int:
@@ -135,6 +137,7 @@ class TailShare:
                 for j in range(self.workers):
                     self._set(j, TARGET, targets[j])
                 self.table[FIELDS * self.workers] = epoch
+            self.peers_finished = epoch
             old = self._get(i, CLAIM)
             live = self.workers - epoch
             others = sum(self._get(j, CLAIM) for j in range(self.workers) if j != i)

@@ -21,6 +21,7 @@ import seisbench.util as sbu
 import torch
 
 from .amplitude_extractor import AmplitudeExtractor
+from .core_pin import CorePin
 from .lean_phasenet import LeanPhaseNet, is_phasenet
 from .parquet_writer import ParquetPickWriter
 from .profiling import stage, timeline
@@ -152,27 +153,21 @@ def apply_inference_precision(model: sbm.WaveformModel, precision: str
 #: "seisbench" is the model's own forward, with the precision set by
 #: apply_inference_precision. "fast" swaps in fast_forward.PhaseNetGraph
 #: (BatchNorm folded, channels-last (1, k) convs, weights stored in the compute
-#: dtype) at `batch_size` windows per batch (one of FAST_BATCH_SIZES; the
-#: library default FAST_BATCH_SIZE, the runner passes QS_CLASSIFY_BS). The
-#: full-resolution layers are memory-bound: a 64-window bf16 activation
-#: (64 x 8 x 3001 x 2 B, ~3 MB) exceeds a core's 2 MB L2. Alone on 2 cores 64
-#: is the fastest size, but with 4 workers forwarding at once 32 is faster
-#: (round 21). The batch size only chunks the same window sequence. Windowing,
-#: normalization, blinding, stacking and thresholds are SeisBench's, unchanged.
+#: dtype) at FAST_BATCH_SIZE windows per batch: the full-resolution layers are
+#: memory-bound, and 64 windows keep their activations in cache where 256 do
+#: not. Windowing, normalization, blinding, stacking and thresholds are
+#: SeisBench's, unchanged.
 CLASSIFY_IMPLS = ("seisbench", "fast")
-FAST_BATCH_SIZES = (16, 32, 64)
 FAST_BATCH_SIZE = 64
 
 
 def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
-                        deconv: str = "transpose", batch_size: int = FAST_BATCH_SIZE
-                        ) -> sbm.WaveformModel:
+                        deconv: str = "transpose") -> sbm.WaveformModel:
     """Set the forward-pass precision and implementation of `model`, in place.
 
     The fast graph is built for PhaseNet's exact architecture; any other model
     keeps the "seisbench" forward, and says so in the log. `deconv` is how the
-    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS);
-    `batch_size` is its windows per batch (FAST_BATCH_SIZES).
+    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS).
     """
     if impl not in CLASSIFY_IMPLS:
         raise ValueError(
@@ -188,9 +183,6 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
     if precision not in INFER_PRECISIONS:
         raise ValueError(
             f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
-    if batch_size not in FAST_BATCH_SIZES:
-        raise ValueError(
-            f"fast batch size {batch_size!r} is not one of {FAST_BATCH_SIZES}")
     from .fast_forward import PhaseNetGraph
 
     model.eval()
@@ -198,7 +190,6 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
         model, torch.bfloat16 if precision == "bf16" else torch.float32,
         deconv=deconv).eval()
     graph.batches = graph.windows = graph.station_days = 0
-    graph.batch_size = batch_size
     return attach_fast_graph(model, graph)
 
 
@@ -208,10 +199,9 @@ def attach_fast_graph(model: sbm.WaveformModel | LeanPhaseNet, graph: torch.nn.M
 
     A SeisBench PhaseNet keeps its own annotate around the graph. A LeanPhaseNet
     has no annotate of its own (the fast annotate drives the graph directly), so
-    it only takes the graph and the batch size (the graph's `batch_size`, so a
-    lean model's SeisBench twin runs at its batch size).
+    it only takes the graph and the batch size.
     """
-    model.default_args["batch_size"] = getattr(graph, "batch_size", FAST_BATCH_SIZE)
+    model.default_args["batch_size"] = FAST_BATCH_SIZE
     model.fast_graph = graph
     if isinstance(model, LeanPhaseNet):
         return model
@@ -545,10 +535,10 @@ class S3MongoSBBridge:
         classify_impl: str = "seisbench",
         annotate_impl: str = "seisbench",
         deconv_impl: str = "transpose",
-        classify_batch_size: int = FAST_BATCH_SIZE,
         imports: str = "full",
         tail: Optional[TailShare] = None,
         amp_signal: str = "scipy",
+        pin: Optional[CorePin] = None,
     ):
         if imports not in IMPORT_MODES:
             raise ValueError(f"imports {imports!r} is not one of {IMPORT_MODES}")
@@ -596,7 +586,6 @@ class S3MongoSBBridge:
                     infer_precision,
                     classify_impl,
                     deconv_impl,
-                    classify_batch_size,
                 ),
                 annotate_impl,
             )
@@ -619,12 +608,17 @@ class S3MongoSBBridge:
         # follows this worker's claim, set before every batch; the fused
         # filter pool follows it between station-days.
         self.tail = tail
+        # Core pinning (core_pin.CorePin, or None): the forward's dedicated
+        # thread pins itself before its first parallel region ("classify"),
+        # and every task returns to the inherited set when the tail widens.
+        self.pin = pin
         self._classify_executor = None
-        if tail is not None:
+        if tail is not None or (pin is not None and pin.mode != "off"):
             from concurrent.futures import ThreadPoolExecutor
 
             self._classify_executor = ThreadPoolExecutor(1, thread_name_prefix="classify")
-            if self.model is not None and getattr(self.model, "fast_graph", None) is not None:
+            if (tail is not None and self.model is not None
+                    and getattr(self.model, "fast_graph", None) is not None):
                 self.model.fast_graph.tail_hook = self._tail_batch
         if imports == "full" or amp_signal == "slim":
             # The round-13 order: the fused arm's scipy/obspy.signal imports
@@ -782,6 +776,12 @@ class S3MongoSBBridge:
 
     def _set_threads(self, threads: int) -> None:
         """This thread's intra-op thread count (OpenMP's is per calling thread)."""
+        if self.pin is not None and self.pin.window_open and self.tail is not None:
+            # Before the forward widens onto a finished peer's cores.
+            if self.tail.peers_finished:
+                self.pin.end_window("peer_finished")
+            elif threads > self.tail.base:
+                self.pin.end_window("claim")
         if torch.get_num_threads() != threads:
             torch.set_num_threads(threads)
 
@@ -971,10 +971,16 @@ class S3MongoSBBridge:
                     name: name in sys.modules for name in ACTIVATION_MODULES}
             if self.imports == "lean":
                 self.amp_extor.start_warm_up()
+            if self.pin is not None:
+                self.pin.on_classify_thread()
             if self.tail is not None:
                 self._tail_update()
+            t0 = time.perf_counter()
             with stage("model.classify"):
                 output = self.model.classify(stream)
+            if self.pin is not None:
+                self.pin.record_sd(time.perf_counter() - t0)
+                self.pin.after_first_classify()
             if graph is not None and graph.windows > windows:
                 graph.station_days += 1
             if self.tail is not None:
@@ -982,7 +988,7 @@ class S3MongoSBBridge:
                 self._tail_update()
             return output
 
-        if self.tail is not None:
+        if self._classify_executor is not None:
             stream_annotations = await asyncio.get_running_loop().run_in_executor(
                 self._classify_executor, _classify)
         else:

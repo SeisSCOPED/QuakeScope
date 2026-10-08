@@ -66,7 +66,7 @@ INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
 AMP_IMPLS = ("fast", "obspy", "fused")
 AMP_IMPL = os.environ.get("QS_AMP_IMPL", "fused")
 #: PhaseNet forward implementation (sb_catalog.src.picker.CLASSIFY_IMPLS): "fast" runs the
-#: BN-folded channels-last graph at QS_CLASSIFY_BS windows per batch; QS_CLASSIFY_IMPL=seisbench restores
+#: BN-folded channels-last graph at 64 windows per batch; QS_CLASSIFY_IMPL=seisbench restores
 #: SeisBench's own forward at 256.
 CLASSIFY_IMPL = os.environ.get("QS_CLASSIFY_IMPL", "fast")
 #: Windowing/stacking/picking around the fast graph (sb_catalog.src.picker.ANNOTATE_IMPLS):
@@ -86,13 +86,6 @@ STARTUP = os.environ.get("QS_STARTUP", "overlap")
 #: oneDNN's deconvolution, the round-9 graph and the control arm.
 DECONV_IMPLS = ("transpose", "polyphase")
 DECONV = os.environ.get("QS_DECONV", "polyphase")
-#: Windows per fast-graph batch (sb_catalog.src.picker.FAST_BATCH_SIZES), on the SeisBench and the
-#: fast annotate alike: the same window sequence, chunked differently. "32" (the default since round 21)
-#: is 6.7% slower than 64 alone on 2 cores, but 11.8% faster per station-day with 4 workers forwarding
-#: at once (round-21 replay), and the full workload ran at 15.93 vs 18.49 s median wall (2+2 A/B).
-#: QS_CLASSIFY_BS=64 is the round-4..20 size and the control arm; 16 is slower than 32 either way.
-CLASSIFY_BATCH_SIZES = ("16", "32", "64")
-CLASSIFY_BS = os.environ.get("QS_CLASSIFY_BS", "32")
 #: glibc malloc in each worker: "pinned" (the default since round 20) fixes the mmap and trim
 #: thresholds (mallopt, before torch is imported), so the forward's 3-12 MB activations are reused
 #: from the heap instead of being mmapped and munmapped on every batch; QS_MALLOC=default is
@@ -168,6 +161,16 @@ EXIT = os.environ.get("QS_EXIT", "fast")
 #: `threads` until it ends, the round-14 behaviour.
 TAIL_ARMS = ("widen", "static")
 TAIL = os.environ.get("QS_TAIL", "widen")
+#: Core pinning (sb_catalog.src.core_pin): "classify" pins each worker's classify thread, and the
+#: OpenMP pool it spawns, to its own `threads` cores of the inherited set (worker i: cores
+#: [threads*i, threads*i + threads) of the sorted set); "all" pins every task of the worker before
+#: torch is imported. Every task returns to the inherited set when a peer finishes or the worker
+#: first claims a tail core. QS_PIN=off pins nothing (the round-20 behaviour) and logs the same masks
+#: and migrations. "classify" is the default (round 22): in the 4-round local A/B its median wall was
+#: 0.887x off's (18.65 vs 21.02 s, 3 of 4 rounds faster), loaded classify -12% with half the
+#: migrations, picks identical; "all" ran 1.15x off's (amp pools confined to the pair lengthen the tail).
+PIN_ARMS = ("off", "classify", "all")
+PIN = os.environ.get("QS_PIN", "classify")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -296,6 +299,11 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         os.environ[var] = str(config.threads)
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
     sys.path.insert(0, str(QUAKESCOPE_ROOT))
+    from sb_catalog.src.core_pin import CorePin
+
+    # "all": before obspy/numpy/torch start any thread, so every thread inherits the pair.
+    pin = CorePin(PIN, index, config.workers, config.threads, t0=started)
+    pin.pin_process()
     logging.basicConfig(
         level=logging.WARNING, format=f"[group {index}] %(levelname)s %(name)s: %(message)s"
     )
@@ -377,10 +385,10 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             classify_impl=CLASSIFY_IMPL,
             annotate_impl=ANNOTATE_IMPL,
             deconv_impl=DECONV,
-            classify_batch_size=int(CLASSIFY_BS),
             imports=IMPORTS,
             tail=tail,
             amp_signal=AMP_SIGNAL,
+            pin=pin,
         )
         timeline.mark("model_ready")
         import_clock.uninstall()
@@ -389,6 +397,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         # Done or failed: this worker's cores go to the peers still running.
         if tail is not None:
             tail.finish()
+        pin.finish()
     for fault in bridge.signal_faults:
         logger.warning("signal fault: %s", fault)
     # Per-group start/end wall timestamps make the tail spread across groups visible.
@@ -398,7 +407,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
     logger.info(
         "group %d: classify impl %s, %s", index, CLASSIFY_IMPL,
         f"{graph.station_days} station-days / {graph.batches} batches / {graph.windows} windows "
-        f"through the fast graph at bs {graph.batch_size}"
+        "through the fast graph"
         if graph is not None else "SeisBench forward",
     )
     logger.info(
@@ -468,6 +477,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
         f"0 claims, 0 events, 0 updates, max total -, threads at last batch {config.threads}; events -",
         " ".join(f"{t - started:+.3f}:{a}->{b}" for t, a, b in extor.width_events) or "-",
     )
+    logger.info("group %d: %s", index, pin.summary())
+    logger.info("group %d: %s", index, pin.reset_line())
     logger.info(
         "startup-diag group %d: startup2=%s imports=%s start=%+.3f entry=%+.3f load=%s marks module=%s "
         "entry=%s %s; imports %s; bytecode %s", index, STARTUP2, IMPORTS,
@@ -506,9 +517,6 @@ def main() -> int:
             f"unknown QS_ANNOTATE_IMPL {ANNOTATE_IMPL!r}; expected one of {list(ANNOTATE_IMPLS)}")
     if DECONV not in DECONV_IMPLS:
         parser.error(f"unknown QS_DECONV {DECONV!r}; expected one of {list(DECONV_IMPLS)}")
-    if CLASSIFY_BS not in CLASSIFY_BATCH_SIZES:
-        parser.error(
-            f"unknown QS_CLASSIFY_BS {CLASSIFY_BS!r}; expected one of {list(CLASSIFY_BATCH_SIZES)}")
     if MALLOC not in MALLOC_ARMS:
         parser.error(f"unknown QS_MALLOC {MALLOC!r}; expected one of {list(MALLOC_ARMS)}")
     if LIST not in LIST_MODES:
@@ -523,6 +531,8 @@ def main() -> int:
         parser.error(f"unknown QS_TAIL {TAIL!r}; expected one of {list(TAIL_ARMS)}")
     if STARTUP2 not in STARTUP2_ARMS:
         parser.error(f"unknown QS_STARTUP2 {STARTUP2!r}; expected one of {list(STARTUP2_ARMS)}")
+    if PIN not in PIN_ARMS:
+        parser.error(f"unknown QS_PIN {PIN!r}; expected one of {list(PIN_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
