@@ -108,9 +108,10 @@ PARENT = os.environ.get("QS_PARENT", "early")
 #: never importing seisbench.models (whose obspy.signal.trigger import pulls in scipy.signal,
 #: scipy.stats and matplotlib, ~0.7 s), and the fused amplitude passes import scipy/obspy.signal
 #: on a thread started by the first classify; the parent reads SeisBench's version from its package
-#: metadata instead of importing it. Not the default: in the round-14 A/B the lean workers were
+#: metadata instead of importing it. Not the default with the scipy amp signal (QS_STARTUP2=off): in the round-14 A/B the lean workers were
 #: importing 0.90 s earlier, but the import thread slowed the first classify (first amplitude pass
 #: 0.56 s later) and lean+fast exit ran 2.9% slower than full+normal (19.06 vs 18.52 s median).
+#: QS_STARTUP2 v3 (the default) and v2 make lean the default with the slim amp signal, which imports nothing on a thread.
 IMPORT_ARMS = ("lean", "full")
 #: Startup v2 (round 16): "v2" makes three changes to the overlap startup. (a) The lean imports
 #: (QS_IMPORTS defaults to lean; an explicit QS_IMPORTS still selects). (b) The fused amplitude passes take their signal functions from
@@ -119,15 +120,22 @@ IMPORT_ARMS = ("lean", "full")
 #: (c) The parent, idle after the launch and with a GIL of its own, LISTs and GETs every group's
 #: first station-day into a directory under TMPDIR (sb_catalog.src.parent_fetch); the worker's
 #: startup waits up to s3_helper.PARENT_FIRST_WAIT for it and parses the local bytes, or reads
-#: them itself (counted). QS_STARTUP2=off, the default, is the round-15 startup. v2 is not the default:
-#: in the round-16 same-session 4+4 A/B its first classify came 0.86 s earlier and the median wall was
-#: 3.3% lower (17.25 vs 17.84 s), picks bitwise equal, but the round-16 official run was 21.54 s against
-#: round 15's 19.97 s at equal CPU-s: its workers reached the early startup at +2.0-2.4 s (0.47 s locally)
-#: and their imports at +5.0 s (1.39 s), with every parent fetch ready at 1.90 s.
-STARTUP2_ARMS = ("v2", "off")
-STARTUP2 = os.environ.get("QS_STARTUP2", "off")
-IMPORTS = os.environ.get("QS_IMPORTS", "lean" if STARTUP2 == "v2" else "full")
-AMP_SIGNAL = "slim" if STARTUP2 == "v2" else "scipy"
+#: them itself (counted). QS_STARTUP2=off is the round-15 startup (full imports, scipy amp signal).
+#: v2 is not the default: in the round-16 same-session 4+4 A/B its first classify came 0.86 s earlier and
+#: the median wall was 3.3% lower (17.25 vs 17.84 s), picks bitwise equal, but the round-16 official run
+#: was 21.54 s against round 15's 19.97 s at equal CPU-s: its workers reached the early startup at
+#: +2.0-2.4 s (0.47 s locally) and their imports at +5.0 s (1.39 s), with every parent fetch ready at
+#: 1.90 s. The round-17 official startup-diag (off) put the workers' early startup at +0.63 s and their
+#: imports at +4.0 s, ~1.3 s of it obspy.signal/scipy.signal/matplotlib under seisbench.models, wall-bound
+#: (wall/CPU ~1.8, no major faults). v2's pre-early imports are off's, so the v2 loss sits in that window,
+#: and the parent's concurrent fetch (s3fs/aiohttp imports, HTTPS threads, TMPDIR writes) is the suspect.
+#: "v3", the default (round 18): (a) and (b) without (c): the lean imports and the slim amp signal, with
+#: no parent fetch and no worker wait, so a worker LISTs and GETs its first station-day itself, the
+#: round-15/17 worker-own LIST/prefetch path.
+STARTUP2_ARMS = ("v3", "v2", "off")
+STARTUP2 = os.environ.get("QS_STARTUP2", "v3")
+IMPORTS = os.environ.get("QS_IMPORTS", "full" if STARTUP2 == "off" else "lean")
+AMP_SIGNAL = "scipy" if STARTUP2 == "off" else "slim"
 #: (label, timeline mark) whose first mark's CPU, faults and context switches a worker's
 #: startup-diag line reports.
 DIAG_MARKS = (
@@ -136,7 +144,7 @@ DIAG_MARKS = (
     ("first_sd", "sd_loaded"), ("first_classify", "classify_start"), ("first_amp", "amp_start"),
     ("end", "end"),
 )
-#: Modules a worker reports at its end; under v2 none of them may be loaded.
+#: Modules a worker reports at its end; under v2 and v3 none of them may be loaded.
 END_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
 #: How a process ends once its work is durably done: "fast" flushes the log streams, shuts
 #: logging down and calls os._exit, skipping interpreter teardown (torch/oneDNN, module GC) in
@@ -550,6 +558,7 @@ def main() -> int:
         tail_state = (context.Lock(), context.RawArray("i", tail_share.array_size(len(groups))))
     fetch = None
     first_sds = [None] * len(groups)
+    # Only v2 fetches in the parent; v3 and off leave the first station-day to the worker.
     if STARTUP2 == "v2" and STARTUP == "overlap" and LIST == "station":
         # Loaded by path, as tail_share: the parent's sys.path stays as it is.
         import importlib.util
