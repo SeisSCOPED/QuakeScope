@@ -49,18 +49,17 @@ and test runs. Every public object is also reachable over plain HTTPS at
 
 | catalogue | weight | years | Parquet objects | size | picks | state |
 |---|---|---|--:|--:|--:|---|
-| `western` | `original` | 1986 to 2026 (to September) | 417,366 | 42.0 GB | 1.47 B | **done** for the years the archives serve; 493 shards embargoed or awaiting review |
-| `obs` | `obs` (PickBlue) | 1993 to 2026 | 24,896 | 3.5 GB | 131 M | done; 335 shards blocked (EarthScope 403), 2026 not yet run |
-| `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 584 M | paused at 3.6 % |
+| `western` | `original` | 1986 to 2026 (to September) | 490,018 | 46.8 GB | 1.81 B | **re-read in progress** from 2026-10-08 (`western-reread2`, about 15.6 M station-days never read before); counts grow while it runs |
+| `obs` | `obs` (PickBlue) | 1993 to 2026 | 14,789 | 2.6 GB | 93.1 M | offshore stations only since 2026-10-03; `obs-reread` queued |
+| `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 583 M | paused at a few percent |
 
-Object counts and sizes: S3 listing through boto3 after the eras were folded
-together on 2026-09-18. Pick counts: the sum of the eras' counts on the
-[campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html)
-of 2026-09-18 22:20 UTC (western 1,332,145,315 + western-early 64,693,941 +
-western-2026 about 77.9 M; obs 103,146,265 + obs-early 27,522,521). The
-dashboard now counts per catalogue from the Parquet footers, rebuilt hourly;
-queue progress per era is on the same page, as are the shards that are
-embargoed, blocked or awaiting review.
+Picks: the exact sum of `num_rows` over every Parquet footer of each
+catalogue, read anonymously on 2026-10-08 (western 1,810,076,434, obs
+93,138,251, global 583,482,953; no footer failed). Objects and sizes: boto3
+listing of the same day. Western was counted while the re-read was writing, so
+it is a snapshot. The [campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html)
+shows queue progress hourly; its pick totals come from a cache that can lag
+the bucket, so cite the footer count with its date.
 
 Each catalogue was produced by several campaigns run in eras, because a work
 queue is immutable once written (`western-early` for 1986 to 2009, `western`
@@ -69,17 +68,24 @@ all writing into the same prefix, so a reader never has to know which era a
 year came from. Pick objects are named by the shard that wrote them and the
 `year=` partition runs continuously across the eras.
 
-**Western** is the stakeholder deliverable and the one to start with. It is
-24,008 station-locations inside the state polygons of Washington, Oregon,
-California, Nevada, Idaho and Wyoming, read from the SCEDC, NCEDC and
-EarthScope archives, and from 2026-09-21 a further 2,402 station-locations
-being added by the `western-fill` campaign: the rest of the stakeholder list,
-in Utah, Montana, Arizona, Colorado, New Mexico, British Columbia, Alberta,
-Baja California and Sonora (`sb_catalog/configs/networks/western_fill.csv`,
-planned by `scripts/plan_western_fill.py`). The catalogue's `stations.parquet`
-lists the original 24,008; the fill's table is under
-`_queues/western-fill/` until the two are merged when the fill completes.
-Offshore stations are in `obs`.
+**Western** is the stakeholder deliverable and the one to start with: 26,377
+station-locations, read from the SCEDC, NCEDC and EarthScope archives. 24,008
+are inside the state polygons of Washington, Oregon, California, Nevada, Idaho
+and Wyoming; the rest of the stakeholder list (Utah, Montana, Arizona,
+Colorado, New Mexico, British Columbia, Alberta, Baja California, Sonora) was
+added by `western-fill` and `western-fill2` and merged into
+`stations.parquet` on 2026-10-02. Offshore stations are in `obs`.
+
+**Being re-read (from 2026-10-08).** About 15.6 million western station-days
+inside the stations' operating epochs were never read, mostly because of a
+reader defect fixed in image d0ccf9b; `western-reread2` is re-reading them and
+writes into the same prefix (`obs-reread` does the same for `obs`). Pick counts
+will grow while it runs. The reason and the sizing are in
+[32_outcomes_and_band_fallback.md](rerun_2026/32_outcomes_and_band_fallback.md).
+
+**`obs` is offshore only** since 2026-10-03: 1,996 stations selected by reused
+temporary network codes were on land; their picks moved to
+`_archive/obs-land/` (not public) ([31_obs_station_selection.md](rerun_2026/31_obs_station_selection.md)).
 
 **Not compacted.** The catalogue was written by up to 1,500 concurrent
 workers, so a month partition holds hundreds of files of about 120 KB each. Reads are
@@ -92,7 +98,8 @@ not content.
 ```
 s3://quakescope-picks-2026/<campaign>/
     picks/network=<NET>/year=<YYYY>/month=<MM>/<shard_id>[-NNN].parquet
-    manifests/<shard_id>.json     what each job wrote: object keys and per-station-day pick counts
+    manifests/<shard_id>.json     what each job wrote: object keys, per-station-day pick counts,
+                                  and (image d0ccf9b on) one outcome per planned station-day
     runs/<run_id>.json            model, weight, thresholds, library versions
     stations.parquet              the station table the campaign was planned from
 ```
@@ -105,12 +112,12 @@ not in the file, and every reader below turns them into columns.
 | column | type | meaning |
 |---|---|---|
 | `tid` | string | `NET.STA.LOC`; the location code may be empty, so `CI.CLC.` is a valid id |
-| `cha` | string | band + instrument code the station-day was picked on: `HH`, `EH`, `BH`, `HN`, ... One code per station-day, chosen by `constants.CHANNEL_PRIORITY` (HH > EH > SH > BH > DP > HN > CN) |
+| `cha` | string | band + instrument code the station-day was picked on: `HH`, `EH`, `BH`, `HN`, ... One code per station-day, the first of `constants.CHANNEL_PRIORITY` (HH > EH > SH > BH > BN > DP > HN > CN; `obs` adds EL) **present in that day's data**. Before image d0ccf9b (2026-10-06) the band was chosen once per station for the whole campaign, and days without it were not read; see [32_outcomes_and_band_fallback.md](rerun_2026/32_outcomes_and_band_fallback.md) |
 | `pha` | string | `P` or `S` |
 | `start`, `peak`, `end` | timestamp, ms | the pick's probability window; **`peak` is the arrival time** |
 | `conf` | float32 | peak probability, 0 to 1. Everything at or above **0.2** is stored |
 | `amp` | float32 | Wood-Anderson displacement, metres, mean of the horizontal peaks, response removed. **Measured only for `conf` >= 0.5**, NaN otherwise and inside the 60 s taper at trace ends |
-| `amp_vel` | float32 | raw peak amplitude, counts, max over all components, high-passed at 1 Hz, no response removed. A detection-strength proxy, not a physical unit; set on 99 % of picks |
+| `amp_vel` | float32 | peak ground velocity near the pick, **m/s**: counts divided by the per-channel instrument sensitivity and high-passed, max over components (`AmplitudeExtractor.extract_velocity_amplitudes`, since ba48712 of 2026-08-30, so for every 2026 catalogue). Flat-response approximation, valid in the instrument's passband; set on 99 % of picks |
 | `rid` | string | run id, resolves to `runs/<rid>.json` |
 
 `conf` is a detection score, not a probability that the pick is correct, and
@@ -120,6 +127,14 @@ Wood-Anderson constants, whole-day deconvolution, taper rule):
 [amplitude_conventions.md](amplitude_conventions.md).
 
 ### Station columns
+
+**Join on `id`.** `id` equals the picks' `tid`. Until the 2026-10 fix the
+code columns carried CSV-parse damage, though `id` was always right:
+`location_code` held floats such as `0.0` for `00` (2,753 western rows), and
+in `global` `station_code` lost leading zeros (`1` for `001`) and network `NA`
+was empty. Derive network, station and location from `id.split(".")` if you
+need them, rather than trusting the columns of a table you downloaded before
+the fix.
 
 `id` (= `tid`), `network_code`, `station_code`, `location_code`, `channels`
 (the bands the archive lists, e.g. `HH` or `DP,EH`), `latitude`, `longitude`,
@@ -133,8 +148,8 @@ float, which is still there as `start_yearday` / `end_yearday`; that float is
 three zero-padded digits after the point, so `2010.21` is day **210**, and
 formatting it as a string to parse it reads day 21 instead. Two of our own
 planners did that, which is why the columns changed:
-[30_station_dates.md](rerun_2026/30_station_dates.md). Western has 24,008 rows across 119 networks; the
-`state` column is filled for 23,948 of them.
+[30_station_dates.md](rerun_2026/30_station_dates.md). Western has 26,377 rows
+since the fill stations were merged in on 2026-10-02.
 
 ### Run records
 
@@ -172,7 +187,7 @@ latency.
 
 **Rule 2: for anything larger than a month, sync first.** The AWS CLI and
 `s3fs` both fetch concurrently and land at 15 to 20 MB/s; every query after
-that is local. A network-year is 0.7 GB; the whole of `western` is 42 GB and
+that is local. A network-year is 0.7 GB; the whole of `western` is 46.8 GB (2026-10-08) and
 417 k objects, which `aws s3 sync` handles in about 90 minutes on a fast link.
 
 **Rule 3: aggregate in the engine, select only the columns you need.** The
@@ -241,7 +256,8 @@ https://quakescope-picks-2026.s3.us-east-2.amazonaws.com/western/runs/00009e65-e
 ## 5. Selecting by place and time
 
 `stations.parquet` is the index. Filter it by `state`, by a latitude and
-longitude box, or by network, take the distinct `network_code` values, and sync
+longitude box, or by network, take the distinct networks as
+`id.str.split(".").str[0]` (not the `network_code` column, see section 3), and sync
 `picks/network=<NET>/year=<YYYY>/` for each network and year in your window.
 Then filter the rows on `tid` for the stations you kept, because a network
 partition holds every station of that network, not only the ones in your box.
@@ -249,15 +265,27 @@ partition holds every station of that network, not only the ones in your box.
 ## 6. Coverage: was this station-day picked at all?
 
 A station-day with no rows may mean the archive held no data, or that the
-campaign did not read it. The catalogue records both cases the same way, so
-**absence is not evidence of an empty archive.** Three mechanisms are
-documented in
-[western_pick_validation.html](https://seisscoped.org/QuakeScope/western_pick_validation.html)
-section 10: a gap rule that dropped fragmented day files (fixed 2026-09-10,
-after `western` had run), day listings that failed silently, and network-years
-the archive does not hold. In the validation sample, 19 of 52 targeted
-station-days had no picks; at least one of those had complete data in the
-archive.
+campaign did not read it. **Before image d0ccf9b (2026-10-06) the catalogue
+recorded both cases the same way, so for those shards absence is not evidence
+of an empty archive.** The mechanisms: a gap rule that dropped fragmented day
+files (fixed 2026-09-10), day listings that failed silently, network-years the
+archive does not hold, and, by far the largest, the reader choosing one band
+per station for the whole campaign, which skipped every day that band was
+absent (fixed in d0ccf9b; [32_outcomes_and_band_fallback.md](rerun_2026/32_outcomes_and_band_fallback.md)).
+Of 53.6 M pickable western station-days inside FDSN epochs, 14.0 M were
+recorded in manifests on 2026-10-06; `western-reread2` re-reads the rest
+(NP excluded: no data in a 1,408-day sample).
+
+**From d0ccf9b on, the manifest answers the question.** `outcomes` holds one
+entry per planned station-day (`tid`, `yr`, `doy`, `status`, and `cha` or
+`detail` where they apply). Final statuses: `loaded` (read and picked, see
+`records` for the count), `no_data` (nothing in the archive listing),
+`no_channel` (the station offers no pickable band), `empty_read` (an object
+exists but holds no pickable band; `detail` names what it holds),
+`not_found` (the network-year is not in the archive), `denied` (our account
+may not read it), `done` (already picked by an earlier attempt). Not read:
+`refused`, `throttled`, `timeout`, `read_error`, `too_big`; these are also
+written to the queue's `review/` and are re-run by repair queues.
 
 What the public objects do let you check: `manifests/<shard_id>.json` lists
 the station-days the shard **processed**, with its pick count (`records`:
@@ -278,7 +306,10 @@ The western catalogue is PhaseNet with the `original` weights (Zhu and Beroza,
 SeisBench 0.12.5, weight version 2, run 2026-09-03 to 2026-09-17 on AWS Batch
 Fargate Spot from image `ghcr.io/seisscoped/quakescope` at the commits pinned
 in the campaign job definitions (`fleet.json`); the three eras and the
-2026-09-17 repair share that configuration and are told apart by `rid`. The picks reproduce exactly
+2026-09-17 repair share that configuration and are told apart by `rid`. The
+re-read (`western-reread2`, from 2026-10-08) uses the same model, weight and
+thresholds on image d0ccf9b, whose reader picks the best band present each
+day; its picks carry their own `rid`, and its `runs/<rid>.json` names the image. The picks reproduce exactly
 when re-picked through ObsPy/FDSN on another architecture
 ([western_pick_validation.html](https://seisscoped.org/QuakeScope/western_pick_validation.html)).
 
@@ -295,13 +326,17 @@ date you read it, because the bucket is live.
   into a catalogue; `tutorials/seisbench_pyocto_ncedc.ipynb` shows the shape of
   that step.
 - One band per station-day. A station with both `HH` and `HN` was picked on
-  `HH`; the accelerometer was not run.
+  `HH`; the accelerometer was not run. Since d0ccf9b the band is the best one
+  present that day, so one station can carry `EH` picks for early years and
+  `HH` later.
 - `amp` exists only above `conf` 0.5. Magnitudes from this catalogue are
   magnitudes of the confident picks.
-- Coverage gaps (section 6) are not yet quantified for the whole campaign.
+- Coverage before the re-read is quantified in section 6; the re-read is in
+  progress from 2026-10-08 and adds picks to the same prefixes.
 - The bucket is live: embargoed years fill in as EarthScope opens them, and
   compaction will rename objects. Record the date of any pull.
-- Station coverage is still being completed. `western-fill` is adding 2,402
-  station-locations from the rest of the stakeholder list, and a re-pick of
-  121,692 station-days that a date-parsing defect kept out of the original
-  plan is pending ([30_station_dates.md](rerun_2026/30_station_dates.md)).
+- The fill stations (2,369 station-locations) are merged into
+  `stations.parquet` and picked; the date-parsing re-pick
+  (`western-dates`, [30_station_dates.md](rerun_2026/30_station_dates.md)) is
+  complete. Networks our EarthScope account may not read (TD, EO, LH in
+  western; NV in obs) are not in the catalogue.

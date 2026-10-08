@@ -1210,8 +1210,8 @@ def main() -> None:
     Recall at a shared threshold measures liberality as much as skill. The protocol decides the
     winner, which is the benchmark lottery{cite('dehghani2021')} in a domain where it can be
     measured.</li>
-    <li><strong>The deployment is the experiment.</strong> Picking 114 million station-days
-    exposes failure modes a windowed benchmark cannot: resumed jobs overwriting their own
+    <li><strong>The deployment is the experiment.</strong> Picking 14.1 million western
+    station-days (manifest records, 2026-10-06) exposed failure modes a windowed benchmark cannot: resumed jobs overwriting their own
     output, station metadata that truncates epochs, archive listings that fail silently. Each of
     those changed catalogue completeness by more than the difference between the four models
     below, and the quantity a catalogue user actually cares about is completeness{cite('woessner2005')}.</li>

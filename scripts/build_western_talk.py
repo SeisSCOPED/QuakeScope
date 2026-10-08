@@ -963,6 +963,8 @@ svg.zoomable{{cursor:grab;touch-action:none}} svg.zoomable:active{{cursor:grabbi
 </style>
 </head>
 <body>
+<div style="background:#fff7e0;border-bottom:1px solid #e3c98a;padding:8px 16px;font:14px/1.4 system-ui,sans-serif;color:#3d3420">Figures as of 2026-10-05. Since then an audit found about 15.6 million western station-days inside operating epochs that were never read (a reader defect, fixed in image d0ccf9b); they are being re-read from 2026-10-08. See <a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/docs/rerun_2026/32_outcomes_and_band_fallback.md">doc 32</a> and the <a href="campaign_dashboard.html">dashboard</a>.</div>
+
 <div class="deck">{''.join(S)}</div>
 <div class="nav">{nav}</div>
 <div class="count"><span id="cur">1</span> / {len(S)}</div>
