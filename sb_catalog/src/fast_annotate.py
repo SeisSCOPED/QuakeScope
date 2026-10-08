@@ -26,7 +26,8 @@ avg stacking), this module does the same work without those copies:
   windows of a run are each added with one strided view. Every sample then
   holds the same float32 sum, in the same order, that `stack_windows` forms,
   and is divided by the same count in float32;
-- picks are taken from the stacked arrays with obspy's `trigger_onset` and
+- picks are taken from the stacked arrays with obspy's `trigger_onset` (the
+  copy in lean_phasenet, so this module never imports obspy.signal) and
   the time arithmetic of `picks_from_annotations`, per phase, sorted as
   `classify_aggregate` sorts them. The noise channel is never stacked.
 
@@ -40,16 +41,19 @@ SeisBench, and stay on this path.
 from __future__ import annotations
 
 import collections
-from typing import Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 import obspy
 import seisbench
-import seisbench.models as sbm
 import seisbench.util as sbu
 import torch
 from numpy.lib.stride_tricks import as_strided
-from seisbench.models import base as sb_base
+
+from .lean_phasenet import is_phasenet, trigger_onset
+
+if TYPE_CHECKING:
+    import seisbench.models as sbm
 
 #: Sample dtypes whose float32 cast equals SeisBench's float64-then-float32 cast.
 EXACT_DTYPES = (np.int16, np.int32, np.float32, np.float64)
@@ -73,7 +77,7 @@ class FastAnnotator:
     """PhaseNet `classify` on `graph`, with SeisBench's results and fewer copies."""
 
     def __init__(self, model: sbm.WaveformModel, graph: torch.nn.Module) -> None:
-        if type(model) is not sbm.PhaseNet:
+        if not is_phasenet(model):
             raise ValueError(f"fast annotate is PhaseNet's; got {type(model).__name__}")
         argdict = model.default_args
         self.model = model
@@ -365,7 +369,7 @@ class FastAnnotator:
                 network, station, location = block.stations[0].split(".")[:3]
                 trace_id = f"{network}.{station}.{location}"
                 series = data[index - c0]
-                for s0, s1 in sb_base.trigger_onset(series, threshold, threshold / 2):
+                for s0, s1 in trigger_onset(series, threshold, threshold / 2):
                     window = series[s0:s1 + 1]
                     s_peak = s0 + np.argmax(window)
                     phase_picks.append(sbu.Pick(

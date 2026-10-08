@@ -12,21 +12,23 @@ import functools
 import logging
 import sys
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import obspy
 import seisbench
-import seisbench.models as sbm
 import seisbench.util as sbu
 import torch
 
 from .amplitude_extractor import AmplitudeExtractor
-from .classifier import QuakeXNet
+from .lean_phasenet import LeanPhaseNet, is_phasenet
 from .parquet_writer import ParquetPickWriter
 from .profiling import stage, timeline
 from .s3_helper import S3DataSource
 from .utils import parse_year_day
+
+if TYPE_CHECKING:
+    import seisbench.models as sbm
 
 # Exceptions the signal path raises on data that is merely odd. Caught per
 # station-day in _pick_data so that one bad trace costs one station-day and
@@ -168,7 +170,9 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
     if impl not in CLASSIFY_IMPLS:
         raise ValueError(
             f"classify impl {impl!r} is not one of {CLASSIFY_IMPLS}")
-    if impl == "seisbench" or type(model) is not sbm.PhaseNet:
+    if impl == "seisbench" or not is_phasenet(model):
+        if isinstance(model, LeanPhaseNet):
+            raise ValueError("the lean PhaseNet runs on the fast graph only")
         if impl != "seisbench":
             logger.warning(f"No fast graph for {type(model).__name__}; "
                            f"using SeisBench's forward")
@@ -183,6 +187,22 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
     graph = PhaseNetGraph(
         model, torch.bfloat16 if precision == "bf16" else torch.float32,
         deconv=deconv).eval()
+    graph.batches = graph.windows = graph.station_days = 0
+    return attach_fast_graph(model, graph)
+
+
+def attach_fast_graph(model: sbm.WaveformModel | LeanPhaseNet, graph: torch.nn.Module
+                      ) -> sbm.WaveformModel | LeanPhaseNet:
+    """Run `model`'s forward on the fast graph `graph`, in place.
+
+    A SeisBench PhaseNet keeps its own annotate around the graph. A LeanPhaseNet
+    has no annotate of its own (the fast annotate drives the graph directly), so
+    it only takes the graph and the batch size.
+    """
+    model.default_args["batch_size"] = FAST_BATCH_SIZE
+    model.fast_graph = graph
+    if isinstance(model, LeanPhaseNet):
+        return model
     predict_windows = model._predict_windows
 
     def forward(x, logits=False):
@@ -196,11 +216,8 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
         with torch.inference_mode():
             return predict_windows(segments, argdict)
 
-    graph.batches = graph.windows = graph.station_days = 0
     model.forward = forward
     model._predict_windows = _predict_windows
-    model.default_args["batch_size"] = FAST_BATCH_SIZE
-    model.fast_graph = graph
     return model
 
 
@@ -210,6 +227,16 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
 #: blinding, avg stacking and trigger, without SeisBench's per-window copies;
 #: a stream it does not reproduce exactly goes to SeisBench and is counted.
 ANNOTATE_IMPLS = ("seisbench", "fast")
+
+#: What a worker imports before its first classify. "full" is SeisBench's model
+#: package (and with it scipy.signal, obspy.signal and matplotlib, through
+#: obspy.signal.trigger). "lean" loads PhaseNet as a lean_phasenet.LeanPhaseNet
+#: when the fast classify and fast annotate are selected, and the fused
+#: amplitude passes import their scipy/obspy.signal modules on a thread started
+#: by the first classify.
+IMPORT_MODES = ("lean", "full")
+#: Modules whose presence at the first classify shows which import mode ran.
+ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib")
 
 
 def apply_annotate_impl(model: sbm.WaveformModel, impl: str) -> sbm.WaveformModel:
@@ -506,7 +533,13 @@ class S3MongoSBBridge:
         classify_impl: str = "seisbench",
         annotate_impl: str = "seisbench",
         deconv_impl: str = "transpose",
+        imports: str = "full",
     ):
+        if imports not in IMPORT_MODES:
+            raise ValueError(f"imports {imports!r} is not one of {IMPORT_MODES}")
+        self.imports = imports
+        #: {module: loaded?} for ACTIVATION_MODULES, as the first classify starts.
+        self.modules_at_first_classify: Optional[dict[str, bool]] = None
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
         # database. Station metadata and picks_record stay in the database:
@@ -538,23 +571,37 @@ class S3MongoSBBridge:
 
         # model preparation
         if model is not None:
+            # The lean model covers exactly the fast classify + fast annotate
+            # PhaseNet path; every other arm loads SeisBench's model.
+            lean = (imports == "lean" and model == "PhaseNet"
+                    and classify_impl == "fast" and annotate_impl == "fast")
             self.model = apply_annotate_impl(
                 apply_classify_impl(
-                    self.create_model(model, weight, p_threshold, s_threshold),
+                    self.create_model(model, weight, p_threshold, s_threshold, lean=lean),
                     infer_precision,
                     classify_impl,
                     deconv_impl,
                 ),
                 annotate_impl,
             )
+            if isinstance(self.model, LeanPhaseNet):
+                self.model.seisbench_factory = functools.partial(
+                    self._seisbench_twin, model, weight, p_threshold, s_threshold,
+                    self.model.fast_graph)
         else:
             self.model = None
 
         if classifier:
+            from .classifier import QuakeXNet
+
             self.classifier = QuakeXNet.from_pretrained("base")
         else:
             self.classifier = None
         self.amp_extor = AmplitudeExtractor(impl=amp_impl)
+        if imports == "full":
+            # The round-13 order: the fused arm's scipy/obspy.signal imports
+            # happen here. Lean: on a thread started by the first classify.
+            self.amp_extor.warm_up()
         # Fused arm: station-days whose two amplitude passes ran, and how many
         # of them had both passes in flight at once.
         self.amp_overlap = {"station_days": 0, "overlapped": 0}
@@ -605,15 +652,31 @@ class S3MongoSBBridge:
 
     @staticmethod
     def create_model(
-        model: str, weight: str, p_threshold: float, s_threshold: float
-    ) -> sbm.WaveformModel:
+        model: str, weight: str, p_threshold: float, s_threshold: float, lean: bool = False
+    ) -> sbm.WaveformModel | LeanPhaseNet:
         """
-        Loads a SeisBench model
+        Loads a SeisBench model. With `lean`, a PhaseNet whose weights are in
+        SeisBench's cache is loaded as a LeanPhaseNet, without importing
+        `seisbench.models`; anything else falls through to SeisBench.
         """
-        model = sbm.__getattribute__(model).from_pretrained(weight)
-        model.default_args["P_threshold"] = p_threshold
-        model.default_args["S_threshold"] = s_threshold
-        return model
+        loaded = LeanPhaseNet.from_cache(weight) if lean and model == "PhaseNet" else None
+        if loaded is None:
+            import seisbench.models as sbm
+
+            loaded = sbm.__getattribute__(model).from_pretrained(weight)
+        loaded.default_args["P_threshold"] = p_threshold
+        loaded.default_args["S_threshold"] = s_threshold
+        return loaded
+
+    @classmethod
+    def _seisbench_twin(cls, model: str, weight: str, p_threshold: float,
+                        s_threshold: float, graph: torch.nn.Module) -> sbm.WaveformModel:
+        """SeisBench's own model for a LeanPhaseNet's fallback streams: the same
+        weights and thresholds, its forward on the lean model's fast graph."""
+        twin = cls.create_model(model, weight, p_threshold, s_threshold)
+        twin.eval()
+        twin.fast_annotator = None
+        return attach_fast_graph(twin, graph)
 
     def run_association(self, t0: datetime.datetime, t1: datetime.datetime):
         """
@@ -858,6 +921,11 @@ class S3MongoSBBridge:
             graph = self.model.fast_graph
             windows = graph.windows if graph is not None else 0
             timeline.mark("classify_start")
+            if self.modules_at_first_classify is None:
+                self.modules_at_first_classify = {
+                    name: name in sys.modules for name in ACTIVATION_MODULES}
+            if self.imports == "lean":
+                self.amp_extor.start_warm_up()
             with stage("model.classify"):
                 output = self.model.classify(stream)
             if graph is not None and graph.windows > windows:

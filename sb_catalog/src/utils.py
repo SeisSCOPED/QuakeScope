@@ -7,10 +7,13 @@ client lives in `mongo_db` and is re-exported lazily below, so existing
 picking job depend on a database driver it never opens.
 """
 
-import datetime
-from typing import Any
+from __future__ import annotations
 
-import pandas as pd
+import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def __getattr__(name: str) -> Any:

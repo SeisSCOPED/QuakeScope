@@ -88,6 +88,24 @@ LIST = os.environ.get("QS_LIST", "station")
 #: QS_PARENT=serial imports it before the launch, the round-9 order.
 PARENT_ARMS = ("early", "serial")
 PARENT = os.environ.get("QS_PARENT", "early")
+#: What a worker imports before its first classify (sb_catalog.src.picker.IMPORT_MODES): "full"
+#: imports SeisBench's model package before the model is built, the round-13 order. QS_IMPORTS=lean
+#: loads PhaseNet as sb_catalog.src.lean_phasenet.LeanPhaseNet on the fast classify/annotate path,
+#: never importing seisbench.models (whose obspy.signal.trigger import pulls in scipy.signal,
+#: scipy.stats and matplotlib, ~0.7 s), and the fused amplitude passes import scipy/obspy.signal
+#: on a thread started by the first classify; the parent reads SeisBench's version from its package
+#: metadata instead of importing it. Not the default: in the round-14 A/B the lean workers were
+#: importing 0.90 s earlier, but the import thread slowed the first classify (first amplitude pass
+#: 0.56 s later) and lean+fast exit ran 2.9% slower than full+normal (19.06 vs 18.52 s median).
+IMPORT_ARMS = ("lean", "full")
+IMPORTS = os.environ.get("QS_IMPORTS", "full")
+#: How a process ends once its work is durably done: "fast" flushes the log streams, shuts
+#: logging down and calls os._exit, skipping interpreter teardown (torch/oneDNN, module GC) in
+#: each worker after its Parquet writer is closed, and in the parent after every worker joined
+#: with exit code 0; QS_EXIT=normal returns through the interpreter's own exit. A worker that
+#: raises always takes the normal path, so its exit code stays nonzero.
+EXIT_ARMS = ("fast", "normal")
+EXIT = os.environ.get("QS_EXIT", "fast")
 #: seisbench/__init__.py's default config, which it writes as json.dump(..., indent=4,
 #: sort_keys=True) when the cache root has no config.json.
 SEISBENCH_DEFAULT_CONFIG = {"dimension_order": "NCW", "component_order": "ZNE"}
@@ -190,6 +208,14 @@ def apply_malloc(arm: str = MALLOC) -> dict[str, int]:
             for name, param, value in MALLOPT_PINNED}
 
 
+def fast_exit(code: int) -> None:
+    """Flush the log streams, shut logging down and leave without interpreter teardown."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    os._exit(code)
+
+
 def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
     """Run one production worker loop over a subset of the workload's stations."""
     started = time.time()
@@ -224,6 +250,13 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
             list_mode=LIST,
         )
 
+    if IMPORTS == "full":
+        # The round-13 import set: picker.py imported SeisBench's model package,
+        # QuakeXNet's module and pandas (through utils) at module level.
+        import pandas  # noqa: F401
+        import seisbench.models  # noqa: F401
+
+        import sb_catalog.src.classifier  # noqa: F401
     from sb_catalog.src.picker import S3MongoSBBridge
     from sb_catalog.src.profiling import timeline
     from sb_catalog.src.s3_helper import S3DataSource
@@ -263,6 +296,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         classify_impl=CLASSIFY_IMPL,
         annotate_impl=ANNOTATE_IMPL,
         deconv_impl=DECONV,
+        imports=IMPORTS,
     )
     timeline.mark("model_ready")
     bridge.run_picking()
@@ -308,7 +342,8 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
             ("list_start", "list_start", "first"), ("list_end", "list_end", "first"),
             ("read_start", "read_start", "first"), ("first_sd", "sd_loaded", "first"),
             ("first_data", "data_enqueued", "first"), ("first_classify", "classify_start", "first"),
-            ("first_amp", "amp_start", "first"), ("inv_joined", "inventory_joined", "first"),
+            ("first_amp", "amp_start", "first"), ("amp_imports", "amp_imports_done", "first"),
+            ("inv_joined", "inventory_joined", "first"),
             ("last_pick", "pick_written", "last"), ("end", "end", "first"),
         ]),
     )
@@ -320,10 +355,24 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig) -> None:
         "group %d: startup %s counters %s", index, STARTUP,
         " ".join(f"{k}={v}" for k, v in source.startup_counters.items()),
     )
+    first = bridge.modules_at_first_classify or {}
+    logger.info(
+        "group %d: imports=%s exit=%s model=%s amp_imports=%s at first classify %s; at end "
+        "seisbench.models=%d", index, IMPORTS, EXIT, type(bridge.model).__name__,
+        (bridge.amp_extor.warm_up_mode or "-").replace(" ", "_"),
+        " ".join(f"{name}={int(loaded)}" for name, loaded in first.items()) or "-",
+        "seisbench.models" in sys.modules,
+    )
     logger.info(
         "group %d: %d stations, %d threads, start %.3f end %.3f (%.2f s)",
         index, len(stations), config.threads, started, finished, finished - started,
     )
+    if EXIT == "fast":
+        # run_picking returned: the Parquet writer is closed, the pick queue is
+        # drained and the amplitude pool is shut down.
+        logger.info("group %d: exit fast at %.3f (%.3f s after end)", index, time.time(),
+                    time.time() - finished)
+        fast_exit(0)
 
 
 def main() -> int:
@@ -349,6 +398,10 @@ def main() -> int:
         parser.error(f"unknown QS_LIST {LIST!r}; expected one of {list(LIST_MODES)}")
     if PARENT not in PARENT_ARMS:
         parser.error(f"unknown QS_PARENT {PARENT!r}; expected one of {list(PARENT_ARMS)}")
+    if IMPORTS not in IMPORT_ARMS:
+        parser.error(f"unknown QS_IMPORTS {IMPORTS!r}; expected one of {list(IMPORT_ARMS)}")
+    if EXIT not in EXIT_ARMS:
+        parser.error(f"unknown QS_EXIT {EXIT!r}; expected one of {list(EXIT_ARMS)}")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     workload = json.loads(args.workload.read_text())
@@ -393,15 +446,26 @@ def main() -> int:
         len(workers), time.time() - config.launched,
     )
     if PARENT == "early":
-        import seisbench
+        if IMPORTS == "lean":
+            from importlib.metadata import version
 
-        logger.info("SeisBench %s, weights staged in %s", seisbench.__version__, cache_root)
+            seisbench_version = version("seisbench")
+        else:
+            import seisbench
+
+            seisbench_version = seisbench.__version__
+        logger.info("SeisBench %s, weights staged in %s", seisbench_version, cache_root)
     for worker in workers:
         worker.join()
+    joined = time.time()
     failed = [i for i, worker in enumerate(workers) if worker.exitcode != 0]
     if failed:
         logger.error("worker groups %s failed", failed)
         return 1
+    logger.info("parent exit=%s imports=%s: workers joined %.3f, exit %.3f", EXIT, IMPORTS,
+                joined, time.time())
+    if EXIT == "fast":
+        fast_exit(0)
     return 0
 
 

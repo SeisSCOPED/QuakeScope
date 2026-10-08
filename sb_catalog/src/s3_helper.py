@@ -336,8 +336,6 @@ def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
     inflate the queue for no benefit, and `annotate` will do it anyway on its
     own copy, where the memory is short-lived.
     """
-    from seisbench.models import WaveformModel
-
     # Zero-length traces reach here from truncated or empty records and blow up
     # later inside the model as "cannot reshape array of size 0 into shape (0)",
     # which names nothing useful. Drop them at the boundary instead.
@@ -349,6 +347,10 @@ def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
                          if tr.stats.sampling_rate > target])
     if not len(fast):
         return stream
+    # Imported only when a trace needs it, so a worker on the lean imports
+    # (pick_workload QS_IMPORTS) does not load seisbench.models for a no-op.
+    from seisbench.models import WaveformModel
+
     WaveformModel.resample(fast, target, zerophase=True)
 
     # Resampling returns float64. Traces ALREADY at or below the target are not

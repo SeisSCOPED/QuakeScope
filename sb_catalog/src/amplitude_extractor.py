@@ -1,8 +1,9 @@
 import logging
 import sys
+import threading
 import warnings
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import numpy as np
@@ -42,6 +43,16 @@ AMP_IMPLS = ("fast", "obspy", "fused")
 
 class _Fallback(Exception):
     """The fast path cannot reproduce obspy for this pick; use obspy."""
+
+
+def _import_fused_modules() -> None:
+    """Import what the fused arm's two passes import lazily, once."""
+    import scipy.fft  # noqa: F401
+    import scipy.signal  # noqa: F401
+    from obspy.core.inventory import PolynomialResponseStage  # noqa: F401
+    from obspy.core.util.base import _get_function_from_entry_point
+    from obspy.signal import invsim, util  # noqa: F401
+    _get_function_from_entry_point("taper", "cosine")
 
 
 def _linear_detrend(data: np.ndarray) -> np.ndarray:
@@ -184,16 +195,15 @@ class AmplitudeExtractor:
         # intra-op thread count (the worker's core budget), resolved lazily.
         self._workers = workers
         self._pool: Optional[ThreadPoolExecutor] = None
-        if impl == "fused":
-            # The fused arm runs both passes on two threads at once, and their
-            # lazy imports race: a first import of scipy from two threads can
-            # see a partially initialised module. Import them here, once.
-            import scipy.fft  # noqa: F401
-            import scipy.signal  # noqa: F401
-            from obspy.core.inventory import PolynomialResponseStage  # noqa: F401
-            from obspy.core.util.base import _get_function_from_entry_point
-            from obspy.signal import invsim, util  # noqa: F401
-            _get_function_from_entry_point("taper", "cosine")
+        # The fused arm runs both passes on two threads at once, and their lazy
+        # imports race: a first import of scipy from two threads can see a
+        # partially initialised module. So the fused modules are imported once,
+        # by whichever comes first: warm_up() (in place), start_warm_up() (on a
+        # thread of its own), or the first pass. Both passes wait for it.
+        self._warm_up: Optional[Future] = None
+        self._warm_up_lock = threading.Lock()
+        #: "eager", "background" or "first pass": who started the fused imports.
+        self.warm_up_mode: Optional[str] = None
         self.time_before = time_before
         self.time_after = time_after
         self.slack = slack
@@ -245,6 +255,54 @@ class AmplitudeExtractor:
                     f"the pre_filt low corner.",
                     stacklevel=2,
                 )
+
+    def warm_up(self) -> None:
+        """Import the fused arm's modules now, in this thread (a no-op for the
+        other arms, or once started)."""
+        self._start_warm_up("eager")
+        if self._warm_up is not None:
+            self._warm_up.result()
+
+    def start_warm_up(self) -> None:
+        """Import the fused arm's modules on a thread of their own, once (a no-op
+        for the other arms, or once started).
+
+        The lean picker calls this as its first classify starts: scipy.signal
+        and obspy.signal (with matplotlib) are about 0.7 s of imports that no
+        pass needs until that classify's picks exist, and the forward runs
+        mostly without the GIL.
+        """
+        self._start_warm_up("background")
+
+    def _start_warm_up(self, mode: str) -> None:
+        if self.impl != "fused":
+            return
+        with self._warm_up_lock:
+            if self._warm_up is not None:
+                return
+            self._warm_up = future = Future()
+            self.warm_up_mode = mode
+
+        def run():
+            try:
+                _import_fused_modules()
+            except BaseException as exc:
+                future.set_exception(exc)
+            else:
+                from .profiling import timeline
+                timeline.mark("amp_imports_done")
+                future.set_result(None)
+
+        if mode == "background":
+            threading.Thread(target=run, name="amp-imports", daemon=True).start()
+        else:
+            run()
+
+    def _await_warm_up(self) -> None:
+        """Block until the fused imports are done, running them here if nobody started them."""
+        if self.impl == "fused":
+            self._start_warm_up("first pass")
+            self._warm_up.result()
 
     @property
     def workers(self) -> int:
@@ -362,6 +420,7 @@ class AmplitudeExtractor:
         Gating at `wa_min_conf` keeps the count well under that - the median
         station-day has 120 picks at conf >= 0.5 against 940 at all confidences.
         """
+        self._await_warm_up()
         if len(picks) == 0:
             return []                       # never deconvolve a day with no picks
 
@@ -592,6 +651,7 @@ class AmplitudeExtractor:
         It is a triage and QC amplitude; `amp` remains the calibrated one.
         Returns NaN where no response or no data is available.
         """
+        self._await_warm_up()
         if len(picks) == 0:
             return []
 
