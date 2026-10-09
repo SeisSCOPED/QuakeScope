@@ -324,8 +324,9 @@ class NetworkStager:
     """Rows of one network, staged on local disk by (year, month).
 
     A network is streamed station by station, so its months arrive
-    interleaved; holding them all in memory does not bound for the large
-    networks. Rows are buffered per month and spilled as small Parquet parts;
+    interleaved. Holding every month in memory until the network ends would
+    not fit for the large ones (NC is 988 million picks). Rows are buffered
+    per month and spilled as small Parquet parts;
     each month is read back whole, once, when it is finalised.
     """
 
