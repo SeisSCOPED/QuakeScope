@@ -367,6 +367,7 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         db=db,
         # The obs weight also picks EL (short-period OBS); land weights do not.
         weight=args.weight,
+        limit_mb=args.limit_mb,
     )
     bridge = S3MongoSBBridge(
         s3=s3,
@@ -736,6 +737,11 @@ def main(argv=None):
                          "a guard against the shard in front of you - the "
                          "checkpoint memory line is what watches that.")
     ap.add_argument("--max-failures", default=0, type=int, help="Stop after N failures")
+    ap.add_argument("--limit-mb", default=200, type=int,
+                    help="Largest day object read, MB. Bigger ones are recorded as "
+                         "`too_big` and left for a repair queue, which raises this "
+                         "(with fewer --procs) for exactly those station-days: 2026-10 "
+                         "objects reached 15.9 GB, median of the skipped 315 MB.")
     ap.add_argument("--flush-threshold", default=250_000, type=int,
                     help="Rows buffered per (network, year, month) partition "
                          "before it is written. Lower means more, smaller "

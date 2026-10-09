@@ -1418,6 +1418,8 @@ class S3DataSource:
                         for uri in uris:
                             s = await self._read_with_timeout(uri, net, station, day)
                             fault = fault or getattr(s, "fault", None)
+                            if getattr(s, "size_mb", None) is not None:
+                                detail = f"{s.size_mb:.0f} MB"
                             stream += s
                         used = channel
                         break
@@ -1443,6 +1445,8 @@ class S3DataSource:
                             sourcename=[f"{net}.{sta}.{loc}.{b}?" for b in bands])
                         fault = getattr(s, "fault", None)
                         band = getattr(s, "band", None)
+                        if getattr(s, "size_mb", None) is not None:
+                            detail = f"{s.size_mb:.0f} MB"
                         if band:
                             s = s.select(channel=f"{band}?", location=loc)
                             if len(s) > 0:
@@ -1573,7 +1577,9 @@ class S3DataSource:
                 bytes_mb = size / 1024**2
                 if self.limit_mb is not None and bytes_mb > self.limit_mb:
                     logger.warning(f"mSEED is too big (%.3f MB): %s" % (bytes_mb, uri))
-                    return _empty("too_big")
+                    st = _empty("too_big")
+                    st.size_mb = bytes_mb         # recorded in the outcome's detail
+                    return st
                 else:
                     with stage("s3.get", unit=size, unit_name="bytes"):
                         raw = fs.read_bytes(uri)
