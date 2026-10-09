@@ -299,6 +299,47 @@ overwritten ([28_resumed_shard_overwrite.md](rerun_2026/28_resumed_shard_overwri
 those processed, always at the start of the shard's 20-day window). The
 download notebook builds the coverage table this way for a region and period.
 
+### The availability table: one row per station-day
+
+`<catalogue>/availability/network=<NET>/availability.parquet` answers "does
+this station have data on this day, and was it picked?" without fetching any
+manifest. Built by `scripts/build_availability.py` from every manifest
+(`records` and `outcomes`), public-read, partitioned by network.
+
+| column | meaning |
+|---|---|
+| `tid` | `NET.STA.LOC`, joins to picks `tid` and stations `id` |
+| `date` | the day |
+| `status` | `loaded` (read and picked), `no_data`, `not_found`, `no_channel`, `empty_read`, `denied`, `unread` (attempted, not read; `detail` says why, e.g. `too_big`), `unknown` (inside the station's operating epochs, no record either way) |
+| `cha` | the band read, for `loaded` |
+| `npks` | picks that day, for `loaded`; **0 means the station had data and no arrival above 0.2** |
+| `detail` | reason for `unread`, or what an `empty_read` object held |
+
+Built 2026-10-09 after the re-reads:
+
+| status | western | obs |
+|---|--:|--:|
+| loaded | 16,861,749 | 414,349 |
+| of which `npks` = 0 (data, no picks) | 1,359,115 | 17,609 |
+| no_data | 11,627,811 | 47,481 |
+| not_found | 931,317 | 143,309 |
+| empty_read | 204,560 | 10,858 |
+| unread | 107,953 | 35,278 |
+| unknown | 24,621,886 | 120,556 |
+
+Most western `unknown` is NP (about 23 M; no data in a 1,408-day sample, so not
+re-read) and the networks our account cannot read (TD, EO, LH). `unread` is
+almost all `too_big`: day objects over the reader's 200 MB limit (e.g. UW.SLA,
+PB.B093), queued for a repair with a higher limit. The table is rebuilt when a
+repair writes into the catalogue.
+
+```python
+import pandas as pd
+a = pd.read_parquet("s3://quakescope-picks-2026/western/availability/network=UW/availability.parquet",
+                    storage_options={"anon": True})
+a[(a.status == "loaded") & (a.npks == 0)]        # data, no picks
+```
+
 ## 7. Provenance and citation
 
 The western catalogue is PhaseNet with the `original` weights (Zhu and Beroza,
