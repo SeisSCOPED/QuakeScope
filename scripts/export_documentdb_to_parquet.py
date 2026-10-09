@@ -686,15 +686,39 @@ class Exporter:
             from sb_catalog.src.utils import normalize_station_codes
 
             df = prepare_station_dates(normalize_station_codes(df))
-        except ImportError:  # pragma: no cover
-            logger.warning("sb_catalog not importable: stations written as stored, "
-                           "start_date/end_date left as YYYY.DDD floats")
+        except ImportError:
+            # Standalone run (the exporter fetched on its own, as EarthScope or
+            # a bare container would run it). The 2025 collection stores some
+            # numeric station codes as integers ("001" as 1) next to strings,
+            # which Arrow refuses as one column - the first full export died
+            # on exactly that. Same rule as utils.normalize_station_codes:
+            # identifiers are text, and the codes are rebuilt from `id`.
+            logger.warning("sb_catalog not importable: codes rebuilt from id; "
+                           "start_date/end_date left as stored")
+            df = normalize_codes_standalone(df)
         path = self.out.path("stations.parquet")
         self.out._ensure_parent(path)
         with self.out.fs.open(path, "wb") as fh:
             df.to_parquet(fh, index=False)
         logger.info(f"Wrote {len(df)} stations to {path}")
         return len(df)
+
+
+def normalize_codes_standalone(df):
+    """Text identifiers, codes from `id` (NET.STA.LOC); a stand-in for
+    sb_catalog.src.utils.normalize_station_codes when that is not importable."""
+    df = df.copy()
+    for c in ("id", "network_code", "station_code", "location_code", "channels"):
+        if c in df.columns:
+            df[c] = df[c].where(df[c].notna(), "").astype(str)
+    if "id" in df.columns:
+        parts = df["id"].str.split(".", n=2, expand=True)
+        if parts.shape[1] == 3:
+            df["network_code"], df["station_code"], df["location_code"] = parts[0], parts[1], parts[2]
+    for c in ("start_date", "end_date"):
+        if c in df.columns:
+            df[c] = df[c].where(df[c].notna(), "").astype(str)
+    return df
 
 
 def _rows_by_year(parts: dict) -> dict:

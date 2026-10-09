@@ -331,3 +331,18 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert "pick_idx" in report["collections"]["picks"]["indexes"]
     assert report["collections"]["picks"]["field_types"]["rid"] == {"ObjectId": 6}
     assert not any(tmp_path.iterdir())
+
+
+def test_standalone_station_codes_are_text_from_id():
+    # The first full export failed: the 2025 stations collection stores some
+    # numeric station codes as ints next to strings, and Arrow refused it.
+    import io
+    import pandas as pd
+    normalize_codes_standalone = ex.normalize_codes_standalone
+    df = pd.DataFrame({"id": ["2Q.001.", "UW.SLA.00"], "network_code": ["2Q", "UW"],
+                       "station_code": [1, "SLA"], "location_code": ["", 0],
+                       "start_date": ["2010.001", 2012.055]})
+    out = normalize_codes_standalone(df)
+    assert out.station_code.tolist() == ["001", "SLA"]
+    assert out.location_code.tolist() == ["", "00"]
+    out.to_parquet(io.BytesIO(), index=False)          # raised ArrowTypeError before
