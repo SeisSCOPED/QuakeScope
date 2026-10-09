@@ -156,6 +156,10 @@ def submit(batch, args, n: int) -> list[str]:
     # leaving it out keeps the default (output under the queue root) explicit.
     if getattr(args, "parquet_uri", ""):
         cmd += ["--parquet_uri", args.parquet_uri]
+    # Opt-in for the same reason as --max-hours: only images from 2026-10-09
+    # on accept it, and only the too_big repair queues set it.
+    if getattr(args, "limit_mb", 0):
+        cmd += ["--limit-mb", str(args.limit_mb)]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")]
@@ -196,6 +200,9 @@ def main(argv=None) -> int:
                          "exits after this long (0 = do not pass it at all). "
                          "Only set this once the deployed image accepts the "
                          "flag - see submit().")
+    ap.add_argument("--limit-mb", type=int, default=0,
+                    help="Largest day object a worker reads, MB (0 = omit the flag, "
+                         "worker default 200). For too_big repair queues only.")
     ap.add_argument("--poll-seconds", type=int, default=180)
     ap.add_argument("--max-submissions", type=int, default=500,
                     help="hard cap over this governor's lifetime")

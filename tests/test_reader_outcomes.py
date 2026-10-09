@@ -237,3 +237,20 @@ def test_empty_read_detail_is_recorded():
     src = _source(["UU.AAA."], ["HH"], {key: _es_object("UU", "AAA", "", ["LH"])})
     _run(src)
     assert src.outcomes[0]["detail"] == "object holds LH"
+
+
+def test_too_big_records_the_object_size():
+    def big(uri, sel):
+        st = _empty("too_big")
+        st.size_mb = 915.6
+        return st
+    key = f"UW/{D0:%Y}/{D0:%j}/SLA.00.mseed"
+    src = _source(["UW.SLA.00"], ["HN"], {key: obspy.Stream()}, read=big)
+    _run(src)
+    assert src.outcomes[0]["status"] == "too_big" and src.outcomes[0]["detail"] == "916 MB"
+
+
+def test_limit_mb_reaches_the_reader():
+    import inspect
+    from sb_catalog.src import worker
+    assert "limit_mb=args.limit_mb" in inspect.getsource(worker._run_shard)
