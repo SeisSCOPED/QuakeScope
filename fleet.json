@@ -178,7 +178,7 @@
       "parquet_uri": "s3://quakescope-picks-2026/western"
     },
     "obs-toobig": {
-      "target": 0,
+      "target": 60,
       "procs": 2,
       "threads": 4,
       "limit_mb": 4096,
