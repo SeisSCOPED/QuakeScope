@@ -166,6 +166,26 @@
       "threads": 2,
       "queue": "s3://quakescope-picks-2026/_queues/obs-reread",
       "parquet_uri": "s3://quakescope-picks-2026/obs"
+    },
+    "western-toobig": {
+      "target": 0,
+      "procs": 2,
+      "threads": 4,
+      "limit_mb": 4096,
+      "job_definition": "quakescope_2026_western:30",
+      "weight": "original",
+      "queue": "s3://quakescope-picks-2026/_queues/western-toobig",
+      "parquet_uri": "s3://quakescope-picks-2026/western"
+    },
+    "obs-toobig": {
+      "target": 0,
+      "procs": 2,
+      "threads": 4,
+      "limit_mb": 4096,
+      "job_definition": "quakescope_2026_obs:26",
+      "weight": "obs",
+      "queue": "s3://quakescope-picks-2026/_queues/obs-toobig",
+      "parquet_uri": "s3://quakescope-picks-2026/obs"
     }
   },
   "_comment_obs": "2026-10-03, docs/rerun_2026/31: the obs, obs-early and obs-dates queues (and the two obs repair queues) carry station tables with 1,993 land stations whose picks are archived under _archive/obs-land/. Never raise their targets again. obs-el-test, obs-el, obs-fill and the re-planned obs-2026 are the live obs work."
