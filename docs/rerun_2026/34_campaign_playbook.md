@@ -35,9 +35,48 @@ there took the original queues and **twelve corrective queues**:
 The re-read was the largest correction by far and the most avoidable: it was
 almost as large as the original `western` queue (33.8 M planned station-days)
 and added 2.26 M station-days with picks. The corrective runs of 10-06 to 10-09
-cost **33,240 vCPU-hours, about $708** at the billed $0.0213/vCPU-h
-(western-reread2 $650, western-toobig $39, obs-toobig $11; Batch attempt
-durations, 2026-10-10).
+cost **33,240 vCPU-hours, about $708** (western-reread2 $650, western-toobig
+$39, obs-toobig $11; Batch attempt durations, 2026-10-10), at the
+CloudBank-calibrated $0.0213/vCPU-h described below.
+
+### What it cost
+
+**These are estimates.** Cost is computed from compute hours, not read from a
+bill: this account is denied every AWS cost API (CloudBank service control
+policy), so no invoice is visible to automation. The rate applied to those
+hours **is calibrated on CloudBank's billed costs**: $2,316.89 billed on the
+three days that carried real load (2026-09-03, 09-04, 09-06; standing account
+cost and non-campaign items removed) against 108,658 vCPU-hours summed over
+every Batch attempt on those days, which gives **$0.0213 per vCPU-hour**
+(`costs_actual.json`, `scripts/campaign_spend.py`).
+
+| period / work | vCPU-hours | cost (est.) | how the hours were obtained |
+|---|--:|--:|---|
+| western main run and the 2026-09-17 repair | 88,107 | $1,878 | Batch attempts, measured 2026-09-17 |
+| obs and global, to 2026-09-07 | | ~$190 | `spend.json` of 2026-09-07, its 0.0313 rate corrected to 0.0213 |
+| 2026-09-18 to 10-05: western-fill, fill2, dates, western-early tail, obs-fill, obs-el, obs-2026, obs-early | not measured | ~$1,700 (range $1,200 to $2,400) | about 7.1 M processed station-days at the western benchmark of $0.000239 per processed station-day; Batch keeps job history about a week and `spend.json` stopped updating on 09-07 |
+| 2026-10-06 to 10-09: re-reads, oversized-object repairs, surveys, dry runs | 33,240 | $708 | Batch attempts, measured 2026-10-10 |
+| 2025 DocumentDB export (to 2026-10-09) | 305 | ~$6 | Batch attempts |
+| **western and obs, total compute** | | **~$4,400** (range $3,800 to $5,000) | |
+
+Not campaign compute, so not counted: the account's standing cost of about
+$13.70 a day (median billed day 2026-08-08 to 08-30: an always-on t2.large web
+host, snapshots, older storage), the 2025 DocumentDB cluster (about $270 a
+month until deleted), and catalogue storage in S3 (about $2 a month, doc 33).
+Reads cost nothing extra: EarthScope is in the same region, and the SCEDC and
+NCEDC public buckets bill their owners for transfer. For scale, the cost model
+of 2026-09-09 (doc 24) put the whole campaign including all of `global` at
+about $15,000; western and obs came to about 30% of it, with `global` unrun.
+
+**To replace the estimate with the billed figure**, download CloudBank's daily
+breakdown export for 2026-08-31 to 2026-10-10, add it to `costs_actual.json`,
+subtract the baseline and the excluded items as that file already does, and
+record the result here.
+
+**Next time, keep the spend record running.** `campaign_spend.py` last wrote
+`spend.json` on 2026-09-07; three weeks of fleet time can now only be
+estimated. Run it daily (it reads Batch attempts, which Batch keeps about a
+week) and the whole campaign stays measured.
 
 ## 2. Why: the defects, and the guard each one now has
 
