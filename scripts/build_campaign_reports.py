@@ -278,7 +278,20 @@ def page(cat, meta, a, pq_station, oc, n_avail, queues, stations, inv_objs, buil
     yr_rows = "".join(f'<tr><td>{y}</td><td class="num">{fmt(per_year[y])}</td></tr>' for y in sorted(per_year))
     worst = "".join(f'<tr><td><code>{t}</code></td><td class="num">{fmt(p)}</td><td class="num">{fmt(m)}</td></tr>'
                     for t, (p, m) in a["worst"])
-    verdict = ('<p class="ok"><strong>Manifests agree with the Parquet.</strong></p>' if audit_ok else
+    dup = DUPCHECK.get(cat)
+    if dup and a["orphans"]:
+        frac = dup["duplicated"] / dup["rows"]
+        est = frac * a["orphan_rows"]
+        verdict_dup = (f'<p class="warn"><strong>The Parquet holds duplicate picks.</strong> {fmt(a["orphans"])} objects '
+                       f'({fmt(a["orphan_rows"])} picks) are listed by no manifest: files from shard attempts that Spot '
+                       f'interrupted before the shard was re-run. In a random sample of {dup["sampled"]} of them, '
+                       f'{100 * frac:.1f}% of rows also appear in a listed file ({dup["fully_duplicated_objects"]} objects '
+                       f'fully duplicated, {dup["partly"]} partly, {dup["not_duplicated"]} not at all). Estimated unique '
+                       f'picks: <strong>~{(a["picks_parquet"] - est) / 1e9:.3f} billion</strong> of {fmt(a["picks_parquet"])} '
+                       f'rows. Until they are removed, de-duplicate on <code>(tid, cha, pha, peak)</code> when reading.</p>')
+    else:
+        verdict_dup = ""
+    verdict = verdict_dup or ('<p class="ok"><strong>Manifests agree with the Parquet.</strong></p>' if audit_ok else
                '<p class="warn"><strong>Manifests and Parquet disagree somewhere; details below.</strong> '
                'The Parquet is authoritative: counts on this page come from it.</p>')
     legend = "".join(f'<span><i class="sw" style="background:{c}"></i>{lab}</span>' for c, lab in
@@ -362,13 +375,21 @@ document.querySelectorAll('[data-tip]').forEach(el=>{{
 </script></body></html>"""
 
 
+DUPCHECK: dict = {}
+
+
 def main():
+    global DUPCHECK
     ap = argparse.ArgumentParser()
     ap.add_argument("--inventory", required=True)
     ap.add_argument("--catalogues", default="western,obs")
     a = ap.parse_args()
     built = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     summary = {}
+    try:   # orphan duplicate sample, written by the inventory's dupcheck job
+        DUPCHECK = json.loads(get_bytes(f"{a.inventory}/dupcheck.json"))
+    except Exception:
+        DUPCHECK = {}
     for cat in a.catalogues.split(","):
         objs = load_inventory(a.inventory, cat)
         manifests = get_json_gz(f"{a.inventory}/manifests/{cat}.json.gz")
