@@ -93,6 +93,27 @@ correct but pay per object, which is why every rule in section 4 is about
 touching fewer objects. Compaction is planned and will change object names,
 not content.
 
+### The 2025 catalogue, `quakescope-2025/` (published 2026-10-14)
+
+The picks of the 2025 run (Ni et al., 2025, *Seismica*), converted from the
+retired DocumentDB database into the same layout and schema as the 2026
+catalogues, so one reader works for both. Public, anonymous, no account.
+
+| | |
+|---|---|
+| picks | 4,376,745,115, in 453 networks (each network's count equals the database's) |
+| stored | about 104 GB in S3; picks in `quakescope-2025/picks/network=<NET>/year=<YYYY>/month=<MM>/` |
+| model | PhaseNet, `instance` weights, P and S thresholds 0.2 (run records in `quakescope-2025/runs/`) |
+| station table | `quakescope-2025/stations.parquet`, codes rebuilt from `id` |
+
+How it differs from 2026 (details in [2025_documentdb_to_parquet.md](2025_documentdb_to_parquet.md)):
+`amp_vel` is empty (2025 did not measure it); `amp` used Wood-Anderson damping
+h = 0.8, not 0.7; 2025 picked every band on a station-day, not one; `rid` is the
+2025 database's ObjectId as text; the manifests carry `records` from the 2025
+`picks_record` table but no `outcomes`, so a 2025 station-day can be "read" or
+"unknown", never "no data". In 2025, `npks` = 0 also meant "more than 150
+traces, skipped".
+
 ## 3. Layout and schema
 
 ```
