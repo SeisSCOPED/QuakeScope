@@ -41,7 +41,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install --quiet boto3
+      # pandas and pyarrow: the station-table check reads stations.parquet.
+      - run: pip install --quiet boto3 pandas pyarrow
 
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
