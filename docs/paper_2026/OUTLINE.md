@@ -159,7 +159,8 @@ predate the October re-read and fill.
 3. Cost and storage: compute per station-day, bytes per pick (western 26 B,
    2025 20 B in Parquet: stored size over rows), and the retired database.
 4. Failure modes found during the 2026 run, their size and the guard each now
-   has (D8; `docs/rerun_2026/34` campaign playbook).
+   has (D8; `docs/rerun_2026/34_campaign_playbook.md`, on
+   [PR #66](https://github.com/SeisSCOPED/QuakeScope/pull/66), not yet merged).
 
 ## Sections
 
