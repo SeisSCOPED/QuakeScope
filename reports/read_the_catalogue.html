@@ -9440,9 +9440,9 @@ on your own events; at a matched number of picks the land weight sets are
 within a few points of each other on analyst picks, at a shared threshold they are not.</li>
 <li><strong>Known limits.</strong> One band per station-day in 2026 (a station with <code>HH</code> and <code>HN</code>
 was picked on <code>HH</code>). <code>amp</code> exists only above <code>conf</code> 0.5. Networks our EarthScope
-account may not read (TD, EO, LH in <code>western</code>; NV in <code>obs</code>) are absent. 328
-western station-days crash the miniSEED decoder and 678 have day files over
-4 GB; they are recorded as unread.</li>
+account may not read (TD, EO, LH in <code>western</code>; NV in <code>obs</code>) are absent.
+1,030 western station-days (1,010 on SF, 20 on X7) are recorded <code>unread</code>,
+<code>too_big</code>: day files that crash the miniSEED decoder or exceed 4 GB.</li>
 <li><strong>Citing.</strong> Cite the repository (<a href="https://github.com/SeisSCOPED/QuakeScope/blob/main/CITATION.cff">CITATION.cff</a>)
 and Ni et al. (2025, doi:10.26443/seismica.v4i2.1738), name the prefix, and
 give the date you read it. A DOI for the 2026 catalogues is in preparation.</li>

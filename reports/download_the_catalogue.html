@@ -9142,7 +9142,7 @@ aws<span class="w"> </span>s3<span class="w"> </span>sync<span class="w"> </span
 </pre></div>
 <p>The availability tables for all of <code>western</code> are about 0.1 GB.</p>
 <p><strong>The 2025 catalogue</strong> for the same stations is under <code>quakescope-2025/picks/</code>
-with the same partitioning (about 104 GB for all 453 networks); its
+with the same partitioning (88.3 GB in 42,570 objects for all 453 networks, S3 listing of 2026-10-19); its
 <code>stations.parquet</code> keeps the <code>YYYY.DDD</code> date strings of the database.</p>
 <p><strong>Keeping a mirror current.</strong> Duplicate removal and compaction will rename objects without changing
 picks; <code>aws s3 sync</code> re-run against the same

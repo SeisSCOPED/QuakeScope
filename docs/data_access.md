@@ -366,7 +366,8 @@ Rebuilt after the `too_big` repairs; counts read from the public tables on
 
 Most western `unknown` is NP (about 23 M; no data in a 1,408-day sample, so not
 re-read) and the networks our account cannot read (TD, EO, LH). The 1,030
-`unread` are day files that crash the miniSEED decoder or exceed 4 GB.
+`unread` are all `too_big`, 1,010 on SF and 20 on X7: day files that crash the
+miniSEED decoder or exceed 4 GB.
 
 Two cautions. The table is built from manifests, so a shard preempted and
 resumed on Spot leaves its first days `unknown` even though their picks are in
@@ -417,9 +418,10 @@ date you read it, because the bucket is live.
   magnitudes of the confident picks.
 - Duplicate rows (section 2) until they are removed: de-duplicate on
   `(tid, cha, pha, peak)`.
-- 328 western station-days whose day files crash the miniSEED decoder
-  (SF.PH004-006 2006-07, X7.LB01 2008) and 678 whose day object exceeds 4 GB
-  are recorded as unread.
+- 1,030 western station-days are recorded as `unread` (`detail` `too_big`),
+  1,010 on SF and 20 on X7 (availability table, 2026-10-19): day files the
+  reader could not open even on a 120 GB worker, because they crash the
+  miniSEED decoder or exceed 4 GB.
 - The bucket is live: duplicate removal and compaction will rename objects
   without changing picks. Record the date of any pull.
 - The fill stations (2,369 station-locations) are merged into
