@@ -353,8 +353,17 @@ def figures(cache: Path):
     ax[2].bar(yr.index, yr.sd / 1e3, color=C_OBS); ax[2].set_ylabel("station-days loaded (k)")
     ax[2].set_title("c  2026 obs station-days per year", loc="left")
     fig.tight_layout(); fig.savefig(FIG / "fig5_obs.png", bbox_inches="tight"); plt.close(fig)
+    # 2026-only by set difference on (tid, date), any band: `mo` is an inner merge on the same band,
+    # so station-days with no 2025 record at all are not in it.
+    qo = q[q.tid.isin(o_ids)]
+    k25_any = set(zip(qo.tid.astype(str), qo.date))
+    k25_pos = set(zip(qo.loc[qo.npks > 0, "tid"].astype(str), qo.loc[qo.npks > 0, "date"]))
+    lo_pos = lo[lo.npks > 0]
+    k26_pos = set(zip(lo_pos.tid.astype(str), lo_pos.date))
     N["fig5"] = {"obs_station_days_both": int(len(g)), "median_ratio_pickblue_over_instance": float(np.median(g.n26 / g.n25)),
-                 "obs_station_days_2026_only": int(((mo.n26 > 0) & (mo.n25.isna() | (mo.n25 == 0))).sum())}
+                 "obs_station_days_with_2026_picks": len(k26_pos),
+                 "obs_station_days_2026_picks_no_2025_record": len(k26_pos - k25_any),
+                 "obs_station_days_2026_picks_no_2025_picks": len(k26_pos - k25_pos)}
 
     # ================= Figure 6: daily picks at example stations, both runs (cf. Ni et al. 2025 Fig. 4)
     examples = ["CI.CGO.", "UW.BVW.", "UW.RCM.", "NC.KCT.", "NN.RRK."]

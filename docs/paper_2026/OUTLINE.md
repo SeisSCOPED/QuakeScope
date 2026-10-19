@@ -98,8 +98,9 @@ the same station-days.** CI, July 2019, `conf` >= 0.5: S 1,333,048 (2026) vs
 found in 2025. P: 1,336,978 vs 1,082,753, 73.9 % and 63.5 %. Figure 4a, b.
 
 **D6. On ocean-bottom stations PickBlue gives about four times the picks of
-`instance`.** 234,376 OBS station-days picked by both: median ratio 4.1;
-28,657 more OBS station-days picked only in 2026. AACSE: 86 % of analyst P and
+`instance`.** 234,376 OBS station-days picked by both on the same band:
+median ratio 4.1. Of the 429,532 OBS station-days with 2026 picks, 166,497
+have no 2025 record at all and 194,414 have no 2025 picks. AACSE: 86 % of analyst P and
 S arrivals have a PickBlue pick within 1 s (land control 91 / 85 %), from
 `reports/phasenet_obs_offshore_benchmark.html`. Figure 5.
 
