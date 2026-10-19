@@ -1,16 +1,16 @@
 # Accessing the QuakeScope pick catalogue
 
-Machine-learning phase picks for the western United States (and, as they
-finish, the ocean-bottom and global campaigns), published as Parquet on S3.
-**Anonymous read, no account, no database.** Everything below was verified
-against the bucket on 2026-09-16; the table of campaigns names the source of
-each number.
+Machine-learning phase picks for the western United States (`western`), for
+ocean-bottom seismometers (`obs`), and the 2025 global catalogue of Ni et al.
+(2025) (`quakescope-2025`), published as Parquet on S3. **Anonymous read, no
+account, no database.** Read-path timings were measured on 2026-09-16; the
+catalogue table in section 2 names the source and date of each number.
 
 Two notebooks walk through this:
 
 | | | |
 |---|---|---|
-| [`tutorials/read_the_catalogue.ipynb`](../tutorials/read_the_catalogue.ipynb) | first contact: read a month, plot it, check picks on the waveforms | runs on Colab, ~5 min |
+| [`tutorials/read_the_catalogue.ipynb`](../tutorials/read_the_catalogue.ipynb) | start here: the three catalogues, one month read and de-duplicated, the availability table, 2025 against 2026 on the same station-days, picks on waveforms, an OBS month | runs on Colab, ~5 min |
 | [`tutorials/download_the_catalogue.ipynb`](../tutorials/download_the_catalogue.ipynb) | bulk: choose a region and period, mirror it, query it locally, check coverage, export | laptop, ~10 min for a network-year |
 
 Rendered copies with output: [read_the_catalogue.html](https://seisscoped.org/QuakeScope/read_the_catalogue.html),
@@ -21,7 +21,7 @@ Rendered copies with output: [read_the_catalogue.html](https://seisscoped.org/Qu
 ## 1. The short version
 
 ```bash
-# one month of the Southern California network, 149 MB, 271 files, ~10 s
+# one month of the Southern California network, 158 MB, 338 files (2026-10-19), ~10 s
 aws s3 sync --no-sign-request \
     s3://quakescope-picks-2026/western/picks/network=CI/year=2019/month=07/ \
     western/picks/network=CI/year=2019/month=07/
@@ -49,15 +49,16 @@ and test runs. Every public object is also reachable over plain HTTPS at
 
 | catalogue | weight | years | Parquet objects | size | picks | state |
 |---|---|---|--:|--:|--:|---|
-| `western` | `original` | 1986 to 2026 (to September) | 490,018 | 46.8 GB | 1.81 B | **re-read in progress** from 2026-10-08 (`western-reread2`, about 15.6 M station-days never read before); counts grow while it runs |
-| `obs` | `obs` (PickBlue) | 1993 to 2026 | 14,789 | 2.6 GB | 93.1 M | offshore stations only since 2026-10-03; `obs-reread` queued |
-| `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 583 M | paused at a few percent |
+| `western` | `original` | 1986 to 2026 (to September) | 580,407 | 55.3 GB | 2.13 B rows, ~2.07 B unique | complete; last write 2026-10-10 |
+| `obs` | `obs` (PickBlue) | 1993 to 2026 | 16,934 | 2.9 GB | 104.4 M rows, ~103.6 M unique | complete, offshore stations only; last write 2026-10-09 |
+| `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 583 M | paused at a few percent (2026-10-08 figures) |
+| `quakescope-2025` | `instance` | 2002 to 2025-03 | 42,570 | 88.3 GB | 4.38 B | the 2025 catalogue, converted; see below |
 
-Picks: the exact sum of `num_rows` over every Parquet footer of each
-catalogue, read anonymously on 2026-10-08 (western 1,810,076,434, obs
-93,138,251, global 583,482,953; no footer failed). Objects and sizes: boto3
-listing of the same day. Western was counted while the re-read was writing, so
-it is a snapshot. The [campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html)
+Rows: the exact sum of `num_rows` over every Parquet footer, read on
+2026-10-13 (`_archive/inventory-20261013/`: western 2,130,446,013, obs
+104,420,230; global 583,482,953 on 2026-10-08). Objects, sizes and last-write
+times: boto3 listing of 2026-10-19. "Unique" removes the duplicate rows
+explained below. The [campaign dashboard](https://seisscoped.org/QuakeScope/campaign_dashboard.html)
 shows queue progress hourly; its pick totals come from a cache that can lag
 the bucket, so cite the footer count with its date.
 
@@ -76,12 +77,22 @@ Colorado, New Mexico, British Columbia, Alberta, Baja California, Sonora) was
 added by `western-fill` and `western-fill2` and merged into
 `stations.parquet` on 2026-10-02. Offshore stations are in `obs`.
 
-**Being re-read (from 2026-10-08).** About 15.6 million western station-days
-inside the stations' operating epochs were never read, mostly because of a
-reader defect fixed in image d0ccf9b; `western-reread2` is re-reading them and
-writes into the same prefix (`obs-reread` does the same for `obs`). Pick counts
-will grow while it runs. The reason and the sizing are in
-[32_outcomes_and_band_fallback.md](rerun_2026/32_outcomes_and_band_fallback.md).
+**Re-read, 2026-10-06 to 10-09.** About 15.6 million western station-days
+inside the stations' operating epochs had never been read, mostly because the
+reader chose one band per station for the whole campaign (fixed in image
+d0ccf9b); `western-reread2` re-read them into the same prefix (`obs-reread` did
+the same for `obs`), and the `too_big` repairs followed. The reason and the
+sizing are in [32_outcomes_and_band_fallback.md](rerun_2026/32_outcomes_and_band_fallback.md).
+
+**Duplicate rows: de-duplicate on `(tid, cha, pha, peak)` when you read.**
+Spot interruptions left the partial output of interrupted shard attempts in
+the bucket, and the shard was re-run from the start. On 2026-10-13, 12,125
+western objects (69,690,152 rows) were listed by no manifest; in a random
+sample of 200 of them, 92.2 % of rows repeated a pick in a listed object
+(obs: 237 objects, 82.0 %). Estimated: ~64 M duplicate rows in `western`,
+~0.8 M in `obs`. The picker is deterministic, so a repeated key is the same
+pick under another `rid`. The duplicates will be removed from the bucket,
+which renames objects without changing picks.
 
 **`obs` is offshore only** since 2026-10-03: 1,996 stations selected by reused
 temporary network codes were on land; their picks moved to
@@ -102,17 +113,21 @@ catalogues, so one reader works for both. Public, anonymous, no account.
 | | |
 |---|---|
 | picks | 4,376,745,115, in 453 networks (each network's count equals the database's) |
-| stored | about 104 GB in S3; picks in `quakescope-2025/picks/network=<NET>/year=<YYYY>/month=<MM>/` |
+| stored | 88.3 GB of picks in 42,570 objects (S3 listing, 2026-10-19), at `quakescope-2025/picks/network=<NET>/year=<YYYY>/month=<MM>/` |
 | model | PhaseNet, `instance` weights, P and S thresholds 0.2 (run records in `quakescope-2025/runs/`) |
-| station table | `quakescope-2025/stations.parquet`, codes rebuilt from `id` |
+| station table | `quakescope-2025/stations.parquet`, codes rebuilt from `id`; `start_date` / `end_date` keep the database's zero-padded `YYYY.DDD` strings (`2019.227`, `3000.001` for open), parse with `datetime.strptime(s, "%Y.%j")` |
 
-How it differs from 2026 (details in [2025_documentdb_to_parquet.md](2025_documentdb_to_parquet.md)):
+How it differs from 2026 (details in `docs/2025_documentdb_to_parquet.md` on [PR #56](https://github.com/SeisSCOPED/QuakeScope/pull/56), not yet merged):
 `amp_vel` is empty (2025 did not measure it); `amp` used Wood-Anderson damping
 h = 0.8, not 0.7; 2025 picked every band on a station-day, not one; `rid` is the
 2025 database's ObjectId as text; the manifests carry `records` from the 2025
 `picks_record` table but no `outcomes`, so a 2025 station-day can be "read" or
 "unknown", never "no data". In 2025, `npks` = 0 also meant "more than 150
-traces, skipped".
+traces, skipped". The two weight sets also place arrivals differently: on CI
+in July 2019, matched `original` picks are later than `instance` picks by a
+median of about 50 ms (P) and 100 ms (S), consistent with their median
+residuals against analyst picks ([benchmark/results/timing_full.csv](benchmark/results/timing_full.csv)).
+Do not mix the two catalogues in one location without a per-phase correction.
 
 ## 3. Layout and schema
 
@@ -149,13 +164,13 @@ Wood-Anderson constants, whole-day deconvolution, taper rule):
 
 ### Station columns
 
-**Join on `id`.** `id` equals the picks' `tid`. Until the 2026-10 fix the
-code columns carried CSV-parse damage, though `id` was always right:
-`location_code` held floats such as `0.0` for `00` (2,753 western rows), and
-in `global` `station_code` lost leading zeros (`1` for `001`) and network `NA`
-was empty. Derive network, station and location from `id.split(".")` if you
-need them, rather than trusting the columns of a table you downloaded before
-the fix.
+**Join on `id`.** `id` equals the picks' `tid` and has always been right. The
+separate code columns carry CSV-parse damage that is fixed in code
+(`scripts/fix_station_codes.py`, PR #49) but **not yet rewritten in the
+bucket**: on 2026-10-19, 2,065 western rows still hold a float-like
+`location_code` (`1.0` for `01`, `0.0` for `00`), and in `global`
+`station_code` lost leading zeros (`1` for `001`) and network `NA` is empty.
+Derive network, station and location from `id.split(".")`.
 
 `id` (= `tid`), `network_code`, `station_code`, `location_code`, `channels`
 (the bands the archive lists, e.g. `HH` or `DP,EH`), `latitude`, `longitude`,
@@ -208,8 +223,8 @@ latency.
 
 **Rule 2: for anything larger than a month, sync first.** The AWS CLI and
 `s3fs` both fetch concurrently and land at 15 to 20 MB/s; every query after
-that is local. A network-year is 0.7 GB; the whole of `western` is 46.8 GB (2026-10-08) and
-417 k objects, which `aws s3 sync` handles in about 90 minutes on a fast link.
+that is local. A network-year is 0.7 GB; the whole of `western` is 55.3 GB (2026-10-19) and
+580 k objects, which `aws s3 sync` handles in about two hours on a fast link.
 
 **Rule 3: aggregate in the engine, select only the columns you need.** The
 catalogue is far larger than any laptop. A count, a histogram, a per-station
@@ -336,23 +351,30 @@ manifest. Built by `scripts/build_availability.py` from every manifest
 | `npks` | picks that day, for `loaded`; **0 means the station had data and no arrival above 0.2** |
 | `detail` | reason for `unread`, or what an `empty_read` object held |
 
-Built 2026-10-09 after the re-reads:
+Rebuilt after the `too_big` repairs; counts read from the public tables on
+2026-10-19 (`docs/paper_2026/figures/numbers.json`):
 
 | status | western | obs |
 |---|--:|--:|
-| loaded | 16,861,749 | 414,349 |
-| of which `npks` = 0 (data, no picks) | 1,359,115 | 17,609 |
+| loaded | 16,965,900 | 449,541 |
+| of which `npks` = 0 (data, no picks) | 1,368,764 | 20,009 |
 | no_data | 11,627,811 | 47,481 |
 | not_found | 931,317 | 143,309 |
-| empty_read | 204,560 | 10,858 |
-| unread | 107,953 | 35,278 |
+| empty_read | 207,332 | 10,944 |
+| unread | 1,030 | 0 |
 | unknown | 24,621,886 | 120,556 |
 
 Most western `unknown` is NP (about 23 M; no data in a 1,408-day sample, so not
-re-read) and the networks our account cannot read (TD, EO, LH). `unread` is
-almost all `too_big`: day objects over the reader's 200 MB limit (e.g. UW.SLA,
-PB.B093), queued for a repair with a higher limit. The table is rebuilt when a
-repair writes into the catalogue.
+re-read) and the networks our account cannot read (TD, EO, LH). The 1,030
+`unread` are day files that crash the miniSEED decoder or exceed 4 GB.
+
+Two cautions. The table is built from manifests, so a shard preempted and
+resumed on Spot leaves its first days `unknown` even though their picks are in
+the Parquet (24 station-days of CI in July 2019, for example): whether a
+station-day has picks, ask the Parquet; whether a station-day without picks
+had data, ask the table. And it covers days inside each station's FDSN channel
+epochs, which can be narrower than the `start_date` to `end_date` window of
+`stations.parquet`.
 
 ```python
 import pandas as pd
@@ -369,7 +391,7 @@ SeisBench 0.12.5, weight version 2, run 2026-09-03 to 2026-09-17 on AWS Batch
 Fargate Spot from image `ghcr.io/seisscoped/quakescope` at the commits pinned
 in the campaign job definitions (`fleet.json`); the three eras and the
 2026-09-17 repair share that configuration and are told apart by `rid`. The
-re-read (`western-reread2`, from 2026-10-08) uses the same model, weight and
+re-read (`western-reread2`, 2026-10-06 to 10-09) uses the same model, weight and
 thresholds on image d0ccf9b, whose reader picks the best band present each
 day; its picks carry their own `rid`, and its `runs/<rid>.json` names the image. The picks reproduce exactly
 when re-picked through ObsPy/FDSN on another architecture
@@ -393,10 +415,13 @@ date you read it, because the bucket is live.
   `HH` later.
 - `amp` exists only above `conf` 0.5. Magnitudes from this catalogue are
   magnitudes of the confident picks.
-- Coverage before the re-read is quantified in section 6; the re-read is in
-  progress from 2026-10-08 and adds picks to the same prefixes.
-- The bucket is live: embargoed years fill in as EarthScope opens them, and
-  compaction will rename objects. Record the date of any pull.
+- Duplicate rows (section 2) until they are removed: de-duplicate on
+  `(tid, cha, pha, peak)`.
+- 328 western station-days whose day files crash the miniSEED decoder
+  (SF.PH004-006 2006-07, X7.LB01 2008) and 678 whose day object exceeds 4 GB
+  are recorded as unread.
+- The bucket is live: duplicate removal and compaction will rename objects
+  without changing picks. Record the date of any pull.
 - The fill stations (2,369 station-locations) are merged into
   `stations.parquet` and picked; the date-parsing re-pick
   (`western-dates`, [30_station_dates.md](rerun_2026/30_station_dates.md)) is
