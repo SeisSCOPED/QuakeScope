@@ -62,7 +62,8 @@ LAYOUT_THREADS = {"4x2": 2, "8x1": 1}
 LAYOUT = os.environ.get("QS_LAYOUT", "4x2")
 PICK_QUEUE_SIZE = 5
 #: PhaseNet forward-pass precision (sb_catalog.src.picker.INFER_PRECISIONS):
-#: bf16 autocast on AMX by default; QS_INFER_PRECISION=fp32 restores the seed path.
+#: bf16 on AMX by default, and the fp32 path on any CPU without AMX-BF16 (the
+#: check is inside picker.resolve_precision); QS_INFER_PRECISION=fp32 forces fp32.
 INFER_PRECISION = os.environ.get("QS_INFER_PRECISION", "bf16")
 #: Amplitude passes (sb_catalog.src.amplitude_extractor.AMP_IMPLS): "fused" is the
 #: "fast" arithmetic with the velocity prep fused onto a per-process filter pool and

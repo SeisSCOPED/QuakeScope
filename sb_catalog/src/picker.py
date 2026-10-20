@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import asyncio
 import datetime
 import functools
@@ -113,7 +114,42 @@ def prepare_channel_stream(stream: obspy.Stream, window_seconds: float
 #: oneDNN dispatches to AMX-BF16 kernels on Sapphire Rapids and later (about 3x
 #: the fp32 AVX-512 throughput for PhaseNet); the probabilities are cast back to
 #: fp32 before blinding, stacking and thresholding, which stay as they were.
+#: "bf16" is an optimization, not a requirement: `resolve_precision` runs it
+#: only where the CPU has AMX-BF16 and oneDNN can use it, and otherwise keeps
+#: the fp32 path with the same interfaces, so no caller has to know the host.
 INFER_PRECISIONS = ("fp32", "bf16")
+
+
+def amx_bf16_available() -> bool:
+    """Whether this CPU has AMX-BF16 tiles and oneDNN runs bfloat16 convolutions on it.
+
+    False on every CPU before Sapphire Rapids, on Fargate's current pool and on
+    Graviton, where the fp32 path runs instead. QS_AMX=off forces that answer,
+    which is how the fallback is tested on a host that does have AMX.
+    """
+    if os.environ.get("QS_AMX", "auto").lower() in ("off", "0", "false", "no"):
+        return False
+    try:
+        with open("/proc/cpuinfo") as fh:
+            flags = next((line.split(":", 1)[1].split() for line in fh
+                          if line.startswith("flags")), [])
+        return ("amx_bf16" in flags and "amx_tile" in flags
+                and torch.backends.mkldnn.is_available()
+                and torch.ops.mkldnn._is_mkldnn_bf16_supported())
+    except Exception:   # noqa: BLE001 - an unknown platform runs the fp32 path
+        return False
+
+
+def resolve_precision(precision: str) -> str:
+    """The precision that will actually run here: "bf16" only with AMX-BF16."""
+    if precision not in INFER_PRECISIONS:
+        raise ValueError(
+            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    if precision == "bf16" and not amx_bf16_available():
+        logger.warning("bf16 inference requested but this CPU has no AMX-BF16 "
+                       "(or oneDNN cannot run bf16 here); using the fp32 path")
+        return "fp32"
+    return precision
 
 
 def apply_inference_precision(model: sbm.WaveformModel, precision: str
@@ -125,10 +161,9 @@ def apply_inference_precision(model: sbm.WaveformModel, precision: str
     context entered around `classify` would never reach the convolutions. It
     is entered in `_predict_windows` itself, on the thread that runs the batch.
     """
-    if precision not in INFER_PRECISIONS:
-        raise ValueError(
-            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    precision = resolve_precision(precision)
     model.eval()
+    model.inference_precision = precision
     if precision == "fp32":
         return model
 
@@ -179,12 +214,11 @@ def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
                            f"using SeisBench's forward")
         model.fast_graph = None
         return apply_inference_precision(model, precision)
-    if precision not in INFER_PRECISIONS:
-        raise ValueError(
-            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    precision = resolve_precision(precision)
     from .fast_forward import PhaseNetGraph
 
     model.eval()
+    model.inference_precision = precision
     graph = PhaseNetGraph(
         model, torch.bfloat16 if precision == "bf16" else torch.float32,
         deconv=deconv).eval()
