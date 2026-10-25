@@ -12,20 +12,24 @@ import functools
 import logging
 import sys
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import obspy
-import seisbench
-import seisbench.models as sbm
-import seisbench.util as sbu
+from .sb_lite import sbu, seisbench  # QS_SBLITE: the SeisBench originals under off
+import torch
 
 from .amplitude_extractor import AmplitudeExtractor
-from .classifier import QuakeXNet
+from .core_pin import CorePin
+from .lean_phasenet import LeanPhaseNet, is_phasenet
 from .parquet_writer import ParquetPickWriter
-from .profiling import stage
+from .profiling import stage, timeline
 from .s3_helper import S3DataSource
+from .tail_share import TailShare
 from .utils import parse_year_day
+
+if TYPE_CHECKING:
+    import seisbench.models as sbm
 
 # Exceptions the signal path raises on data that is merely odd. Caught per
 # station-day in _pick_data so that one bad trace costs one station-day and
@@ -102,6 +106,164 @@ def prepare_channel_stream(stream: obspy.Stream, window_seconds: float
     if note:
         return obspy.Stream(), note
     return merged, None
+
+
+#: Numeric precision of the picker's forward pass. "fp32" is SeisBench's own
+#: path, unchanged. "bf16" runs the convolutions under CPU bf16 autocast, which
+#: oneDNN dispatches to AMX-BF16 kernels on Sapphire Rapids and later (about 3x
+#: the fp32 AVX-512 throughput for PhaseNet); the probabilities are cast back to
+#: fp32 before blinding, stacking and thresholding, which stay as they were.
+INFER_PRECISIONS = ("fp32", "bf16")
+
+
+def apply_inference_precision(model: sbm.WaveformModel, precision: str
+                              ) -> sbm.WaveformModel:
+    """Set the forward-pass precision of `model`, in place.
+
+    Autocast is thread-local, and SeisBench runs each batch in a thread of its
+    own (`asyncio.to_thread(self._predict_windows, ...)` inside annotate), so a
+    context entered around `classify` would never reach the convolutions. It
+    is entered in `_predict_windows` itself, on the thread that runs the batch.
+    """
+    if precision not in INFER_PRECISIONS:
+        raise ValueError(
+            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    model.eval()
+    if precision == "fp32":
+        return model
+
+    predict_windows = model._predict_windows
+    batch_post = model.annotate_batch_post
+
+    def _predict_windows(segments, argdict):
+        with torch.inference_mode(), torch.autocast("cpu", dtype=torch.bfloat16):
+            return predict_windows(segments, argdict)
+
+    def annotate_batch_post(batch, piggyback, argdict):
+        # numpy has no bf16: the batch must leave torch as fp32.
+        return batch_post(batch.float(), piggyback=piggyback, argdict=argdict)
+
+    model._predict_windows = _predict_windows
+    model.annotate_batch_post = annotate_batch_post
+    return model
+
+
+#: How the picker's forward pass is executed inside SeisBench's annotate.
+#: "seisbench" is the model's own forward, with the precision set by
+#: apply_inference_precision. "fast" swaps in fast_forward.PhaseNetGraph
+#: (BatchNorm folded, channels-last (1, k) convs, weights stored in the compute
+#: dtype) at FAST_BATCH_SIZE windows per batch: the full-resolution layers are
+#: memory-bound, and 64 windows keep their activations in cache where 256 do
+#: not. Windowing, normalization, blinding, stacking and thresholds are
+#: SeisBench's, unchanged.
+CLASSIFY_IMPLS = ("seisbench", "fast")
+FAST_BATCH_SIZE = 64
+
+
+def apply_classify_impl(model: sbm.WaveformModel, precision: str, impl: str,
+                        deconv: str = "transpose") -> sbm.WaveformModel:
+    """Set the forward-pass precision and implementation of `model`, in place.
+
+    The fast graph is built for PhaseNet's exact architecture; any other model
+    keeps the "seisbench" forward, and says so in the log. `deconv` is how the
+    fast graph runs its transposed convs (fast_forward.DECONV_IMPLS).
+    """
+    if impl not in CLASSIFY_IMPLS:
+        raise ValueError(
+            f"classify impl {impl!r} is not one of {CLASSIFY_IMPLS}")
+    if impl == "seisbench" or not is_phasenet(model):
+        if isinstance(model, LeanPhaseNet):
+            raise ValueError("the lean PhaseNet runs on the fast graph only")
+        if impl != "seisbench":
+            logger.warning(f"No fast graph for {type(model).__name__}; "
+                           f"using SeisBench's forward")
+        model.fast_graph = None
+        return apply_inference_precision(model, precision)
+    if precision not in INFER_PRECISIONS:
+        raise ValueError(
+            f"inference precision {precision!r} is not one of {INFER_PRECISIONS}")
+    from .fast_forward import PhaseNetGraph
+
+    model.eval()
+    graph = PhaseNetGraph(
+        model, torch.bfloat16 if precision == "bf16" else torch.float32,
+        deconv=deconv).eval()
+    graph.batches = graph.windows = graph.station_days = 0
+    return attach_fast_graph(model, graph)
+
+
+def attach_fast_graph(model: sbm.WaveformModel | LeanPhaseNet, graph: torch.nn.Module
+                      ) -> sbm.WaveformModel | LeanPhaseNet:
+    """Run `model`'s forward on the fast graph `graph`, in place.
+
+    A SeisBench PhaseNet keeps its own annotate around the graph. A LeanPhaseNet
+    has no annotate of its own (the fast annotate drives the graph directly), so
+    it only takes the graph and the batch size.
+    """
+    model.default_args["batch_size"] = FAST_BATCH_SIZE
+    model.fast_graph = graph
+    if isinstance(model, LeanPhaseNet):
+        return model
+    predict_windows = model._predict_windows
+
+    def forward(x, logits=False):
+        if logits:
+            raise NotImplementedError("the fast graph returns probabilities")
+        graph.batches += 1
+        graph.windows += x.shape[0]
+        return graph(x)
+
+    def _predict_windows(segments, argdict):
+        with torch.inference_mode():
+            return predict_windows(segments, argdict)
+
+    model.forward = forward
+    model._predict_windows = _predict_windows
+    return model
+
+
+#: How the windows around the fast graph are cut, stacked and picked.
+#: "seisbench" is SeisBench's annotate/classify, unchanged. "fast" is
+#: fast_annotate.FastAnnotator: the same windows, batches, normalization,
+#: blinding, avg stacking and trigger, without SeisBench's per-window copies;
+#: a stream it does not reproduce exactly goes to SeisBench and is counted.
+ANNOTATE_IMPLS = ("seisbench", "fast")
+
+#: What a worker imports before its first classify. "full" is SeisBench's model
+#: package (and with it scipy.signal, obspy.signal and matplotlib, through
+#: obspy.signal.trigger). "lean" loads PhaseNet as a lean_phasenet.LeanPhaseNet
+#: when the fast classify and fast annotate are selected, and the fused
+#: amplitude passes import their scipy/obspy.signal modules on a thread started
+#: by the first classify.
+IMPORT_MODES = ("lean", "full")
+#: Modules whose presence at the first classify shows which import mode ran.
+ACTIVATION_MODULES = ("seisbench.models", "scipy.signal", "obspy.signal", "matplotlib",
+                      "s3fs", "aiohttp", "botocore")
+#: Modules QS_SBLITE=on keeps out of a worker (sb_lite); recorded apart, as the first classify starts.
+SBLITE_MODULES = ("seisbench", "seisbench.util", "pandas")
+
+
+def apply_annotate_impl(model: sbm.WaveformModel, impl: str, glue: str = "off"
+                        ) -> sbm.WaveformModel:
+    """Set how `model.classify` annotates, in place (after apply_classify_impl).
+
+    The fast annotate drives the fast graph directly; without one (another
+    model, or classify impl "seisbench") it keeps SeisBench's, and says so.
+    `glue` is the fast annotate's glue arm (fast_annotate.GLUE_ARMS).
+    """
+    if impl not in ANNOTATE_IMPLS:
+        raise ValueError(
+            f"annotate impl {impl!r} is not one of {ANNOTATE_IMPLS}")
+    model.fast_annotator = None
+    if impl == "seisbench":
+        return model
+    if getattr(model, "fast_graph", None) is None:
+        logger.warning("No fast graph to annotate on; using SeisBench's annotate")
+        return model
+    from . import fast_annotate
+
+    fast_annotate.apply(model, model.fast_graph, glue)
+    return model
 
 
 def is_signal_fault(exc: BaseException) -> bool:
@@ -372,7 +534,24 @@ class S3MongoSBBridge:
         prior_done: Optional[Any] = None,
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
+        infer_precision: str = "fp32",
+        amp_impl: str = "obspy",
+        classify_impl: str = "seisbench",
+        annotate_impl: str = "seisbench",
+        deconv_impl: str = "transpose",
+        glue: str = "off",
+        imports: str = "full",
+        tail: Optional[TailShare] = None,
+        amp_signal: str = "scipy",
+        pin: Optional[CorePin] = None,
     ):
+        if imports not in IMPORT_MODES:
+            raise ValueError(f"imports {imports!r} is not one of {IMPORT_MODES}")
+        self.imports = imports
+        #: {module: loaded?} for ACTIVATION_MODULES, as the first classify starts.
+        self.modules_at_first_classify: Optional[dict[str, bool]] = None
+        #: {module: loaded?} for SBLITE_MODULES, as the first classify starts.
+        self.sblite_modules_at_first_classify: Optional[dict[str, bool]] = None
         self.extent = extent
         # When set, bulk picks go to Parquet on S3 instead of into the
         # database. Station metadata and picks_record stay in the database:
@@ -404,15 +583,60 @@ class S3MongoSBBridge:
 
         # model preparation
         if model is not None:
-            self.model = self.create_model(model, weight, p_threshold, s_threshold)
+            # The lean model covers exactly the fast classify + fast annotate
+            # PhaseNet path; every other arm loads SeisBench's model.
+            lean = (imports == "lean" and model == "PhaseNet"
+                    and classify_impl == "fast" and annotate_impl == "fast")
+            self.model = apply_annotate_impl(
+                apply_classify_impl(
+                    self.create_model(model, weight, p_threshold, s_threshold, lean=lean),
+                    infer_precision,
+                    classify_impl,
+                    deconv_impl,
+                ),
+                annotate_impl,
+                glue,
+            )
+            if isinstance(self.model, LeanPhaseNet):
+                self.model.seisbench_factory = functools.partial(
+                    self._seisbench_twin, model, weight, p_threshold, s_threshold,
+                    self.model.fast_graph)
         else:
             self.model = None
 
         if classifier:
+            from .classifier import QuakeXNet
+
             self.classifier = QuakeXNet.from_pretrained("base")
         else:
             self.classifier = None
-        self.amp_extor = AmplitudeExtractor()
+        self.amp_extor = AmplitudeExtractor(impl=amp_impl, signal=amp_signal)
+        # Tail widening (tail_share.TailShare, or None for "static"): the
+        # forward runs on one dedicated thread whose intra-op thread count
+        # follows this worker's claim, set before every batch; the fused
+        # filter pool follows it between station-days.
+        self.tail = tail
+        # Core pinning (core_pin.CorePin, or None): the forward's dedicated
+        # thread pins itself before its first parallel region ("classify"),
+        # and every task returns to the inherited set when the tail widens.
+        self.pin = pin
+        self._classify_executor = None
+        if tail is not None or (pin is not None and pin.mode != "off"):
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._classify_executor = ThreadPoolExecutor(1, thread_name_prefix="classify")
+            if (tail is not None and self.model is not None
+                    and getattr(self.model, "fast_graph", None) is not None):
+                self.model.fast_graph.tail_hook = self._tail_batch
+        if imports == "full" or amp_signal == "slim":
+            # The round-13 order: the fused arm's scipy/obspy.signal imports
+            # happen here. Lean: on a thread started by the first classify.
+            # Slim (amplitude_extractor.AMP_SIGNALS): its few modules, here,
+            # before the first classify rather than beside it.
+            self.amp_extor.warm_up()
+        # Fused arm: station-days whose two amplitude passes ran, and how many
+        # of them had both passes in flight at once.
+        self.amp_overlap = {"station_days": 0, "overlapped": 0}
         self.model_name = model
         self.weight = weight
         self.p_threshold = p_threshold
@@ -460,15 +684,31 @@ class S3MongoSBBridge:
 
     @staticmethod
     def create_model(
-        model: str, weight: str, p_threshold: float, s_threshold: float
-    ) -> sbm.WaveformModel:
+        model: str, weight: str, p_threshold: float, s_threshold: float, lean: bool = False
+    ) -> sbm.WaveformModel | LeanPhaseNet:
         """
-        Loads a SeisBench model
+        Loads a SeisBench model. With `lean`, a PhaseNet whose weights are in
+        SeisBench's cache is loaded as a LeanPhaseNet, without importing
+        `seisbench.models`; anything else falls through to SeisBench.
         """
-        model = sbm.__getattribute__(model).from_pretrained(weight)
-        model.default_args["P_threshold"] = p_threshold
-        model.default_args["S_threshold"] = s_threshold
-        return model
+        loaded = LeanPhaseNet.from_cache(weight) if lean and model == "PhaseNet" else None
+        if loaded is None:
+            import seisbench.models as sbm
+
+            loaded = sbm.__getattribute__(model).from_pretrained(weight)
+        loaded.default_args["P_threshold"] = p_threshold
+        loaded.default_args["S_threshold"] = s_threshold
+        return loaded
+
+    @classmethod
+    def _seisbench_twin(cls, model: str, weight: str, p_threshold: float,
+                        s_threshold: float, graph: torch.nn.Module) -> sbm.WaveformModel:
+        """SeisBench's own model for a LeanPhaseNet's fallback streams: the same
+        weights and thresholds, its forward on the lean model's fast graph."""
+        twin = cls.create_model(model, weight, p_threshold, s_threshold)
+        twin.eval()
+        twin.fast_annotator = None
+        return attach_fast_graph(twin, graph)
 
     def run_association(self, t0: datetime.datetime, t1: datetime.datetime):
         """
@@ -535,7 +775,31 @@ class S3MongoSBBridge:
         # Per RUN, not per class: a class attribute would be shared by every
         # bridge in the process and carry one shard's faults into the next.
         self.signal_faults = []
-        asyncio.run(self._run_picking_async())
+        try:
+            asyncio.run(self._run_picking_async())
+        finally:
+            self.amp_extor.close()
+            if self._classify_executor is not None:
+                self._classify_executor.shutdown(wait=True)
+
+    def _set_threads(self, threads: int) -> None:
+        """This thread's intra-op thread count (OpenMP's is per calling thread)."""
+        if self.pin is not None and self.pin.window_open and self.tail is not None:
+            # Before the forward widens onto a finished peer's cores.
+            if self.tail.peers_finished:
+                self.pin.end_window("peer_finished")
+            elif threads > self.tail.base:
+                self.pin.end_window("claim")
+        if torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+
+    def _tail_update(self, batch_fraction: float = 0.0) -> int:
+        """Publish this worker's remaining classify work and run at its claim."""
+        return self.tail.update(self.tail.remaining(batch_fraction), self._set_threads)
+
+    def _tail_batch(self, batch_index: int, n_batches: int) -> None:
+        """The fast annotate's per-batch hook, in the classify thread."""
+        self.tail.last_batch_threads = self._tail_update(batch_index / max(1, n_batches))
 
     async def _run_picking_async(self) -> None:
         """
@@ -553,6 +817,10 @@ class S3MongoSBBridge:
         task_db = self._write_picks_to_db(picks_queue)
 
         await asyncio.gather(task_load, task_pick, task_db)
+        # The overlap startup fetches the inventory in the background and the
+        # first amplitude pass joins it. Join it here too, so a failed fetch
+        # fails the run even when no station-day needed it.
+        await asyncio.to_thread(getattr, self.s3, "inventory")
 
         # A manifest for EVERY job, including one that loaded nothing. A job
         # with no picks used to write no manifest at all - 10,678 of 27,924
@@ -621,6 +889,7 @@ class S3MongoSBBridge:
                     else:
                         logger.debug(f"Send {id.ljust(14)} {day.strftime('%Y.%j')}")
 
+                    timeline.mark("data_enqueued")
                     await data_queue.put([stream_c, station, day, channel, note])
             else:
                 # put empty stream
@@ -708,11 +977,40 @@ class S3MongoSBBridge:
         """Pick and measure one station-day-channel."""
         # do picking
         def _classify():
+            graph = self.model.fast_graph
+            windows = graph.windows if graph is not None else 0
+            timeline.mark("classify_start")
+            if self.modules_at_first_classify is None:
+                self.modules_at_first_classify = {
+                    name: name in sys.modules for name in ACTIVATION_MODULES}
+                self.sblite_modules_at_first_classify = {
+                    name: name in sys.modules for name in SBLITE_MODULES}
+            if self.imports == "lean":
+                self.amp_extor.start_warm_up()
+            if self.pin is not None:
+                self.pin.on_classify_thread()
+            if self.tail is not None:
+                self._tail_update()
+            t0 = time.perf_counter()
             with stage("model.classify"):
-                return self.model.classify(stream)
+                output = self.model.classify(stream)
+            if self.pin is not None:
+                self.pin.record_sd(time.perf_counter() - t0)
+                self.pin.after_first_classify()
+            if graph is not None and graph.windows > windows:
+                graph.station_days += 1
+            if self.tail is not None:
+                self.tail.classified += 1
+                self._tail_update()
+            return output
 
-        stream_annotations = await asyncio.to_thread(_classify)
+        if self._classify_executor is not None:
+            stream_annotations = await asyncio.get_running_loop().run_in_executor(
+                self._classify_executor, _classify)
+        else:
+            stream_annotations = await asyncio.to_thread(_classify)
         n_picks = len(stream_annotations.picks)
+        spans = {}
 
         # Wood-Anderson, deconvolved on a short window around each pick
         # above the confidence gate. Timed against PICK COUNT, not
@@ -720,23 +1018,51 @@ class S3MongoSBBridge:
         # pick counts vary ~4x between an ordinary day and a mainshock
         # day, so per-station-day timing would hide how it scales.
         def _amps():
-            with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
-                return self.amp_extor.extract_amplitudes(
-                    stream, stream_annotations.picks, self.s3.inventory
-                )
-
-        stream_amplitudes = await asyncio.to_thread(_amps)
+            timeline.mark("amp_start")
+            t0 = time.perf_counter()
+            try:
+                with stage("amp.wood_anderson", unit=n_picks, unit_name="pick"):
+                    return self.amp_extor.extract_amplitudes(
+                        stream, stream_annotations.picks, self.s3.inventory
+                    )
+            finally:
+                spans["wa"] = (t0, time.perf_counter())
 
         # Gain-corrected peak ground velocity for every pick. Replaces
         # the raw-counts pass: same cost class, but the number is
         # physical and comparable between instruments.
         def _vel_amps():
-            with stage("amp.velocity", unit=n_picks, unit_name="pick"):
-                return self.amp_extor.extract_velocity_amplitudes(
-                    stream, stream_annotations.picks, self.s3.inventory
-                )
+            t0 = time.perf_counter()
+            try:
+                with stage("amp.velocity", unit=n_picks, unit_name="pick"):
+                    return self.amp_extor.extract_velocity_amplitudes(
+                        stream, stream_annotations.picks, self.s3.inventory
+                    )
+            finally:
+                spans["vel"] = (t0, time.perf_counter())
 
-        stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
+        with stage("amp.total", unit=n_picks, unit_name="pick"):
+            if self.amp_extor.impl == "fused":
+                if self.tail is not None:
+                    self.amp_extor.set_workers(self.tail.threads())
+                # Both passes only read the stream, the picks and the
+                # inventory, so they run side by side on the worker's second
+                # core, after classify and never during it. An exception is
+                # raised as the serial order would: Wood-Anderson's first.
+                results = await asyncio.gather(
+                    asyncio.to_thread(_amps), asyncio.to_thread(_vel_amps),
+                    return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+                stream_amplitudes, stream_raw_amplitudes = results
+                self.amp_overlap["station_days"] += 1
+                (wa0, wa1), (vel0, vel1) = spans["wa"], spans["vel"]
+                if max(wa0, vel0) < min(wa1, vel1):
+                    self.amp_overlap["overlapped"] += 1
+            else:
+                stream_amplitudes = await asyncio.to_thread(_amps)
+                stream_raw_amplitudes = await asyncio.to_thread(_vel_amps)
 
         # classifier
         if self.classifier and (channel in ["BH", "HH"]):
@@ -796,6 +1122,7 @@ class S3MongoSBBridge:
                 day,
                 channel,
             )
+            timeline.mark("pick_written")
 
     def _write_single_picklist_to_db(
         self,
