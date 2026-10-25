@@ -10,9 +10,6 @@
 
 A cloud-native workflow for automated seismic phase picking and earthquake detection using deep learning, deployed on AWS with containerized models and managed infrastructure.
 
-The [VibeSys latency checkpoint](vibesys/README.md) contains the optimized
-runner, workload, and recorded results for the approximately 9× speedup.
-
 **Authors**: Jannes Munchmeyer (munchmej@univ-grenoble-alpes.fr), Yiyu Ni (niyiyu@uw.edu), and Marine Denolle (mdenolle@uw.edu)
 
 ## Publications
