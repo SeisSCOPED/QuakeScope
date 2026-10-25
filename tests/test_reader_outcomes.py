@@ -77,6 +77,11 @@ def _source(stations, channels, archive, days=1, dc="earthscope", done=(),
     src.networks = sorted({s.split(".")[0] for s in stations})
     src.components, src.weight, src.limit_mb = "ZNE", "original", None
     src.db, src._logged, src.outcomes = FakeDB(done), set(), []
+    # Exercise the ordinary day-listing path without starting live I/O.
+    src.list_mode, src.concurrent_reads = "day", False
+    src._early_listing, src._prefetched = {}, {}
+    src.startup_counters = {"listing_consumed": 0, "prefetch_unused": 0}
+    src.list_counters = {"calls": 0, "requests": 0, "keys": 0, "max_keys": 0}
     src.s3helper = FakeHelper(archive, dc, list_error)
     src.meta = pd.DataFrame({"id": stations, "channels": channels}).set_index("id")
 
@@ -168,6 +173,17 @@ def test_a_denied_listing_is_recorded_per_station():
     assert [o["status"] for o in src.outcomes] == ["denied", "denied"]
 
 
+def test_a_missing_network_year_does_not_fail_the_shard():
+    src = _source(["5A.AAA."], ["HH"], {})
+
+    def missing(net, year):
+        raise s3_helper.EarthScopeNetworkYearNotFound("no such network-year")
+
+    src.s3helper.get_filesystem = missing
+    assert _run(src) == []
+    assert src.outcomes[0]["status"] == "not_found"
+
+
 def test_resume_counts_any_band_as_done():
     src = _source(["UU.AAA."], ["EH,HH"], {}, done={("UU.AAA.", 2015, 26, "EH")})
     _run(src)
@@ -175,12 +191,14 @@ def test_resume_counts_any_band_as_done():
                                "status": "done", "cha": "EH"}
 
 
-def test_per_channel_archives_fall_back_through_the_listing():
+@pytest.mark.parametrize("concurrent_reads", [False, True])
+def test_per_channel_archives_fall_back_through_the_listing(concurrent_reads):
     # SCEDC/NCEDC: one object per channel, so the listing names the bands.
     def uri(cha, c):
         return f"CI/{D0:%Y}/{D0:%j}/ABC..{cha}{c}"
     archive = {uri("EH", c): obspy.Stream([_trace("CI", "ABC", "", f"EH{c}")]) for c in "ZNE"}
     src = _source(["CI.ABC."], ["EH,HH"], archive, dc="scedc")
+    src.concurrent_reads = concurrent_reads
     out = _run(src)
     assert len(out[0][0]) == 3 and src.outcomes[0]["cha"] == "EH"
 
@@ -199,7 +217,8 @@ def test_no_failed_read_returns_an_untagged_empty_stream():
     # Static: a bare `return obspy.Stream()` in the read path is a failure that
     # would be recorded as "empty_read", i.e. as a fact about the archive.
     import inspect
-    for fn in (S3DataSource._read_with_timeout, S3DataSource._read_waveform_from_s3):
+    for fn in (S3DataSource._read_with_timeout, S3DataSource._read_waveform_from_s3,
+               S3DataSource._read_waveform_attempts):
         assert "return obspy.Stream()" not in inspect.getsource(fn), fn.__name__
 
 

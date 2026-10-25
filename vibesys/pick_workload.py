@@ -35,7 +35,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pandas as pd
 
+# Support both the VibeSys workspace (runner beside quakescope/) and this
+# repository's exported runner (vibesys/pick_workload.py).
 QUAKESCOPE_ROOT = Path(__file__).resolve().parent / "quakescope"
+if not (QUAKESCOPE_ROOT / "sb_catalog").is_dir():
+    QUAKESCOPE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_by_path(name: str):
@@ -438,6 +442,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             start=datetime.datetime.strptime(workload["start"], "%Y.%j").date(),
             end=datetime.datetime.strptime(workload["end"], "%Y.%j").date(),
             components=workload["components"],
+            weight=workload["weight"],
             db=None,
             early_channels={s["id"]: s["channels"] for s in stations},
             list_mode=LIST,
@@ -468,6 +473,7 @@ def pick_group(index: int, stations: list[dict], config: PickJobConfig,
             start=start,
             end=end,
             components=workload["components"],
+            weight=workload["weight"],
             db=db,
             list_mode=LIST,
         )

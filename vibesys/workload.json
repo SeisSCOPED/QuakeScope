@@ -1,0 +1,45 @@
+{
+  "name": "ridgecrest-2019",
+  "description": "8 SCSN broadband stations around Ridgecrest on 3 ordinary days before the 2019 sequence, 2019-06-09 to 2019-06-11 (DOY 160-162; end is exclusive). Public anonymous SCEDC bucket; inventory from the EarthScope FDSN service.",
+  "model": "PhaseNet",
+  "weight": "jma_wc",
+  "p_threshold": 0.2,
+  "s_threshold": 0.2,
+  "components": "ZNE12",
+  "start": "2019.160",
+  "end": "2019.163",
+  "stations": [
+    {
+      "id": "CI.CLC.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.TOW2.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.SRT.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.WRC2.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.JRC2.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.CCC.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.SLA.",
+      "channels": "HH"
+    },
+    {
+      "id": "CI.LRL.",
+      "channels": "HH"
+    }
+  ]
+}

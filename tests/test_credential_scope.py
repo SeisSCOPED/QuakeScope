@@ -490,6 +490,13 @@ def _denying_source(heads, cap=60):
     src = object.__new__(S3DataSource)
     src.s3helper = helper
     src.limit_mb = None
+    # This fixture bypasses __init__; include the read wrapper's bookkeeping.
+    import threading
+
+    src._inflight_lock = threading.Lock()
+    src._inflight = 0
+    src._stdlib = None
+    src.startup_counters = {"max_reads_in_flight": 0}
     return src, refreshes
 
 
@@ -652,7 +659,9 @@ def test_a_missing_network_year_does_not_fail_the_shard():
         calls_get_fs = any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Attribute)
-            and c.func.attr == "get_filesystem"
+            # The optimized reader acquires the filesystem in its listing
+            # helper; that call must remain inside this same handler.
+            and c.func.attr in ("get_filesystem", "_list_network_day")
             for stmt in node.body for c in ast.walk(stmt)
         )
         if catches_fnf and calls_get_fs:
@@ -953,7 +962,7 @@ def test_permission_and_filenotfound_are_handled_before_oserror():
     tree = ast.parse(src.read_text())
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef)
-              and n.name == "_read_waveform_from_s3")
+              and n.name == "_read_waveform_attempts")
     order = []
     for node in ast.walk(fn):
         if isinstance(node, ast.Try):
