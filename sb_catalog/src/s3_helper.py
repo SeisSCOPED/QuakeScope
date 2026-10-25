@@ -2142,6 +2142,10 @@ class S3DataSource:
         """
         Failure tolerant method for reading data from S3.
 
+        Keep this entry point for waveform reads. It owns concurrent-read
+        accounting and optional transport selection; `_read_waveform_attempts`
+        retains the s3fs retry and credential-handling logic.
+
         `sourcename` is a libmseed record selector, e.g. "AK.PS09..HH?". Records
         that do not match are skipped **before** being decoded, which matters on
         EarthScope: it stores one multi-channel object per station-day, and the
@@ -2162,11 +2166,6 @@ class S3DataSource:
         TypeError: certain types of empty mSEED files, i.e. in NCEDC
 
         """
-        # A refresh fixes an *expired* credential. It cannot fix a credential
-        # that was never allowed to read the object, and retrying one forever is
-        # indistinguishable from a hang: a profiling shard sat on a single
-        # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
-        # Bound the attempts and say what is actually wrong.
         with self._inflight_lock:
             self._inflight += 1
             counters = self.startup_counters
@@ -2185,7 +2184,12 @@ class S3DataSource:
                 self._inflight -= 1
 
     def _read_waveform_attempts(self, uri, net, sourcename, year) -> obspy.Stream:
-        """The body of `_read_waveform_from_s3`: its retry loop."""
+        """The s3fs retry loop used by `_read_waveform_from_s3` and prefetch fallback."""
+        # A refresh fixes an *expired* credential. It cannot fix a credential
+        # that was never allowed to read the object, and retrying one forever is
+        # indistinguishable from a hang: a profiling shard sat on a single
+        # denied GET for 447 minutes, logging nothing, until Spot reclaimed it.
+        # Bound the attempts and say what is actually wrong.
         denied = busy = 0
         while True:
             try:

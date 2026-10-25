@@ -26,6 +26,8 @@ import datetime
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sb_catalog.src.s3_helper import CompositeS3ObjectHelper
@@ -529,6 +531,43 @@ def test_a_denied_object_gives_up_instead_of_spinning():
     # And the branch really ran - a refresh was attempted, escalating only on
     # the second denial, never dropping scope.
     assert refreshes == [False, True][:len(refreshes)] and refreshes, refreshes
+    assert st.fault == "denied"
+    assert src._inflight == 0
+
+
+def test_waveform_entry_point_preserves_missing_object_outcome():
+    src, refreshes = _denying_source([])
+    requests = []
+
+    class MissingFS:
+        def info(self, uri):
+            requests.append(uri)
+            raise FileNotFoundError(uri)
+
+    src.s3helper.get_filesystem = lambda net, year=None: MissingFS()
+    uri = "s3://es/AV.X.2019.001"
+    stream = src._read_waveform_from_s3(uri, "AV", year=2019)
+
+    assert len(stream) == 0 and stream.fault == "not_found"
+    assert requests == [uri]
+    assert refreshes == []
+    assert src._inflight == 0
+
+
+def test_waveform_entry_point_propagates_auth_failure_and_releases_read():
+    from sb_catalog.src.s3_helper import EarthScopeAuthFailed
+
+    src, refreshes = _denying_source([])
+
+    def invalid_token(net, year=None):
+        raise EarthScopeAuthFailed("invalid token")
+
+    src.s3helper.get_filesystem = invalid_token
+    with pytest.raises(EarthScopeAuthFailed, match="invalid token"):
+        src._read_waveform_from_s3("s3://es/AV.X.2019.001", "AV", year=2019)
+
+    assert refreshes == []
+    assert src._inflight == 0
 
 
 def test_the_denial_budget_is_spent_per_scope_not_per_object():
@@ -960,6 +999,8 @@ def test_permission_and_filenotfound_are_handled_before_oserror():
 
     src = pathlib.Path(__file__).parent.parent / "sb_catalog/src/s3_helper.py"
     tree = ast.parse(src.read_text())
+    # Retry handlers live in the helper; behavioral tests above still enter
+    # through _read_waveform_from_s3 so the wrapper remains covered.
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef)
               and n.name == "_read_waveform_attempts")

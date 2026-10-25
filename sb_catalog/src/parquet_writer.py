@@ -183,7 +183,8 @@ class ParquetPickWriter:
         # local root works for tests and dry runs - which _ensure_parent already
         # claimed to support, but could not, because this was hardcoded.
         if self.root.startswith("s3://"):
-            # Imported here: a local root never loads s3fs/aiobotocore/aiohttp.
+            # Keep S3 output on s3fs with the caller's storage options. Defer
+            # the import so local output does not load the S3 client stack.
             import s3fs
 
             self.fs = s3fs.S3FileSystem(**(storage_options or {}))
