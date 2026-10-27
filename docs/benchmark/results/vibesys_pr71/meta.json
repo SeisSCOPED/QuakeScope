@@ -1,0 +1,15 @@
+{
+ "pr": "https://github.com/SeisSCOPED/QuakeScope/pull/71",
+ "pr_head": "a5d4d43",
+ "vanilla_commit": "7dd1be7",
+ "vanilla_note": "sb_catalog/src identical at 887366d, origin/main 7dd1be7 and the PR's parent",
+ "optimized_settings_from": "4271d67 vibesys/pick_workload.py (removed from the PR in 32d27cf)",
+ "weight": "PhaseNet original, weight version 2",
+ "run_date": "2026-10-26",
+ "accuracy_workload": "130 cached station-windows of docs/benchmark/results/{us,swarm}_sequences, 7,593 analyst picks",
+ "timing_workload": "42 station-windows at 100 Hz with a cached response, 133.3 station-hours = 5.55 station-days; 4 worker processes x 2 threads; 4 alternating reps per arm",
+ "timing_scope": "compute only: local miniSEED and StationXML; no S3 reads, no Parquet writes",
+ "prices": "on-demand from the AWS Pricing API, cheapest-AZ Spot from describe_spot_price_history, both 2026-10-26",
+ "fargate_spot_rate_usd_vcpu_h": 0.0213,
+ "fargate_spot_rate_source": "CloudBank billed costs over attempts, campaign closeout (docs/rerun_2026/34, PR #66)"
+}

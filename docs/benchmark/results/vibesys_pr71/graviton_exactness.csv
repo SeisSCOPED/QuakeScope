@@ -1,0 +1,16 @@
+a,b,n_a,n_b,identical
+c6g vanilla,c7g vanilla,10620,10620,10616
+c6g vanilla,c7g pr,10620,10620,10615
+c6g vanilla,c8g vanilla,10620,10620,10620
+c6g vanilla,c8g pr,10620,10620,10619
+c6g pr,c6g vanilla,10620,10620,10619
+c6g pr,c7g vanilla,10620,10620,10617
+c6g pr,c7g pr,10620,10620,10616
+c6g pr,c8g vanilla,10620,10620,10619
+c6g pr,c8g pr,10620,10620,10620
+c7g vanilla,c8g vanilla,10620,10620,10616
+c7g vanilla,c8g pr,10620,10620,10617
+c7g pr,c7g vanilla,10620,10620,10619
+c7g pr,c8g vanilla,10620,10620,10615
+c7g pr,c8g pr,10620,10620,10616
+c8g pr,c8g vanilla,10620,10620,10619

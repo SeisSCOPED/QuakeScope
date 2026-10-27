@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Pick precision and computational cost of the VibeSys CPU optimizations proposed for the QuakeScope picker in PR #71, measured on the picker benchmark, an M1 Max laptop and three AWS Graviton instances.">
+<title>VibeSys Optimizations Evaluation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="quakescope-board.css">
+<style>.card ul { padding-left: 1.1em; } .card li { margin: 4px 0; }</style>
+</head>
+<body>
+<header class="hero">
+  <div class="shell">
+    <nav class="nav" aria-label="Primary">
+      <a class="brand" href="./"><span class="brand-mark">QS</span>
+        <span>QuakeScope <span style="opacity:.7;font-weight:600">code evaluation</span></span></a>
+      <div class="nav-links">
+        <a href="#verdict">Verdict</a><a href="#vanilla">vs vanilla</a><a href="#analyst">vs analysts</a>
+        <a href="#tolerance">Tolerance</a><a href="#amplitudes">Amplitudes</a><a href="#cost">Cost</a>
+        <a href="#hardware">Hardware</a><a href="#limits">Limits</a><a href="#reproduce">Reproduce</a>
+      </div>
+    </nav>
+    <div class="hero-inner">
+      <p class="eyebrow">QuakeScope &middot; PR #71 &middot; VibeSys CPU optimizations &middot; 2026-10-26</p>
+      <h1>VibeSys optimizations: pick precision and computational cost</h1>
+      <p>PR #71 proposes CPU optimizations for the QuakeScope picker, found by an automated optimization campaign
+      and reported at 8.5&times; on an Intel AMX host. This page tests whether the picks survive and what the speed is
+      on the hardware we would use: the leaderboard's own waveforms and analyst picks for precision, and an M1 Max
+      laptop and three AWS Graviton generations for cost.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#verdict">Verdict</a>
+        <a class="button secondary" href="https://github.com/SeisSCOPED/QuakeScope/pull/71">PR #71</a>
+        <a class="button secondary" href="benchmark_metrics.html">Picker leaderboard</a>
+      </div>
+    </div>
+  </div>
+</header>
+<main class="shell">
+
+<div class="stats">
+  <div class="stat"><div class="n">26,529 / 26,531</div><div class="k">picks identical to the millisecond, PR fp32 vs vanilla</div></div>
+  <div class="stat"><div class="n">9e-12</div><div class="k">largest relative amplitude difference</div></div>
+  <div class="stat"><div class="n">6.1&times;</div><div class="k">faster on Graviton4 (compute)</div></div>
+  <div class="stat"><div class="n">$0.049</div><div class="k">per 1,000 station-days, c8g Spot, PR</div></div>
+  <div class="stat"><div class="n">87&thinsp;%&ndash;90&thinsp;%</div><div class="k">picks identical under bf16</div></div>
+</div>
+
+<section id="verdict">
+  <div class="section-head"><p class="eyebrow">Verdict</p>
+  <h2>The fp32 path keeps the catalogue and runs six times faster on Graviton; bf16 changes the catalogue</h2></div>
+  <div class="grid-2">
+  <div class="callout">
+    <h3>Accept: fp32 forward pass, fast annotate, amplitude rewrite</h3>
+    <p>With the PR's settings in fp32, 26,529 of 26,531 picks at threshold 0.2 are identical to
+    vanilla to the millisecond; the other 2 are one sample apart on flat-topped peaks. Wood-Anderson
+    and velocity amplitudes agree to 9e-12 relative. On the same Graviton instance the PR
+    reproduces 10,619 of 10,620 vanilla picks, fewer differences than vanilla itself shows between
+    Graviton2 and Graviton3 (4). Compute time falls 5.9&times; to
+    6.6&times; on Graviton, and 1.17&times; on an M1 Max laptop.</p>
+  </div>
+  <div class="callout warn">
+    <h3>Do not accept: bf16 chosen per host</h3>
+    <p>bf16 inference leaves 87&thinsp;% to 90&thinsp;% of picks identical, moves
+    10&thinsp;% to 13&thinsp;% by at least one sample and makes 1.6&thinsp;% appear or disappear.
+    Recall against analyst picks does not change, but the PR enables bf16 automatically on CPUs with AMX-BF16, so a
+    catalogue built on mixed Spot capacity would carry two numerical paths with no record of which ran where.
+    Precision should be an explicit campaign setting, default fp32, written into the run records.</p>
+  </div>
+  </div>
+</section>
+
+<section id="tested">
+  <div class="section-head"><p class="eyebrow">What was tested</p>
+  <h2>Three arms on the leaderboard's own waveforms</h2>
+  <p class="lede">PR <a href="https://github.com/SeisSCOPED/QuakeScope/pull/71">#71</a> adds optional CPU paths for PhaseNet inference, amplitude
+  extraction, waveform loading and process start, produced by an automated optimization campaign (VibeSys).
+  It ships them switched off. The settings below are those of the runner that selected them,
+  <code>vibesys/pick_workload.py</code> at <code>4271d67</code>, which was removed from the PR in <code>32d27cf</code>.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">arm</th><th class="l">what runs</th></tr></thead><tbody><tr><td class="l">vanilla</td><td class="l"><code>sbm.PhaseNet.from_pretrained("original").classify</code> and main's <code>AmplitudeExtractor()</code>, at 7dd1be7</td></tr><tr><td class="l">PR fp32</td><td class="l">PR head <code>a5d4d43</code>: fast graph (BatchNorm folded, polyphase deconvolution), fast annotate with <code>glue=fused</code>, amplitudes <code>impl="fused", signal="slim"</code>, C velocity kernel where it builds</td></tr><tr><td class="l">PR bf16</td><td class="l">the same in bf16, with AMX-BF16 emulated where the CPU has none: bf16 weights and input, fp32 accumulate, bias and ReLU, output rounded to bf16 after every layer</td></tr></tbody></table></div>
+  <div class="grid-2" style="margin-top:18px">
+    <div class="card"><h3>Precision workload</h3><p>130 cached station-windows of docs/benchmark/results/{us,swarm}_sequences, 7,593 analyst picks. Weight
+    PhaseNet original, weight version 2, the western campaign's. Picks at a 0.02 floor, thresholded afterwards, matched with
+    <code>benchmark_metrics.match_picks</code> at 0.5&thinsp;s. Run on the M1 Max laptop.</p></div>
+    <div class="card"><h3>Timing workload</h3><p>42 station-windows at 100 Hz with a cached response, 133.3 station-hours = 5.55 station-days; 4 worker processes x 2 threads; 4 alternating reps per arm, the production layout of the
+    western job definition. compute only: local miniSEED and StationXML; no S3 reads, no Parquet writes. Timing includes imports and model start.</p></div>
+  </div>
+</section>
+
+<section id="vanilla">
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>Picks against vanilla</h2>
+  <p class="lede">A pick is identical when station, phase and peak time agree to the millisecond. Lost and new
+  picks are those with no counterpart within 0.5&thinsp;s; shifts are counted in samples at 100&thinsp;Hz.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">threshold</th><th class="l">arm</th><th class="l">track</th><th>vanilla picks</th><th>identical</th><th>shifted &ge; 1 sample</th><th>&ge; 5 samples</th><th>lost</th><th>new</th><th>p99 |shift|</th><th>p99 |&Delta;conf|</th></tr></thead><tbody><tr><td class="l">0.2</td><td class="l">PR fp32</td><td class="l">swarm sequences</td><td>22,428</td><td>99.996&thinsp;% (22,427)</td><td>1</td><td>0.00&thinsp;%</td><td>0</td><td>0</td><td>0 ms</td><td>0.000</td></tr><tr><td class="l">0.2</td><td class="l">PR fp32</td><td class="l">US sequences</td><td>4,103</td><td>99.976&thinsp;% (4,102)</td><td>1</td><td>0.00&thinsp;%</td><td>0</td><td>0</td><td>0 ms</td><td>0.000</td></tr><tr><td class="l">0.2</td><td class="l">PR bf16 (AMX emulated)</td><td class="l">swarm sequences</td><td>22,428</td><td>89.772&thinsp;% (20,134)</td><td>2,151</td><td>0.57&thinsp;%</td><td>143</td><td>208</td><td>40 ms</td><td>0.034</td></tr><tr><td class="l">0.2</td><td class="l">PR bf16 (AMX emulated)</td><td class="l">US sequences</td><td>4,103</td><td>86.863&thinsp;% (3,564)</td><td>512</td><td>0.98&thinsp;%</td><td>27</td><td>37</td><td>40 ms</td><td>0.045</td></tr><tr><td class="l">0.3</td><td class="l">PR fp32</td><td class="l">swarm sequences</td><td>18,652</td><td>99.995&thinsp;% (18,651)</td><td>1</td><td>0.00&thinsp;%</td><td>0</td><td>0</td><td>0 ms</td><td>0.000</td></tr><tr><td class="l">0.3</td><td class="l">PR fp32</td><td class="l">US sequences</td><td>3,459</td><td>99.971&thinsp;% (3,458)</td><td>1</td><td>0.00&thinsp;%</td><td>0</td><td>0</td><td>0 ms</td><td>0.000</td></tr><tr><td class="l">0.3</td><td class="l">PR bf16 (AMX emulated)</td><td class="l">swarm sequences</td><td>18,652</td><td>90.682&thinsp;% (16,914)</td><td>1,644</td><td>0.32&thinsp;%</td><td>94</td><td>130</td><td>30 ms</td><td>0.032</td></tr><tr><td class="l">0.3</td><td class="l">PR bf16 (AMX emulated)</td><td class="l">US sequences</td><td>3,459</td><td>87.280&thinsp;% (3,019)</td><td>420</td><td>0.70&thinsp;%</td><td>20</td><td>32</td><td>40 ms</td><td>0.044</td></tr></tbody></table></div>
+  <h3 style="margin-top:22px">Every fp32 difference at the 0.02 floor (10 of 26,531+ picks)</h3>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">sequence</th><th class="l">station</th><th class="l">phase</th><th>time</th><th>conf vanilla</th><th>conf PR fp32</th><th>side</th></tr></thead><tbody><tr><td class="l">Etna edifice 2022-2024</td><td class="l">IV.EPDN</td><td class="l">S</td><td>2023-05-28 05:17:05.230</td><td>0.0558</td><td>&ndash;</td><td>vanilla only</td></tr><tr><td class="l">Etna edifice 2022-2024</td><td class="l">IV.EPDN</td><td class="l">S</td><td>2023-05-28 05:17:05.240</td><td>&ndash;</td><td>0.0558</td><td>pr_fp32 only</td></tr><tr><td class="l">Jones-Guthrie 2014-2015</td><td class="l">OK.U32A</td><td class="l">P</td><td>2014-07-13 02:43:48.210</td><td>0.6186</td><td>&ndash;</td><td>vanilla only</td></tr><tr><td class="l">Jones-Guthrie 2014-2015</td><td class="l">OK.U32A</td><td class="l">P</td><td>2014-07-13 02:43:48.220</td><td>&ndash;</td><td>0.6186</td><td>pr_fp32 only</td></tr><tr><td class="l">Jones-Guthrie 2014-2015</td><td class="l">US.WMOK</td><td class="l">P</td><td>2014-03-22 03:59:47.520</td><td>0.0427</td><td>&ndash;</td><td>vanilla only</td></tr><tr><td class="l">Maurienne 2017-2019</td><td class="l">GU.RRL</td><td class="l">P</td><td>2017-10-27 01:13:23.180</td><td>0.0470</td><td>&ndash;</td><td>vanilla only</td></tr><tr><td class="l">Maurienne 2017-2019</td><td class="l">GU.RRL</td><td class="l">P</td><td>2017-10-27 01:13:23.210</td><td>&ndash;</td><td>0.0470</td><td>pr_fp32 only</td></tr><tr><td class="l">Mendocino 2024</td><td class="l">BK.RBOW</td><td class="l">S</td><td>2024-12-05 20:12:28.290</td><td>0.4039</td><td>&ndash;</td><td>vanilla only</td></tr><tr><td class="l">Mendocino 2024</td><td class="l">BK.RBOW</td><td class="l">S</td><td>2024-12-05 20:12:28.300</td><td>&ndash;</td><td>0.4041</td><td>pr_fp32 only</td></tr><tr><td class="l">Mendocino 2024</td><td class="l">NC.KCT</td><td class="l">P</td><td>2024-12-05 19:17:16.163</td><td>&ndash;</td><td>0.0203</td><td>pr_fp32 only</td></tr></tbody></table></div>
+  <p class="note">Most are the same arrival one to three samples apart with confidences equal to about
+  10<sup>-4</sup>: folding BatchNorm and the polyphase deconvolution change the fp32 summation order, which moves
+  probabilities by about 10<sup>-6</sup> and flips which sample of a flat peak is the maximum.</p>
+</section>
+
+<section id="analyst">
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>Picks against analyst picks</h2>
+  <p class="lede">Recall within 0.5&thinsp;s, residuals matched within 2&thinsp;s, as on the
+  <a href="benchmark_metrics.html">leaderboard</a>. At 0.3, bf16 changes the outcome for
+  21 of 7,593 analyst picks
+  (12 lost, 9 gained); at 0.2 for
+  14. fp32 changes none.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">threshold</th><th class="l">track</th><th class="l">phase</th><th>analyst picks</th><th>recall vanilla</th><th>recall PR fp32</th><th>recall PR bf16</th><th>within 0.1 s, vanilla / bf16</th><th>MAE (s), vanilla / bf16</th><th>median bias (s), vanilla / bf16</th><th>bf16 lost / gained</th><th>fp32 changed</th></tr></thead><tbody><tr><td class="l">0.3</td><td class="l">US sequences</td><td class="l">P</td><td>625</td><td>0.693</td><td>0.693</td><td>0.690</td><td>0.716 / 0.718</td><td>0.156 / 0.156</td><td>0.038 / 0.038</td><td>2 / 0</td><td>0</td></tr><tr><td class="l">0.3</td><td class="l">US sequences</td><td class="l">S</td><td>439</td><td>0.733</td><td>0.733</td><td>0.733</td><td>0.636 / 0.636</td><td>0.173 / 0.173</td><td>0.046 / 0.046</td><td>0 / 0</td><td>0</td></tr><tr><td class="l">0.3</td><td class="l">swarm sequences</td><td class="l">P</td><td>3,314</td><td>0.666</td><td>0.666</td><td>0.665</td><td>0.760 / 0.758</td><td>0.128 / 0.128</td><td>0.020 / 0.020</td><td>4 / 3</td><td>0</td></tr><tr><td class="l">0.3</td><td class="l">swarm sequences</td><td class="l">S</td><td>3,215</td><td>0.634</td><td>0.634</td><td>0.634</td><td>0.694 / 0.693</td><td>0.163 / 0.162</td><td>0.030 / 0.030</td><td>6 / 6</td><td>0</td></tr><tr><td class="l">0.2</td><td class="l">US sequences</td><td class="l">P</td><td>625</td><td>0.720</td><td>0.720</td><td>0.720</td><td>0.713 / 0.716</td><td>0.149 / 0.149</td><td>0.038 / 0.038</td><td>1 / 1</td><td>0</td></tr><tr><td class="l">0.2</td><td class="l">US sequences</td><td class="l">S</td><td>439</td><td>0.754</td><td>0.754</td><td>0.754</td><td>0.625 / 0.625</td><td>0.176 / 0.176</td><td>0.048 / 0.048</td><td>0 / 0</td><td>0</td></tr><tr><td class="l">0.2</td><td class="l">swarm sequences</td><td class="l">P</td><td>3,314</td><td>0.680</td><td>0.680</td><td>0.681</td><td>0.757 / 0.754</td><td>0.134 / 0.133</td><td>0.020 / 0.020</td><td>0 / 1</td><td>0</td></tr><tr><td class="l">0.2</td><td class="l">swarm sequences</td><td class="l">S</td><td>3,215</td><td>0.658</td><td>0.658</td><td>0.658</td><td>0.686 / 0.684</td><td>0.168 / 0.169</td><td>0.030 / 0.030</td><td>5 / 6</td><td>0</td></tr></tbody></table></div>
+  <p class="note">The US cached waveforms for Mendocino, Monroe and San Simeon CI are not the streams the leaderboard
+  picked, so absolute US recall here differs from the board. Every arm read the same files.</p>
+</section>
+
+<section id="tolerance">
+  <div class="section-head"><p class="eyebrow">Tolerance</p><h2>A bound for a reasonable error, from analyst picking uncertainty</h2>
+  <p class="lede">The acceptance rule for a picker code change is that picks match vanilla to the millisecond. Where a
+  change cannot meet it, the error it adds should be small against how well analysts themselves pick.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">source</th><th class="l">quantity</th><th>P</th><th>S</th></tr></thead><tbody><tr><td class="l">Ross, Meier and Hauksson (2018) <a href="#ref-ross">[1]</a></td><td class="l">analyst-trained CNN vs SCSN analyst picks, standard deviation; the authors: hand P picks &ldquo;probably only accurate to within a few samples&rdquo;</td><td>23 ms</td><td>&ndash;</td></tr><tr><td class="l">Zhu and Beroza (2019) <a href="#ref-zhu">[2]</a></td><td class="l">PhaseNet vs NCEDC analyst picks, standard deviation (residuals under 0.5 s)</td><td>52 ms</td><td>83 ms</td></tr><tr><td class="l">Zhu and Beroza (2019) <a href="#ref-zhu">[2]</a></td><td class="l">analyst uncertainty assumed in the training labels</td><td>100 ms</td><td>100 ms</td></tr><tr><td class="l">this benchmark</td><td class="l">vanilla <code>original</code> vs analyst picks at 0.2, MAD-based &sigma; (1.4826 &times; median absolute deviation); n = 2,705 P, 2,447 S</td><td>32 ms</td><td>38 ms</td></tr></tbody></table></div>
+  <div class="callout" style="margin-top:18px"><h3>Proposed rule</h3>
+  <p>Every pick within &plusmn;1 sample (10&thinsp;ms at 100&thinsp;Hz), which is under half the tightest analyst
+  figure above, and no pick lost or gained unless its confidence is within 0.05 of the threshold.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">arm</th><th class="l">phase</th><th>vanilla picks at 0.2</th><th>within 10 ms</th><th>beyond 50 ms</th><th>largest shift</th><th>shift &sigma;</th><th>lost / new</th><th>lost or new with conf &ge; 0.25</th><th>rule</th></tr></thead><tbody><tr><td class="l">PR fp32</td><td class="l">P</td><td>13,076</td><td>100.00&thinsp;%</td><td>0.00&thinsp;%</td><td>10 ms</td><td>0.09 ms</td><td>0 / 0</td><td>0</td><td><span class="pill met">passes</span></td></tr><tr><td class="l">PR fp32</td><td class="l">S</td><td>13,455</td><td>100.00&thinsp;%</td><td>0.00&thinsp;%</td><td>10 ms</td><td>0.09 ms</td><td>0 / 0</td><td>0</td><td><span class="pill met">passes</span></td></tr><tr><td class="l">PR bf16 (AMX emulated)</td><td class="l">P</td><td>13,076</td><td>96.09&thinsp;%</td><td>0.40&thinsp;%</td><td>450 ms</td><td>11.30 ms</td><td>98 / 118</td><td>14</td><td><span class="pill unmet">fails</span></td></tr><tr><td class="l">PR bf16 (AMX emulated)</td><td class="l">S</td><td>13,455</td><td>95.83&thinsp;%</td><td>0.43&thinsp;%</td><td>480 ms</td><td>9.80 ms</td><td>72 / 127</td><td>3</td><td><span class="pill unmet">fails</span></td></tr></tbody></table></div>
+  <p class="note">bf16's shift spread of up to 11&thinsp;ms is a third of this benchmark's MAD-based
+  model&ndash;analyst &sigma; for P, and its tails reach half a second, so it fails any bound set from analyst
+  uncertainty.</p>
+</section>
+
+<section id="amplitudes">
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>Amplitudes</h2>
+  <p class="lede">The same vanilla picks at 0.2, measured by main's extractor and by the PR's fused/slim extractor with
+  the C velocity kernel. Responses from EarthScope FDSN.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">amplitude</th><th>picks</th><th>stations</th><th>with a value</th><th>missing-value pattern differs</th><th>bit-identical</th><th>max relative difference</th></tr></thead><tbody><tr><td class="l">Wood-Anderson</td><td>13,727</td><td>44</td><td>7,535</td><td>0</td><td>72.3&thinsp;%</td><td>9.4e-12</td></tr><tr><td class="l">velocity</td><td>13,727</td><td>44</td><td>13,530</td><td>0</td><td>9.3&thinsp;%</td><td>4.1e-12</td></tr></tbody></table></div>
+  <p class="note">The 44 stations are in the western US and Oklahoma; EarthScope served no
+  response for the Etna (IV) stations, and the French and most Czech stations were not measured.</p>
+</section>
+
+<section id="cost">
+  <div class="section-head"><p class="eyebrow">Computational cost</p><h2>Laptop and Graviton, same workload, same layout</h2>
+  <p class="lede">Wall time is the slowest of the four workers, median of four alternating repetitions; stage times
+  are summed over the four workers. Both arms of a host share one Python environment.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">host</th><th class="l">arm</th><th>wall, median</th><th>wall per rep (s)</th><th>picking</th><th>Wood-Anderson</th><th>velocity</th><th>speed-up</th></tr></thead><tbody><tr><td class="l">M1 Max laptop</td><td class="l">vanilla</td><td><strong>150.4 s</strong></td><td>152.1, 151.5, 149.4, 137.4</td><td>322 s</td><td>192 s</td><td>9.3 s</td><td></td></tr><tr><td class="l"></td><td class="l">PR fp32</td><td><strong>129.1 s</strong></td><td>126.5, 132.3, 129.5, 128.7</td><td>432 s</td><td>32 s</td><td>2.8 s</td><td>1.17&times;</td></tr><tr><td class="l">c6g.2xlarge, Graviton2</td><td class="l">vanilla</td><td><strong>144.6 s</strong></td><td>144.8, 144.2, 144.7, 144.5</td><td>67 s</td><td>395 s</td><td>10.6 s</td><td></td></tr><tr><td class="l"></td><td class="l">PR fp32</td><td><strong>21.8 s</strong></td><td>21.9, 21.8, 21.8, 21.7</td><td>36 s</td><td>23 s</td><td>2.2 s</td><td>6.62&times;</td></tr><tr><td class="l">c7g.2xlarge, Graviton3</td><td class="l">vanilla</td><td><strong>93.1 s</strong></td><td>93.3, 93.1, 93.1, 93.2</td><td>23 s</td><td>268 s</td><td>7.7 s</td><td></td></tr><tr><td class="l"></td><td class="l">PR fp32</td><td><strong>15.7 s</strong></td><td>15.7, 15.7, 15.7, 15.7</td><td>25 s</td><td>16 s</td><td>1.9 s</td><td>5.93&times;</td></tr><tr><td class="l">c8g.2xlarge, Graviton4</td><td class="l">vanilla</td><td><strong>76.6 s</strong></td><td>76.6, 76.6, 76.7</td><td>37 s</td><td>206 s</td><td>6.7 s</td><td></td></tr><tr><td class="l"></td><td class="l">PR fp32</td><td><strong>12.6 s</strong></td><td>12.6, 12.6, 12.6, 12.5</td><td>21 s</td><td>12 s</td><td>1.7 s</td><td>6.09&times;</td></tr></tbody></table></div>
+  <div class="grid-2" style="margin-top:18px">
+  <div class="card"><h3>Where the time goes</h3><p>Most of the gain is the Wood-Anderson rewrite: vanilla spends
+  395&thinsp;s of worker time on it on Graviton2 against
+  23&thinsp;s for the PR. Picking gains
+  1.9&times; on Graviton2 and
+  1.7&times; on Graviton4, and is
+  slightly slower on Graviton3. The C velocity kernel does not build on ARM, so its SciPy fallback ran.</p></div>
+  <div class="card"><h3>Why the laptop gains less</h3><p>No macOS arm64 torch build has oneDNN (checked: conda-forge
+  2.13.0 and the official pip wheel 2.14.1, both <code>USE_MKLDNN=OFF</code>), so the PR's fused kernels cannot run on
+  an Apple M-series CPU, and its picking runs
+  1.34&times; slower there
+  through an equivalent plain-torch path. The laptop's net 1.17&times; is the amplitude code alone.
+  aarch64 Linux torch 2.14.1 has oneDNN, which is why Graviton gains six times.</p></div>
+  </div>
+  <h3 style="margin-top:22px">Cost per 1,000 station-days of compute</h3>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">instance</th><th class="l">CPU</th><th>on-demand $/h</th><th>Spot $/h</th><th>on-demand, vanilla / PR</th><th>Spot, vanilla / PR</th></tr></thead><tbody><tr><td class="l">c6g.2xlarge, Graviton2</td><td class="l">AWS Graviton2 (Neoverse-N1)</td><td>$0.272</td><td>$0.0802</td><td>$1.969 / $0.297</td><td><strong>$0.581 / $0.088</strong></td></tr><tr><td class="l">c7g.2xlarge, Graviton3</td><td class="l">AWS Graviton3</td><td>$0.289</td><td>$0.0824</td><td>$1.347 / $0.227</td><td><strong>$0.384 / $0.065</strong></td></tr><tr><td class="l">c8g.2xlarge, Graviton4</td><td class="l">AWS Graviton4</td><td>$0.318</td><td>$0.0772</td><td>$1.219 / $0.200</td><td><strong>$0.296 / $0.049</strong></td></tr></tbody></table></div>
+  <p class="note">on-demand from the AWS Pricing API, cheapest-AZ Spot from describe_spot_price_history, both 2026-10-26. Cost = median wall &times; price / 5.55 station-days. For comparison, a
+  Fargate Spot task of the same 8 vCPU shape costs about $0.170/h, at the rate measured from CloudBank billing
+  over all attempts, $0.0213 per vCPU-hour (docs/rerun_2026/34, PR #66). The PR on Fargate was not timed. These figures exclude S3 reads and Parquet writes, which both arms pay
+  equally in production, so the end-to-end speed-up will be lower.</p>
+</section>
+
+<section id="hardware">
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>Exact agreement across hardware</h2>
+  <p class="lede">Picks at 0.2 from repetition 2 on each instance (10,620 picks per run). Repetitions on one
+  instance are bit-identical. Vanilla itself loses 4 picks between Graviton2 and Graviton3,
+  so a millisecond rule cannot hold across our own hardware even without the PR.</p></div>
+  <div class="table-scroll"><table class="data"><thead><tr><th class="l">picks identical to the ms</th><th>c6g vanilla</th><th>c7g vanilla</th><th>c8g vanilla</th><th>c6g PR fp32</th><th>c7g PR fp32</th><th>c8g PR fp32</th></tr></thead><tbody><tr><td class="l">c6g vanilla</td><td>10,620</td><td>10,616</td><td>10,620</td><td>10,619</td><td>10,615</td><td>10,619</td></tr><tr><td class="l">c7g vanilla</td><td>10,616</td><td>10,620</td><td>10,616</td><td>10,617</td><td>10,619</td><td>10,617</td></tr><tr><td class="l">c8g vanilla</td><td>10,620</td><td>10,616</td><td>10,620</td><td>10,619</td><td>10,615</td><td>10,619</td></tr><tr><td class="l">c6g PR fp32</td><td>10,619</td><td>10,617</td><td>10,619</td><td>10,620</td><td>10,616</td><td>10,620</td></tr><tr><td class="l">c7g PR fp32</td><td>10,615</td><td>10,619</td><td>10,615</td><td>10,616</td><td>10,620</td><td>10,616</td></tr><tr><td class="l">c8g PR fp32</td><td>10,619</td><td>10,617</td><td>10,619</td><td>10,620</td><td>10,616</td><td>10,620</td></tr></tbody></table></div>
+</section>
+
+<section id="limits">
+  <div class="section-head"><p class="eyebrow">Limits and other findings</p><h2>What this does not show</h2></div>
+  <div class="grid-2">
+  <div class="card"><h3>Not covered</h3><ul>
+    <li><code>jma_wc</code>, the global weight and the one the PR's own evaluation used, was not scored here.</li>
+    <li><code>obs</code> (PickBlue) cannot use the optimized path: fast annotate raises
+    <code>does not cover this model setup: ['padding/filter']</code> when the model is built.</li>
+    <li>bf16 was emulated on the laptop, not run on AMX hardware.</li>
+    <li>Fargate was not timed; S3 reads and Parquet writes are outside every timing above.</li>
+    <li>Streams the model resamples (30 of the 130 precision windows) fall back to SeisBench's annotate; the timing
+    workload is 100&thinsp;Hz only.</li>
+    <li>The 707-line <code>s3_helper.py</code> rewrite (overlapped reads, per-station listing) was not reviewed.</li>
+  </ul></div>
+  <div class="card"><h3>Defects found</h3><ul>
+    <li><code>PhaseNetGraph</code> with <code>fused=False</code> and polyphase deconvolution crashes on torch builds
+    without oneDNN (<code>fast_forward.py:220</code>, a <code>view</code> of a tensor that is not channels-last).</li>
+    <li><code>veliir.c</code> calls <code>__builtin_cpu_init</code>, which is x86-only; on ARM the build fails and SciPy
+    runs. Built for arm64 with the probe guarded, it matched SciPy to 10<sup>-11</sup>.</li>
+    <li><code>seisbench==0.12.5</code> has no aarch64 wheel: an ARM image needs <code>python3-devel</code> and
+    <code>gcc</code>. Four workers importing SeisBench for the first time at once can race on its cache config.</li>
+    <li>As merged, nothing selects the optimized settings, so production would run vanilla.</li>
+  </ul></div>
+  </div>
+</section>
+
+<section id="reproduce">
+  <div class="section-head"><p class="eyebrow">Reproduce</p><h2>Code and data</h2></div>
+  <div class="card"><p>Harness in <a href="https://github.com/SeisSCOPED/QuakeScope/tree/main/scripts/vibesys_pr71"><code>scripts/vibesys_pr71/</code></a>:
+  <code>run_arm.py</code> (the three arms, with the AMX emulation in <code>emu.py</code>), <code>score.py</code> and
+  <code>tolerance.py</code> (scoring), <code>run_amps.py</code> (amplitudes), <code>bench_worker.py</code> with
+  <code>bench_run.sh</code> (laptop timing) and <code>ec2_run.sh</code> (Graviton timing, run from EC2 user-data with
+  presigned URLs; the instances terminated themselves). Shell scripts keep the paths of the 2026-10-26 run.
+  <code>export_results.py</code> writes the tables in
+  <a href="https://github.com/SeisSCOPED/QuakeScope/tree/main/docs/benchmark/results/vibesys_pr71"><code>docs/benchmark/results/vibesys_pr71/</code></a>,
+  and this page is built from them by <code>scripts/build_vibesys_report.py</code>.</p></div>
+</section>
+
+<section id="refs"><div class="section-head"><p class="eyebrow">References</p></div><ol class="refs">
+  <li id="ref-ross">Ross, Z. E., Meier, M.-A. and Hauksson, E. (2018). P wave arrival picking and first-motion polarity determination with deep learning. <i>Journal of Geophysical Research: Solid Earth</i> 123, 5120-5129. <a href="https://doi.org/10.1029/2017JB015251">doi:10.1029/2017JB015251</a></li>
+  <li id="ref-zhu">Zhu, W. and Beroza, G. C. (2019). PhaseNet: a deep-neural-network-based seismic arrival-time picking method. <i>Geophysical Journal International</i> 216, 261-273. <a href="https://doi.org/10.1093/gji/ggy423">doi:10.1093/gji/ggy423</a></li>
+</ol></section>
+</main>
+<footer class="site-footer">
+  <div class="shell">
+    <p><strong>QuakeScope code evaluation</strong> &middot; maintained by <a href="https://github.com/SeisSCOPED/QuakeScope">SeisSCOPED</a> &middot;
+    <a href="./">all QuakeScope reports</a></p>
+    <p class="provenance">Measured 2026-10-26 on PR head <code>a5d4d43</code> against
+    <code>7dd1be7</code>; page built 2026-10-27 01:54 UTC from <code>7dd1be7</code> by
+    <code>scripts/build_vibesys_report.py</code>; numbers read from <code>docs/benchmark/results/vibesys_pr71/</code>.</p>
+  </div>
+</footer>
+</body>
+</html>

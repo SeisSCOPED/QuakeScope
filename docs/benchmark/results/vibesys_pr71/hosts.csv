@@ -1,0 +1,5 @@
+host,kind,cpu,vcpu,memory_gb,python,torch,seisbench,on_demand_usd_h,spot_usd_h
+M1 Max,laptop,"Apple M1 Max (8 performance + 2 efficiency cores), 64 GB",10,64,3.10,"2.13.0 (conda-forge, no oneDNN)",0.12.3,,
+c6g,"EC2 c6g.2xlarge on-demand, us-east-2",AWS Graviton2 (Neoverse-N1),8,16,3.12.15,2.14.1+cpu mkldnn True fused True,0.12.5,0.272,0.0802
+c7g,"EC2 c7g.2xlarge on-demand, us-east-2",AWS Graviton3,8,16,3.12.15,2.14.1+cpu mkldnn True fused True,0.12.5,0.289,0.0824
+c8g,"EC2 c8g.2xlarge on-demand, us-east-2",AWS Graviton4,8,16,3.12.15,2.14.1+cpu mkldnn True fused True,0.12.5,0.31792,0.0772
