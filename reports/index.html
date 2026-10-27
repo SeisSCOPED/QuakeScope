@@ -161,6 +161,14 @@ training corpora.</p>
   <div class="meta">Executed notebook &middot; <a href="https://colab.research.google.com/github/SeisSCOPED/QuakeScope/blob/main/tutorials/benchmark_data.ipynb">open in Colab</a> &middot; ~5 min</div>
 </a>
 
+<a class="card" href="vibesys_pr71.html">
+  <h3>VibeSys optimizations (PR #71): pick precision and computational cost</h3>
+  <p>The CPU optimizations proposed in PR #71, tested on the picker benchmark against vanilla picks and
+  analyst picks, and timed on an M1 Max laptop and three AWS Graviton generations. The fp32 path keeps the
+  catalogue and runs about six times faster on Graviton; bf16 changes one pick in ten.</p>
+  <div class="meta">Measured 2026-10-26 &middot; built by scripts/build_vibesys_report.py from docs/benchmark/results/vibesys_pr71/</div>
+</a>
+
 
 <h2>Operations</h2>
 
