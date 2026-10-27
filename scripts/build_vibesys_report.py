@@ -18,6 +18,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,9 +37,12 @@ amps = pd.read_csv(RES / "amplitudes.csv").set_index("amplitude")
 timing = pd.read_csv(RES / "timing_reps.csv")
 exact = pd.read_csv(RES / "graviton_exactness.csv")
 hosts = pd.read_csv(RES / "hosts.csv").set_index("host")
+cum = pd.read_csv(RES / "error_cumulative.csv")
 
 TRACK = {"us_sequences": "US sequences", "swarm_sequences": "swarm sequences"}
-ARM = {"vanilla": "vanilla", "pr_fp32": "PR fp32", "pr_bf16": "PR bf16 (AMX emulated)", "pr": "PR fp32"}
+ARM = {"vanilla": "vanilla", "pr_fp32": "PR fp32", "pr_bf16": "PR bf16 (AMX emulated)",
+       "pr_fp16": "fp16 (not in the PR)", "pr": "PR fp32"}
+PR_ARMS = ("pr_fp32", "pr_fp16", "pr_bf16")
 HOSTS = ["M1 Max", "c6g", "c7g", "c8g"]
 HOST_LABEL = {"M1 Max": "M1 Max laptop", "c6g": "c6g.2xlarge, Graviton2",
               "c7g": "c7g.2xlarge, Graviton3", "c8g": "c8g.2xlarge, Graviton4"}
@@ -78,6 +82,10 @@ fp_ident, fp_total = int(fp.identical_n.sum()), int(fp.vanilla.sum())
 bf_ident_lo, bf_ident_hi = bf.identical.min(), bf.identical.max()
 bf_shift_lo, bf_shift_hi = bf.shift_ge_1smp.min(), bf.shift_ge_1smp.max()
 bf_ln = (bf.lost_n + bf.new_n).sum() / bf.vanilla.sum()
+h16 = v2[v2.arm == "pr_fp16"]
+h16_ident = h16.identical_n.sum() / h16.vanilla.sum()
+bf_ident = bf.identical_n.sum() / bf.vanilla.sum()
+h16_ln = (h16.lost_n + h16.new_n).sum() / h16.vanilla.sum()
 
 med = timing[timing.complete].groupby(["host", "arm"]).median(numeric_only=True)
 walls = timing[timing.complete].groupby(["host", "arm"]).wall_s.apply(list)
@@ -133,6 +141,13 @@ verdict = f"""
     Precision should be an explicit campaign setting, default fp32, written into the run records.</p>
   </div>
   </div>
+  <div class="callout" style="margin-top:18px">
+    <h3>For comparison: fp16 (not in the PR)</h3>
+    <p>Built in fp16, the same graph leaves {pct(h16_ident, 1)} of picks identical at threshold 0.2, against
+    {pct(bf_ident, 1)} for bf16, and {pct(h16_ln)} appear or disappear, against {pct(bf_ln)}. fp16 keeps 10 mantissa
+    bits to bf16's 7, so it rounds about eight times more finely. Its speed was not measured.
+    <a href="#own">Set your own tolerance</a> to compare all three against a bound of your choice.</p>
+  </div>
 </section>"""
 
 arms_table = table(["arm", "what runs"], [
@@ -143,11 +158,14 @@ arms_table = table(["arm", "what runs"], [
                 "C velocity kernel where it builds"],
     ["PR bf16", "the same in bf16, with AMX-BF16 emulated where the CPU has none: bf16 weights and input, "
                 "fp32 accumulate, bias and ReLU, output rounded to bf16 after every layer"],
+    ["fp16", "not offered by the PR: the same fast graph built in float16, with the same emulation (fp16 weights and "
+             "input, fp32 accumulate, output rounded to fp16 after every layer). A best case for fp16: CPU kernels "
+             "that also accumulate in fp16 would be less precise"],
 ], left=2)
 what = f"""
 <section id="tested">
   <div class="section-head"><p class="eyebrow">What was tested</p>
-  <h2>Three arms on the leaderboard's own waveforms</h2>
+  <h2>Four arms on the leaderboard's own waveforms</h2>
   <p class="lede">PR <a href="{meta['pr']}">#71</a> adds optional CPU paths for PhaseNet inference, amplitude
   extraction, waveform loading and process start, produced by an automated optimization campaign (VibeSys).
   It ships them switched off. The settings below are those of the runner that selected them,
@@ -189,10 +207,12 @@ for thr in (0.3, 0.2):
             g = aa[(aa.threshold == thr) & (aa.track == trk) & (aa.phase == pha)].set_index("arm")
             d = disc[(disc.threshold == thr) & (disc.track == trk) & (disc.phase == pha)].iloc[0]
             rows.append([f"{thr:g}", TRACK[trk], pha, n(g.loc['vanilla', 'analyst']),
-                         f"{g.loc['vanilla', 'recall']:.3f}", f"{g.loc['pr_fp32', 'recall']:.3f}", f"{g.loc['pr_bf16', 'recall']:.3f}",
+                         f"{g.loc['vanilla', 'recall']:.3f}", f"{g.loc['pr_fp32', 'recall']:.3f}",
+                         f"{g.loc['pr_fp16', 'recall']:.3f}", f"{g.loc['pr_bf16', 'recall']:.3f}",
                          f"{g.loc['vanilla', 'within_0_1']:.3f} / {g.loc['pr_bf16', 'within_0_1']:.3f}",
                          f"{g.loc['vanilla', 'mae_s']:.3f} / {g.loc['pr_bf16', 'mae_s']:.3f}",
                          f"{g.loc['vanilla', 'bias_s']:.3f} / {g.loc['pr_bf16', 'bias_s']:.3f}",
+                         f"{int(d.fp16_lost)} / {int(d.fp16_gained)}",
                          f"{int(d.bf16_lost)} / {int(d.bf16_gained)}", str(int(d.fp32_changed))])
 vs_analyst = f"""
 <section id="analyst">
@@ -201,10 +221,11 @@ vs_analyst = f"""
   <a href="benchmark_metrics.html">leaderboard</a>. At 0.3, bf16 changes the outcome for
   {int(d03.bf16_lost.sum() + d03.bf16_gained.sum())} of {n_analyst:,} analyst picks
   ({int(d03.bf16_lost.sum())} lost, {int(d03.bf16_gained.sum())} gained); at 0.2 for
-  {int(d02.bf16_lost.sum() + d02.bf16_gained.sum())}. fp32 changes none.</p></div>
-  {table(['threshold', 'track', 'phase', 'analyst picks', 'recall vanilla', 'recall PR fp32', 'recall PR bf16',
+  {int(d02.bf16_lost.sum() + d02.bf16_gained.sum())}; fp16 changes {int(d03.fp16_lost.sum() + d03.fp16_gained.sum())}
+  at 0.3 and {int(d02.fp16_lost.sum() + d02.fp16_gained.sum())} at 0.2. fp32 changes none.</p></div>
+  {table(['threshold', 'track', 'phase', 'analyst picks', 'recall vanilla', 'recall PR fp32', 'recall fp16', 'recall PR bf16',
           'within 0.1 s, vanilla / bf16', 'MAE (s), vanilla / bf16', 'median bias (s), vanilla / bf16',
-          'bf16 lost / gained', 'fp32 changed'], rows, left=3)}
+          'fp16 lost / gained', 'bf16 lost / gained', 'fp32 changed'], rows, left=3)}
   <p class="note">The US cached waveforms for Mendocino, Monroe and San Simeon CI are not the streams the leaderboard
   picked, so absolute US recall here differs from the board. Every arm read the same files.</p>
 </section>"""
@@ -244,6 +265,93 @@ tolerance = f"""
   uncertainty.</p>
 </section>"""
 
+# ---- user-defined tolerance ---------------------------------------------------------------
+SENT = -999999  # no partner within 0.5 s
+data = {}
+for arm in PR_ARMS:
+    er = pd.read_csv(RES / f"errors_{arm}.csv.gz")
+    er = er[(er.conf_vanilla.fillna(0) >= 0.05) | (er.conf_arm.fillna(0) >= 0.05)]
+    data[arm] = dict(
+        cv=np.floor(er.conf_vanilla.fillna(-0.001) * 10000).astype(int).tolist(),
+        ca=np.floor(er.conf_arm.fillna(-0.001) * 10000).astype(int).tolist(),
+        dt=(er.dt_ms * 10).round().fillna(SENT).astype(int).tolist(),
+        tr=(er.track == "swarm_sequences").astype(int).tolist(),
+        ph=(er.phase == "S").astype(int).tolist())
+taus = [c for c in cum.columns if c.startswith("within_")]
+crow = [[f"{r.threshold:g}", ARM[r.arm], n(r.vanilla)] + [pct(r[c], 2) for c in taus] + [n(r.lost), n(r.new)]
+        for _, r in cum.sort_values(["threshold", "arm"]).iterrows()]
+cum_table = table(["threshold", "arm", "vanilla picks"] + [c.replace("within_", "&le; ").replace("ms", "&thinsp;ms") for c in taus]
+                  + ["lost", "new"], crow, left=2)
+links = " &middot; ".join(f'<a href="{GH}/raw/main/docs/benchmark/results/vibesys_pr71/errors_{a}.csv.gz"><code>errors_{a}.csv.gz</code></a>'
+                          for a in PR_ARMS)
+own = f"""
+<section id="own">
+  <div class="section-head"><p class="eyebrow">Your tolerance</p><h2>Set the bound yourself</h2>
+  <p class="lede">Every pick of each arm and of vanilla at the 0.02 floor, paired once (greedy, nearest first, within
+  0.5&thinsp;s). The table gives the fraction of vanilla picks reproduced within each timing tolerance; lost picks count
+  as not reproduced. The calculator below applies any detection threshold, timing tolerance and confidence margin to
+  the same pairs.</p></div>
+  {cum_table}
+  <div class="card" style="margin-top:18px" id="calc">
+    <h3>Calculator</h3>
+    <form class="calc-form" onsubmit="return false">
+      <label>detection threshold <input id="c-thr" type="number" min="0.05" max="0.95" step="0.01" value="0.2"></label>
+      <label>timing tolerance (ms) <input id="c-tau" type="number" min="0" max="500" step="1" value="10"></label>
+      <label>confidence margin <input id="c-mar" type="number" min="0" max="0.9" step="0.01" value="0.05"></label>
+      <label>failures allowed (%) <input id="c-all" type="number" min="0" max="100" step="0.01" value="0"></label>
+      <label>track <select id="c-trk"><option value="-1">both</option><option value="0">US sequences</option><option value="1">swarm sequences</option></select></label>
+      <label>phase <select id="c-ph"><option value="-1">both</option><option value="0">P</option><option value="1">S</option></select></label>
+    </form>
+    <div id="c-out"></div>
+    <p class="note">A vanilla pick above the threshold is <i>within</i> the tolerance when the arm has its partner above
+    the threshold no further away than the tolerance, <i>shifted</i> when the partner is further, and <i>lost</i> when there
+    is no partner above the threshold. A <i>new</i> pick is an arm pick above the threshold with no vanilla partner above
+    it. Lost and new picks count as failures only when their confidence exceeds the threshold by more than the margin;
+    every shifted pick is a failure. The arm passes when failures are at most the allowed fraction of vanilla picks.
+    Files: {links}.</p>
+  </div>
+</section>"""
+own_js = """
+<script>
+const QS_ERR = """ + json.dumps(data, separators=(",", ":")) + """;
+const QS_LABEL = """ + json.dumps({a: ARM[a] for a in PR_ARMS}) + """;
+const SENT = """ + str(SENT) + """;
+function qsCalc() {
+  const T = Math.round(parseFloat(document.getElementById('c-thr').value) * 10000);
+  const tau = parseFloat(document.getElementById('c-tau').value) * 10;
+  const M = Math.round(parseFloat(document.getElementById('c-mar').value) * 10000);
+  const allowed = parseFloat(document.getElementById('c-all').value);
+  const trk = parseInt(document.getElementById('c-trk').value), ph = parseInt(document.getElementById('c-ph').value);
+  let rows = '';
+  for (const arm of Object.keys(QS_ERR)) {
+    const d = QS_ERR[arm];
+    let nv = 0, ident = 0, within = 0, shifted = 0, lost = 0, lostFar = 0, nw = 0, newFar = 0;
+    for (let i = 0; i < d.cv.length; i++) {
+      if ((trk >= 0 && d.tr[i] !== trk) || (ph >= 0 && d.ph[i] !== ph)) continue;
+      const paired = d.dt[i] !== SENT, vOk = d.cv[i] >= T, aOk = d.ca[i] >= T, adt = Math.abs(d.dt[i]);
+      if (vOk) {
+        nv++;
+        if (paired && aOk) { if (adt <= 5) ident++; if (adt <= tau + 1e-6) within++; else shifted++; }
+        else { lost++; if (d.cv[i] > T + M) lostFar++; }
+      }
+      if (aOk && !(paired && vOk)) { nw++; if (d.ca[i] > T + M) newFar++; }
+    }
+    const fail = shifted + lostFar + newFar, frac = nv ? 100 * fail / nv : 0, ok = frac <= allowed + 1e-12;
+    const f = x => (nv ? (100 * x / nv).toFixed(3) : '0') + '&thinsp;%';
+    rows += `<tr><td class="l">${QS_LABEL[arm]}</td><td>${nv.toLocaleString()}</td><td>${f(ident)}</td><td>${f(within)}</td>` +
+      `<td>${shifted.toLocaleString()}</td><td>${lost.toLocaleString()} (${lostFar.toLocaleString()})</td>` +
+      `<td>${nw.toLocaleString()} (${newFar.toLocaleString()})</td><td>${frac.toFixed(3)}&thinsp;%</td>` +
+      `<td>${ok ? '<span class="pill met">passes</span>' : '<span class="pill unmet">fails</span>'}</td></tr>`;
+  }
+  document.getElementById('c-out').innerHTML = '<div class="table-scroll"><table class="data"><thead><tr>' +
+    '<th class="l">arm</th><th>vanilla picks</th><th>identical</th><th>within tolerance</th><th>shifted</th>' +
+    '<th>lost (beyond margin)</th><th>new (beyond margin)</th><th>failures</th><th>verdict</th></tr></thead><tbody>' +
+    rows + '</tbody></table></div>';
+}
+document.querySelectorAll('#calc input, #calc select').forEach(el => el.addEventListener('input', qsCalc));
+qsCalc();
+</script>"""
+
 amplitudes = f"""
 <section id="amplitudes">
   <div class="section-head"><p class="eyebrow">Precision</p><h2>Amplitudes</h2>
@@ -268,7 +376,6 @@ for h in ("c6g", "c7g", "c8g"):
     crows.append([HOST_LABEL[h], hosts.loc[h, "cpu"], f"${hosts.loc[h, 'on_demand_usd_h']:.3f}", f"${hosts.loc[h, 'spot_usd_h']:.4f}",
                   f"${usd_per_1k(h, 'vanilla', 'on_demand_usd_h'):.3f} / ${usd_per_1k(h, 'pr', 'on_demand_usd_h'):.3f}",
                   f"<strong>${usd_per_1k(h, 'vanilla', 'spot_usd_h'):.3f} / ${usd_per_1k(h, 'pr', 'spot_usd_h'):.3f}</strong>"])
-kern = timing[(timing.arm == "pr") & (timing.host != "M1 Max")].velocity_kernel.dropna().unique()
 cost = f"""
 <section id="cost">
   <div class="section-head"><p class="eyebrow">Computational cost</p><h2>Laptop and Graviton, same workload, same layout</h2>
@@ -311,7 +418,7 @@ hardware = f"""
   {table(['picks identical to the ms'] + [label[r] for r in runs], xrows)}
 </section>"""
 
-limits = f"""
+limits = """
 <section id="limits">
   <div class="section-head"><p class="eyebrow">Limits and other findings</p><h2>What this does not show</h2></div>
   <div class="grid-2">
@@ -319,7 +426,7 @@ limits = f"""
     <li><code>jma_wc</code>, the global weight and the one the PR's own evaluation used, was not scored here.</li>
     <li><code>obs</code> (PickBlue) cannot use the optimized path: fast annotate raises
     <code>does not cover this model setup: ['padding/filter']</code> when the model is built.</li>
-    <li>bf16 was emulated on the laptop, not run on AMX hardware.</li>
+    <li>bf16 was emulated on the laptop, not run on AMX hardware; fp16 was emulated with fp32 accumulation, and its speed was not measured.</li>
     <li>Fargate was not timed; S3 reads and Parquet writes are outside every timing above.</li>
     <li>Streams the model resamples (30 of the 130 precision windows) fall back to SeisBench's annotate; the timing
     workload is 100&thinsp;Hz only.</li>
@@ -369,7 +476,10 @@ page = f"""<!doctype html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="quakescope-board.css">
-<style>.card ul {{ padding-left: 1.1em; }} .card li {{ margin: 4px 0; }}</style>
+<style>.card ul {{ padding-left: 1.1em; }} .card li {{ margin: 4px 0; }}
+.calc-form {{ display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 14px; }}
+.calc-form label {{ display: flex; flex-direction: column; font-size: 0.85rem; color: var(--stone); gap: 4px; }}
+.calc-form input, .calc-form select {{ font: inherit; color: var(--ink); padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 9.5em; }}</style>
 </head>
 <body>
 <header class="hero">
@@ -379,7 +489,7 @@ page = f"""<!doctype html>
         <span>QuakeScope <span style="opacity:.7;font-weight:600">code evaluation</span></span></a>
       <div class="nav-links">
         <a href="#verdict">Verdict</a><a href="#vanilla">vs vanilla</a><a href="#analyst">vs analysts</a>
-        <a href="#tolerance">Tolerance</a><a href="#amplitudes">Amplitudes</a><a href="#cost">Cost</a>
+        <a href="#tolerance">Tolerance</a><a href="#own">Your tolerance</a><a href="#amplitudes">Amplitudes</a><a href="#cost">Cost</a>
         <a href="#hardware">Hardware</a><a href="#limits">Limits</a><a href="#reproduce">Reproduce</a>
       </div>
     </nav>
@@ -405,6 +515,7 @@ page = f"""<!doctype html>
 {vs_vanilla}
 {vs_analyst}
 {tolerance}
+{own}
 {amplitudes}
 {cost}
 {hardware}
@@ -412,6 +523,7 @@ page = f"""<!doctype html>
 {reproduce}
 {refs}
 </main>
+{own_js}
 <footer class="site-footer">
   <div class="shell">
     <p><strong>QuakeScope code evaluation</strong> &middot; maintained by <a href="{GH}">SeisSCOPED</a> &middot;

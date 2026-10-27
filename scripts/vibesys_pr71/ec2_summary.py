@@ -5,7 +5,6 @@ RESULTS_DIR holds results_<tag>/out/ (extracted); LAPTOP_OUT_DIR holds bench_*_g
 from the M1 Max run (no pick dumps there; laptop vanilla picks are re-derived below).
 """
 
-import glob
 import json
 import statistics as st
 import sys

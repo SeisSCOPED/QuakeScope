@@ -28,7 +28,7 @@ for t in ("us_sequences", "swarm_sequences"):
 ref = pd.concat(ref)
 ref["time"] = pd.to_datetime(ref.time, format="mixed")
 # Only stations whose waveforms were picked (the reference covers more stations).
-ARMS = ("vanilla", "pr_fp32", "pr_bf16")
+ARMS = ("vanilla", "pr_fp32", "pr_bf16", "pr_fp16")
 WEIGHTS = ("original",)
 picks = pd.concat([pd.read_csv(OUT / f"picks_{w}_{a}.csv", parse_dates=["time"])
                    for w in WEIGHTS for a in ARMS])
@@ -96,7 +96,7 @@ def paired(threshold: float) -> pd.DataFrame:
     out = []
     keys = sorted({k[2:] for k in GROUPS})
     for w in WEIGHTS:
-        for a in ("pr_fp32", "pr_bf16"):
+        for a in ARMS[1:]:
             for trk in ("us_sequences", "swarm_sequences"):
                 n_v = n_c = same = 0
                 shifts, dconf, lost_conf, new_conf = [], [], [], []

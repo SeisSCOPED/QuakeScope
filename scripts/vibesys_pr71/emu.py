@@ -5,7 +5,8 @@ import torch.nn.functional as F
 
 
 class EmuMKLDNN:
-    """torch.ops.mkldnn's fused conv(+ReLU) with AMX-BF16 numerics, on any CPU."""
+    """torch.ops.mkldnn's fused conv(+ReLU) with oneDNN numerics in the input dtype (fp32, bf16, fp16):
+    fp32 accumulate, fp32 bias, ReLU, output rounded to the input dtype. Runs on any CPU."""
 
     @staticmethod
     def _convolution_pointwise(x, w, b, padding, stride, dilation, groups, attr, scalars, algo):

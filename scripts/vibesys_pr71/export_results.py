@@ -23,7 +23,6 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from sb_catalog.src.benchmark_metrics import match_picks  # noqa: E402
 
 RUN = Path(sys.argv[1])
 OUT = ROOT / "docs/benchmark/results/vibesys_pr71"
@@ -32,6 +31,8 @@ LAP = RUN / "out"
 EC2 = RUN / "ec2_results2"
 TRACKS = ("us_sequences", "swarm_sequences")
 THR = 0.2  # production threshold of the western campaign
+ARMS = ("vanilla", "pr_fp32", "pr_bf16", "pr_fp16")
+TAUS_MS = (0, 10, 20, 30, 50, 100, 200, 500)  # grid for the cumulative error table
 
 
 def write(name: str, df: pd.DataFrame) -> None:
@@ -77,17 +78,19 @@ rows = []
 for thr in (0.2, 0.3):
     h = pd.read_csv(LAP / f"hits_{thr}.csv")
     h = h.pivot_table(index=["track", "seq", "sta", "phase", "i"], columns="arm", values="hit").reset_index()
-    for arm in ("vanilla", "pr_fp32", "pr_bf16"):
+    for arm in ARMS:
         h[arm] = h[arm].astype(bool)
     for (trk, pha), g in h.groupby(["track", "phase"]):
         rows.append(dict(threshold=thr, track=trk, phase=pha, analyst=len(g),
                          bf16_lost=int((g.vanilla & ~g.pr_bf16).sum()),
                          bf16_gained=int((~g.vanilla & g.pr_bf16).sum()),
+                         fp16_lost=int((g.vanilla & ~g.pr_fp16).sum()),
+                         fp16_gained=int((~g.vanilla & g.pr_fp16).sum()),
                          fp32_changed=int((g.vanilla != g.pr_fp32).sum())))
 write("analyst_discordant", pd.DataFrame(rows))
 
 # --- 2. perturbation on the scale of analyst uncertainty ------------------------------------
-picks = {a: pd.read_csv(LAP / f"picks_original_{a}.csv") for a in ("vanilla", "pr_fp32", "pr_bf16")}
+picks = {a: pd.read_csv(LAP / f"picks_original_{a}.csv") for a in ARMS}
 for d in picks.values():
     d["t"] = pd.to_datetime(d.time, format="mixed").astype("int64").to_numpy() / 1e9
 groups = {a: {k: (g.t.to_numpy(), g.conf.to_numpy()) for k, g in d.groupby(["sequence", "station", "phase"])}
@@ -115,7 +118,7 @@ for pha in "PS":
 write("vanilla_vs_analyst_residuals", pd.DataFrame(rows))
 
 rows = []
-for arm in ("pr_fp32", "pr_bf16"):
+for arm in ARMS[1:]:
     for pha in "PS":
         sh, lost, new = [], [], []
         for key in sorted(k for k in covered if k[2] == pha):
@@ -134,6 +137,33 @@ for arm in ("pr_fp32", "pr_bf16"):
                          lost_or_new_conf_ge_0p25=int(np.sum(np.array(lost) >= THR + 0.05)
                                                       + np.sum(np.array(new) >= THR + 0.05))))
 write("tolerance", pd.DataFrame(rows))
+
+# Every vanilla pick and every arm pick at the 0.02 floor, paired once (greedy, 0.5 s),
+# so any detection threshold, timing tolerance or confidence margin can be applied later.
+cum = []
+for arm in ARMS[1:]:
+    out = []
+    for key in sorted(covered | set(groups[arm])):
+        vt, vq = groups["vanilla"].get(key, empty)
+        ct, cq = groups[arm].get(key, empty)
+        pairs, mi, ex = fast_match(vt, ct)
+        base = dict(sequence=key[0], station=key[1], phase=key[2])
+        out += [dict(base, side="paired", conf_vanilla=vq[i], conf_arm=cq[j], dt_ms=1e3 * d) for i, j, d in pairs]
+        out += [dict(base, side="vanilla_only", conf_vanilla=vq[i], conf_arm=np.nan, dt_ms=np.nan) for i in mi]
+        out += [dict(base, side="arm_only", conf_vanilla=np.nan, conf_arm=cq[j], dt_ms=np.nan) for j in ex]
+    e = pd.DataFrame(out)
+    e["track"] = e.sequence.map(dict(zip(ref.sequence, ref.track))).fillna("us_sequences")
+    e["dt_ms"] = e.dt_ms.round(3)
+    e.to_csv(OUT / f"errors_{arm}.csv.gz", index=False, float_format="%.6g")
+    print(f"errors_{arm}.csv.gz  {len(e)} rows")
+    for thr in (0.2, 0.3):
+        v = e[e.conf_vanilla >= thr]
+        kept = v[(v.side == "paired") & (v.conf_arm >= thr)]
+        a = kept.dt_ms.abs()
+        new = int(((e.conf_arm >= thr) & ~((e.side == "paired") & (e.conf_vanilla >= thr))).sum())
+        cum.append(dict(arm=arm, threshold=thr, vanilla=len(v), lost=len(v) - len(kept), new=new,
+                        **{f"within_{t}ms": float((a <= t + 0.5).sum() / len(v)) for t in TAUS_MS}))
+write("error_cumulative", pd.DataFrame(cum))
 
 # fp32 differences from vanilla at the 0.02 floor, every one of them
 k = ["sequence", "station", "phase", "time"]

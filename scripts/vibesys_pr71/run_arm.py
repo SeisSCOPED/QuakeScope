@@ -4,6 +4,7 @@ Arms
   vanilla     sbm.PhaseNet.from_pretrained(w).classify, as the benchmark notebooks run it
   pr_fp32     PR #71 runner defaults (lean PhaseNet, fast graph, polyphase deconv,
               fast annotate, glue=fused) in fp32: what a CPU without AMX-BF16 runs
+  pr_fp16     the same fast graph built in float16 (not offered by the PR), same emulation
   pr_bf16     the same in bf16, with oneDNN's fused conv emulated exactly:
               bf16 weights and input, fp32 accumulate + fp32 bias + ReLU, output
               rounded to bf16 after every layer (what AMX-BF16 computes, up to the
@@ -15,6 +16,7 @@ Each FILE is "sequence|station|path".
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -25,30 +27,10 @@ FLOOR = 0.02
 import obspy  # noqa: E402
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
-import torch.nn.functional as F  # noqa: E402
 
 sys.path.insert(0, PR_ROOT)
-
-
-class EmuMKLDNN:
-    """torch.ops.mkldnn's fused conv(+ReLU) with AMX-BF16 numerics, on any CPU."""
-
-    @staticmethod
-    def _convolution_pointwise(x, w, b, padding, stride, dilation, groups, attr, scalars, algo):
-        y = F.conv2d(x.float(), w.float(), b.float(), stride=stride, padding=padding,
-                     dilation=dilation, groups=groups)
-        if attr == "relu":
-            y = F.relu(y)
-        return y.to(x.dtype).contiguous(memory_format=torch.channels_last)
-
-    @staticmethod
-    def _convolution_transpose_pointwise(x, w, b, padding, output_padding, stride, dilation,
-                                         groups, attr, scalars, algo):
-        y = F.conv_transpose2d(x.float(), w.float(), b.float(), stride=stride, padding=padding,
-                               output_padding=output_padding, groups=groups, dilation=dilation)
-        if attr == "relu":
-            y = F.relu(y)
-        return y.to(x.dtype).contiguous(memory_format=torch.channels_last)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from emu import EmuMKLDNN  # noqa: E402  (oneDNN fused-conv numerics; shared with bench_worker.py)
 
 
 def build(arm: str, weight: str):
@@ -68,7 +50,16 @@ def build(arm: str, weight: str):
     fast_forward.PhaseNetGraph.__init__.__defaults__ = tuple(d)
     model = picker.S3MongoSBBridge.create_model("PhaseNet", weight, FLOOR, FLOOR, lean=True)
     lean = type(model).__name__
-    model = picker.apply_classify_impl(model, precision, "fast", "polyphase")
+    if arm == "pr_fp16":
+        # The PR offers fp32 and bf16 only; fp16 is the same fast graph built in
+        # float16 (the graph takes any dtype), with the same fused-op emulation.
+        model.eval()
+        model.inference_precision = "fp16"
+        graph = fast_forward.PhaseNetGraph(model, torch.float16, deconv="polyphase").eval()
+        graph.batches = graph.windows = graph.station_days = 0
+        model = picker.attach_fast_graph(model, graph)
+    else:
+        model = picker.apply_classify_impl(model, precision, "fast", "polyphase")
     model = picker.apply_annotate_impl(model, "fast", "fused")
     if isinstance(model, picker.LeanPhaseNet):
         import functools
