@@ -51,6 +51,7 @@ DASH = {"pr_fp32": "", "pr_fp16": "6 4", "pr_bf16": "2 3"}
 HOSTS = ["M1 Max", "c6g", "c7g", "c8g"]
 HOST_LABEL = {"M1 Max": "M1 Max laptop", "c6g": "c6g.2xlarge (Graviton2)",
               "c7g": "c7g.2xlarge (Graviton3)", "c8g": "c8g.2xlarge (Graviton4)"}
+WEIGHT_ID = "original"  # SeisBench weight name the harness loads (bench_worker.py, run_amps.py)
 SD = 5.55  # station-days in the timing workload (meta.json timing_workload)
 
 
@@ -99,8 +100,6 @@ def counts(er: pd.DataFrame, tau_ms: float = TOL, thr: float = THR) -> dict:
 
 
 cnt = {a: counts(errs[a]) for a in PR_ARMS}
-beyond50 = {a: 1 - reproduced(errs[a], 50) - (tot.loc[a, "lost_n"] / tot.loc[a, "vanilla"]) for a in PR_ARMS}
-max_shift = t2.max_shift_ms.max()
 sd_shift = t2.std_shift_ms.max()
 lost_new = {a: (cnt[a]['lost'] + cnt[a]['new']) / cnt[a]['n'] for a in PR_ARMS}
 d2 = disc[disc.threshold == THR]
@@ -128,8 +127,6 @@ def usd_per_1k(h, arm, col="spot_usd_h"):
 
 
 GRAV = ("c6g", "c7g", "c8g")
-best = min(GRAV, key=lambda h: usd_per_1k(h, "pr"))
-same_host = exact[[a.split()[0] == b.split()[0] for a, b in zip(exact.a, exact.b)]]
 g23 = exact[(exact.a == "c6g vanilla") & (exact.b == "c7g vanilla")].iloc[0]
 wa_share = {h: med.loc[(h, "vanilla"), "wa_s"] - med.loc[(h, "pr"), "wa_s"] for h in GRAV}
 tot_saved = {h: (med.loc[(h, "vanilla"), ["classify_s", "wa_s", "vel_s"]] - med.loc[(h, "pr"), ["classify_s", "wa_s", "vel_s"]]).sum()
@@ -383,7 +380,7 @@ details = f"""
 <section id="details">
   <div class="section-head"><p class="eyebrow">Details</p><h2>Method, full tables, limits</h2></div>
   <details><summary>What each mode runs</summary>
-  <p><b>Current code</b>: <code>sbm.PhaseNet.from_pretrained("{e(meta['weight'])}").classify</code> and main's
+  <p><b>Current code</b>: <code>sbm.PhaseNet.from_pretrained("{WEIGHT_ID}").classify</code> and main's
   <code>AmplitudeExtractor()</code> at <code>{e(meta['vanilla_commit'])}</code>. <b>fp32</b>: PR head
   <code>{e(meta['pr_head'])}</code> with the settings of its removed runner (<code>vibesys/pick_workload.py</code> at
   <code>4271d67</code>): BatchNorm folded into the convolutions, polyphase transposed convolutions, fast windowing
