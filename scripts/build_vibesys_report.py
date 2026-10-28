@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""reports/vibesys_pr71.html: do PhaseNet picks change under the VibeSys CPU
-optimizations of PR #71, and how much faster are they?
+"""reports/vibesys_pr71.html: do QuakeScope's picks and amplitudes change under the
+VibeSys CPU optimizations of PR #71, and how much faster are they?
 
 Every number is read from docs/benchmark/results/vibesys_pr71/, which
 scripts/vibesys_pr71/export_results.py writes from the harness outputs. Typed
@@ -440,7 +440,7 @@ page = f"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Do PhaseNet picks change under the CPU optimizations proposed in QuakeScope PR #71, and how much faster are they? Tested on the picker benchmark, an M1 Max laptop and three AWS Graviton instances.">
+<meta name="description" content="Do QuakeScope picks and amplitudes change under the CPU optimizations proposed in PR #71, and how much faster is the workflow? Tested on the picker benchmark, an M1 Max laptop and three AWS Graviton instances.">
 <title>VibeSys Optimizations Evaluation</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -478,9 +478,10 @@ details ul {{ padding-left: 1.1em; }} details li {{ margin: 4px 0; }}
     </nav>
     <div class="hero-inner">
       <p class="eyebrow">QuakeScope &middot; PR #71 &middot; {e(meta['run_date'])}</p>
-      <h1>Faster PhaseNet: do the picks change?</h1>
-      <p>PR #71 proposes a faster way to run the QuakeScope picker on CPUs, found by an automated optimization
-      tool (VibeSys). We re-picked the leaderboard's waveforms with it and compared every pick.</p>
+      <h1>Faster QuakeScope: do the picks and amplitudes change?</h1>
+      <p>PR #71 proposes faster CPU code for the QuakeScope workflow (waveform loading, PhaseNet picking and
+      amplitude measurement), found by an automated optimization tool (VibeSys). We re-ran the leaderboard's
+      waveforms with it and compared every pick and amplitude.</p>
       <div class="hero-actions">
         <a class="button primary" href="#answer">Answer</a>
         <a class="button secondary" href="{meta['pr']}">PR #71</a>
