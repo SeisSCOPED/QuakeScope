@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""reports/vibesys_pr71.html: pick precision and computational cost of the VibeSys
-CPU optimizations proposed in PR #71.
+"""reports/vibesys_pr71.html: do PhaseNet picks change under the VibeSys CPU
+optimizations of PR #71, and how much faster are they?
 
 Every number is read from docs/benchmark/results/vibesys_pr71/, which
-scripts/vibesys_pr71/export_results.py writes from the harness outputs. Nothing
-is typed here except the two published analyst-uncertainty figures, which carry
-their citation in the table.
+scripts/vibesys_pr71/export_results.py writes from the harness outputs. Typed
+constants are limited to the published analyst-uncertainty figures (cited) and
+the definitions of the IEEE and bfloat16 number formats.
 
     python scripts/build_vibesys_report.py
 """
@@ -26,7 +26,7 @@ RES = ROOT / "docs/benchmark/results/vibesys_pr71"
 OUT = ROOT / "reports/vibesys_pr71.html"
 GH = "https://github.com/SeisSCOPED/QuakeScope"
 
-meta = json.load(open(RES / "meta.json"))
+meta = json.loads((RES / "meta.json").read_text())
 vv = pd.read_csv(RES / "picks_vs_vanilla.csv")
 aa = pd.read_csv(RES / "picks_vs_analyst.csv")
 disc = pd.read_csv(RES / "analyst_discordant.csv")
@@ -38,14 +38,20 @@ timing = pd.read_csv(RES / "timing_reps.csv")
 exact = pd.read_csv(RES / "graviton_exactness.csv")
 hosts = pd.read_csv(RES / "hosts.csv").set_index("host")
 cum = pd.read_csv(RES / "error_cumulative.csv")
+errs = {a: pd.read_csv(RES / f"errors_{a}.csv.gz") for a in ("pr_fp32", "pr_fp16", "pr_bf16")}
 
+THR = 0.2  # production detection threshold; every headline number is at this threshold
+TOL = 30  # ms; the tolerance Marine set on 2026-10-27, comparable to analyst P scatter (Ross 2018; this benchmark)
+ALLOW = 0.5  # percent of picks allowed to fail, the calculator's starting value
 TRACK = {"us_sequences": "US sequences", "swarm_sequences": "swarm sequences"}
-ARM = {"vanilla": "vanilla", "pr_fp32": "PR fp32", "pr_bf16": "PR bf16 (AMX emulated)",
-       "pr_fp16": "fp16 (not in the PR)", "pr": "PR fp32"}
+ARM = {"vanilla": "current code", "pr_fp32": "fp32", "pr_fp16": "fp16", "pr_bf16": "bf16", "pr": "PR, fp32"}
 PR_ARMS = ("pr_fp32", "pr_fp16", "pr_bf16")
+COLOR = {"pr_fp32": "#2a78d6", "pr_fp16": "#1baf7a", "pr_bf16": "#eb6834"}  # validated all-pairs on #ffffff
+DASH = {"pr_fp32": "", "pr_fp16": "6 4", "pr_bf16": "2 3"}
 HOSTS = ["M1 Max", "c6g", "c7g", "c8g"]
-HOST_LABEL = {"M1 Max": "M1 Max laptop", "c6g": "c6g.2xlarge, Graviton2",
-              "c7g": "c7g.2xlarge, Graviton3", "c8g": "c8g.2xlarge, Graviton4"}
+HOST_LABEL = {"M1 Max": "M1 Max laptop", "c6g": "c6g.2xlarge (Graviton2)",
+              "c7g": "c7g.2xlarge (Graviton3)", "c8g": "c8g.2xlarge (Graviton4)"}
+WEIGHT_ID = "original"  # SeisBench weight name the harness loads (bench_worker.py, run_amps.py)
 SD = 5.55  # station-days in the timing workload (meta.json timing_workload)
 
 
@@ -61,31 +67,52 @@ def n(x) -> str:
     return f"{int(x):,}"
 
 
-def table(head: list[str], rows: list[list[str]], caption: str = "", left: int = 1) -> str:
-    cls = ' class="l"'
-    th = "".join(f"<th{cls if i < left else ''}>{h}</th>" for i, h in enumerate(head))
-    body = "".join("<tr>" + "".join(f"<td{cls if i < left else ''}>{c}</td>" for i, c in enumerate(r))
-                   + "</tr>" for r in rows)
-    cap = f"<caption>{caption}</caption>" if caption else ""
-    return f'<div class="table-scroll"><table class="data">{cap}<thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>'
+def table(head, rows, left=1, cls="data") -> str:
+    lc = ' class="l"'
+    th = "".join(f"<th{lc if i < left else ''}>{h}</th>" for i, h in enumerate(head))
+    body = "".join("<tr>" + "".join(f"<td{lc if i < left else ''}>{c}</td>" for i, c in enumerate(r)) + "</tr>"
+                   for r in rows)
+    return f'<div class="table-scroll"><table class="{cls}"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
-def pill(ok: bool) -> str:
-    return '<span class="pill met">passes</span>' if ok else '<span class="pill unmet">fails</span>'
+def reproduced(er: pd.DataFrame, tau_ms: float, thr: float = THR) -> float:
+    """Fraction of current-code picks above thr whose partner is above thr and within tau_ms (the calculator's rule)."""
+    v = er[er.conf_vanilla.fillna(-1) >= thr]
+    ok = v.dt_ms.notna() & (v.conf_arm.fillna(-1) >= thr) & (v.dt_ms.abs() <= tau_ms + 1e-6)
+    return ok.sum() / len(v)
 
 
 # ---- derived numbers ---------------------------------------------------------------------
-v2 = vv[vv.threshold == 0.2]
-fp = v2[v2.arm == "pr_fp32"]
-bf = v2[v2.arm == "pr_bf16"]
-fp_ident, fp_total = int(fp.identical_n.sum()), int(fp.vanilla.sum())
-bf_ident_lo, bf_ident_hi = bf.identical.min(), bf.identical.max()
-bf_shift_lo, bf_shift_hi = bf.shift_ge_1smp.min(), bf.shift_ge_1smp.max()
-bf_ln = (bf.lost_n + bf.new_n).sum() / bf.vanilla.sum()
-h16 = v2[v2.arm == "pr_fp16"]
-h16_ident = h16.identical_n.sum() / h16.vanilla.sum()
-bf_ident = bf.identical_n.sum() / bf.vanilla.sum()
-h16_ln = (h16.lost_n + h16.new_n).sum() / h16.vanilla.sum()
+v2 = vv[vv.threshold == THR]
+tot = v2.groupby("arm")[["vanilla", "identical_n", "lost_n", "new_n"]].sum()
+ident = tot.identical_n / tot.vanilla
+t2 = tol[tol.threshold == THR].groupby("arm")
+within10 = {a: reproduced(errs[a], 10) for a in PR_ARMS}
+withinT = {a: reproduced(errs[a], TOL) for a in PR_ARMS}
+
+
+def counts(er: pd.DataFrame, tau_ms: float = TOL, thr: float = THR) -> dict:
+    """Picks moved beyond tau_ms, lost and new at thr, by the calculator's rule."""
+    v = er[er.conf_vanilla.fillna(-1) >= thr]
+    paired = v.dt_ms.notna() & (v.conf_arm.fillna(-1) >= thr)
+    new = er[(er.conf_arm.fillna(-1) >= thr) & ~(er.dt_ms.notna() & (er.conf_vanilla.fillna(-1) >= thr))]
+    return {"n": len(v), "moved": int((paired & (v.dt_ms.abs() > tau_ms)).sum()), "lost": int((~paired).sum()), "new": len(new)}
+
+
+cnt = {a: counts(errs[a]) for a in PR_ARMS}
+sd_shift = t2.std_shift_ms.max()
+lost_new = {a: (cnt[a]['lost'] + cnt[a]['new']) / cnt[a]['n'] for a in PR_ARMS}
+d2 = disc[disc.threshold == THR]
+n_analyst = int(d2.analyst.sum())
+changed = {"pr_fp32": int(d2.fp32_changed.sum()), "pr_fp16": int(d2.fp16_lost.sum() + d2.fp16_gained.sum()),
+           "pr_bf16": int(d2.bf16_lost.sum() + d2.bf16_gained.sum())}
+fp_total, fp_ident = int(tot.loc["pr_fp32", "vanilla"]), int(tot.loc["pr_fp32", "identical_n"])
+
+a2 = aa[aa.threshold == THR]
+base = a2[a2.arm == "vanilla"].set_index(["track", "phase"])
+dmae = max((a2[a2.arm == a].set_index(["track", "phase"]).mae_s - base.mae_s).abs().max() for a in PR_ARMS)
+dbias = max((a2[a2.arm == a].set_index(["track", "phase"]).bias_s - base.bias_s).abs().max() for a in PR_ARMS)
+drec = max((a2[a2.arm == a].set_index(["track", "phase"]).recall - base.recall).abs().max() for a in PR_ARMS)
 
 med = timing[timing.complete].groupby(["host", "arm"]).median(numeric_only=True)
 walls = timing[timing.complete].groupby(["host", "arm"]).wall_s.apply(list)
@@ -95,220 +122,170 @@ def speed(h):
     return med.loc[(h, "vanilla"), "wall_s"] / med.loc[(h, "pr"), "wall_s"]
 
 
-def usd_per_1k(h, arm, col):
+def usd_per_1k(h, arm, col="spot_usd_h"):
     return 1000 * med.loc[(h, arm), "wall_s"] / 3600 * hosts.loc[h, col] / SD
 
 
-best = min(("c6g", "c7g", "c8g"), key=lambda h: usd_per_1k(h, "pr", "spot_usd_h"))
-d03 = disc[disc.threshold == 0.3]
-d02 = disc[disc.threshold == 0.2]
-n_analyst = int(d03.analyst.sum())
-same_host = exact[[a.split()[0] == b.split()[0] for a, b in zip(exact.a, exact.b)]]
-same_host_min = int(same_host.identical.min())
+GRAV = ("c6g", "c7g", "c8g")
 g23 = exact[(exact.a == "c6g vanilla") & (exact.b == "c7g vanilla")].iloc[0]
+wa_share = {h: med.loc[(h, "vanilla"), "wa_s"] - med.loc[(h, "pr"), "wa_s"] for h in GRAV}
+tot_saved = {h: (med.loc[(h, "vanilla"), ["classify_s", "wa_s", "vel_s"]] - med.loc[(h, "pr"), ["classify_s", "wa_s", "vel_s"]]).sum()
+             for h in GRAV}
+bias_txt = (", and none moves the median bias" if dbias < 5e-4 else f", or median bias by more than {dbias * 1e3:.1f}&thinsp;ms")
 fargate_h = 8 * meta["fargate_spot_rate_usd_vcpu_h"]
 
-# ---- sections ----------------------------------------------------------------------------
-stats = f"""
-<div class="stats">
-  <div class="stat"><div class="n">{n(fp_ident)} / {n(fp_total)}</div><div class="k">picks identical to the millisecond, PR fp32 vs vanilla</div></div>
-  <div class="stat"><div class="n">{amps.max_rel_diff.max():.0e}</div><div class="k">largest relative amplitude difference</div></div>
-  <div class="stat"><div class="n">{speed('c8g'):.1f}&times;</div><div class="k">faster on Graviton4 (compute)</div></div>
-  <div class="stat"><div class="n">${usd_per_1k(best, 'pr', 'spot_usd_h'):.3f}</div><div class="k">per 1,000 station-days, {best} Spot, PR</div></div>
-  <div class="stat"><div class="n">{pct(bf_ident_lo, 0)}&ndash;{pct(bf_ident_hi, 0)}</div><div class="k">picks identical under bf16</div></div>
-</div>"""
-
-verdict = f"""
-<section id="verdict">
-  <div class="section-head"><p class="eyebrow">Verdict</p>
-  <h2>The fp32 path keeps the catalogue and runs six times faster on Graviton; bf16 changes the catalogue</h2></div>
-  <div class="grid-2">
-  <div class="callout">
-    <h3>Accept: fp32 forward pass, fast annotate, amplitude rewrite</h3>
-    <p>With the PR's settings in fp32, {n(fp_ident)} of {n(fp_total)} picks at threshold 0.2 are identical to
-    vanilla to the millisecond; the other {fp_total - fp_ident} are one sample apart on flat-topped peaks. Wood-Anderson
-    and velocity amplitudes agree to {amps.max_rel_diff.max():.0e} relative. On the same Graviton instance the PR
-    reproduces {same_host_min:,} of {n(g23.n_a)} vanilla picks, fewer differences than vanilla itself shows between
-    Graviton2 and Graviton3 ({n(g23.n_a - g23.identical)}). Compute time falls {min(speed(h) for h in ('c6g', 'c7g', 'c8g')):.1f}&times; to
-    {max(speed(h) for h in ('c6g', 'c7g', 'c8g')):.1f}&times; on Graviton, and {speed('M1 Max'):.2f}&times; on an M1 Max laptop.</p>
+# ---- answer ------------------------------------------------------------------------------
+answer = f"""
+<section id="answer">
+  <div class="section-head"><p class="eyebrow">Answer</p>
+  <h2>fp32 keeps every pick. fp16 stays within a {TOL}&thinsp;ms tolerance; bf16 does not.</h2>
+  <p class="lede">PR #71 rewrites how PhaseNet and the amplitude code run on a CPU. We re-picked the leaderboard's
+  {n(tot.loc['pr_fp32', 'vanilla'])} picks (threshold {THR:g}, weight <code>{e(meta['weight'])}</code>) three ways
+  and compared each pick with the current code's.</p></div>
+  <div class="grid-3">
+    <div class="card verdict ok"><p class="tag">fp32 &middot; what the PR uses on Fargate and Graviton</p>
+      <div class="big">{fp_ident:,} of {fp_total:,}</div><p class="k">picks identical to the millisecond</p>
+      <p>The other {fp_total - fp_ident} moved by one sample (10&thinsp;ms) on a flat-topped peak. Amplitudes agree to
+      {amps.max_rel_diff.max():.0e}. Runs {min(speed(h) for h in GRAV):.1f} to {max(speed(h) for h in GRAV):.1f} times
+      faster on Graviton.</p></div>
+    <div class="card verdict ok"><p class="tag">fp16 &middot; not in the PR, tested for comparison</p>
+      <div class="big">{pct(ident['pr_fp16'], 1)}</div><p class="k">picks identical</p>
+      <p>{pct(withinT['pr_fp16'], 2)} within {TOL}&thinsp;ms; {cnt['pr_fp16']['moved']}
+      picks move further (up to {t2.max_shift_ms.max()['pr_fp16']:.0f}&thinsp;ms). Picks gained or lost all sit at the
+      threshold. Speed not measured.</p></div>
+    <div class="card verdict bad"><p class="tag">bf16 &middot; the PR's mode on Intel AMX CPUs only</p>
+      <div class="big">{pct(ident['pr_bf16'], 1)}</div><p class="k">picks identical</p>
+      <p>{pct(withinT['pr_bf16'], 2)} within {TOL}&thinsp;ms; {cnt['pr_bf16']['moved']} picks move further (up to
+      {t2.max_shift_ms.max()['pr_bf16']:.0f}&thinsp;ms) and {cnt['pr_bf16']['lost'] + cnt['pr_bf16']['new']} appear or
+      disappear. No speed gain on our hardware, which has no AMX.</p></div>
   </div>
-  <div class="callout warn">
-    <h3>Do not accept: bf16 chosen per host</h3>
-    <p>bf16 inference leaves {pct(bf_ident_lo, 0)} to {pct(bf_ident_hi, 0)} of picks identical, moves
-    {pct(bf_shift_lo, 0)} to {pct(bf_shift_hi, 0)} by at least one sample and makes {pct(bf_ln)} appear or disappear.
-    Recall against analyst picks does not change, but the PR enables bf16 automatically on CPUs with AMX-BF16, so a
-    catalogue built on mixed Spot capacity would carry two numerical paths with no record of which ran where.
-    Precision should be an explicit campaign setting, default fp32, written into the run records.</p>
-  </div>
-  </div>
-  <div class="callout" style="margin-top:18px">
-    <h3>For comparison: fp16 (not in the PR)</h3>
-    <p>Built in fp16, the same graph leaves {pct(h16_ident, 1)} of picks identical at threshold 0.2, against
-    {pct(bf_ident, 1)} for bf16, and {pct(h16_ln)} appear or disappear, against {pct(bf_ln)}. fp16 keeps 10 mantissa
-    bits to bf16's 7, so it rounds about eight times more finely. Its speed was not measured.
-    <a href="#own">Set your own tolerance</a> to compare all three against a bound of your choice.</p>
-  </div>
+  <p class="note">Against the {n_analyst:,} analyst picks, none of the three changes recall by more than
+  {drec:.3f} or mean absolute error by more than {dmae * 1e3:.0f}&thinsp;ms{bias_txt}. The difference is in reproducing the catalogue, not in accuracy.</p>
 </section>"""
 
-arms_table = table(["arm", "what runs"], [
-    ["vanilla", "<code>sbm.PhaseNet.from_pretrained(\"original\").classify</code> and main's "
-                f"<code>AmplitudeExtractor()</code>, at {e(meta['vanilla_commit'])}"],
-    ["PR fp32", f"PR head <code>{e(meta['pr_head'])}</code>: fast graph (BatchNorm folded, polyphase deconvolution), "
-                "fast annotate with <code>glue=fused</code>, amplitudes <code>impl=\"fused\", signal=\"slim\"</code>, "
-                "C velocity kernel where it builds"],
-    ["PR bf16", "the same in bf16, with AMX-BF16 emulated where the CPU has none: bf16 weights and input, "
-                "fp32 accumulate, bias and ReLU, output rounded to bf16 after every layer"],
-    ["fp16", "not offered by the PR: the same fast graph built in float16, with the same emulation (fp16 weights and "
-             "input, fp32 accumulate, output rounded to fp16 after every layer). A best case for fp16: CPU kernels "
-             "that also accumulate in fp16 would be less precise"],
-], left=2)
-what = f"""
-<section id="tested">
-  <div class="section-head"><p class="eyebrow">What was tested</p>
-  <h2>Four arms on the leaderboard's own waveforms</h2>
-  <p class="lede">PR <a href="{meta['pr']}">#71</a> adds optional CPU paths for PhaseNet inference, amplitude
-  extraction, waveform loading and process start, produced by an automated optimization campaign (VibeSys).
-  It ships them switched off. The settings below are those of the runner that selected them,
-  <code>vibesys/pick_workload.py</code> at <code>4271d67</code>, which was removed from the PR in <code>32d27cf</code>.</p></div>
-  {arms_table}
-  <div class="grid-2" style="margin-top:18px">
-    <div class="card"><h3>Precision workload</h3><p>{e(meta['accuracy_workload'])}. Weight
-    {e(meta['weight'])}, the western campaign's. Picks at a 0.02 floor, thresholded afterwards, matched with
-    <code>benchmark_metrics.match_picks</code> at 0.5&thinsp;s. Run on the M1 Max laptop.</p></div>
-    <div class="card"><h3>Timing workload</h3><p>{e(meta['timing_workload'])}, the production layout of the
-    western job definition. {e(meta['timing_scope'])}. Timing includes imports and model start.</p></div>
-  </div>
+formats = f"""
+<section id="formats">
+  <div class="section-head"><p class="eyebrow">Background</p><h2>What fp32, fp16 and bf16 are</h2>
+  <p class="lede">They are ways of storing each number inside the network. Fewer bits make the arithmetic
+  faster on CPUs built for it, and round every intermediate value more coarsely. Think of it as digitizer
+  resolution applied to every layer of PhaseNet.</p></div>
+  {table(['format', 'bits per value', 'bits of precision', 'rounding step (relative)', 'largest value'], [
+      ['fp32 (single precision)', '32', '24, like a 24-bit digitizer', '6&times;10<sup>-8</sup>', '3&times;10<sup>38</sup>'],
+      ['fp16 (half precision)', '16', '11', '5&times;10<sup>-4</sup>', '65,504'],
+      ['bf16 ("brain float")', '16', '8', '4&times;10<sup>-3</sup>', '3&times;10<sup>38</sup>']])}
+  <p class="note">PhaseNet's output is a probability trace per phase, and a pick is the sample where it peaks above
+  the threshold. Rounding perturbs that trace a little. Where the peak is sharp nothing happens; where it is flat
+  the maximum can jump to a neighbouring sample, and where it sits near the threshold the pick can appear or
+  disappear. Under bf16 the 99th percentile change in the trace's peak value is
+  {v2[v2.arm == 'pr_bf16'].p99_abs_dconf.max():.3f}; under fp32 it is too small to measure at the 10<sup>-4</sup>
+  level.</p>
 </section>"""
 
+# ---- figure: picks reproduced within tau --------------------------------------------------
+TAUS = np.arange(0, 101, 1)
+curves = {a: [100 * reproduced(errs[a], t) for t in TAUS] for a in PR_ARMS}
+for a in PR_ARMS:  # the figure and the exported table must agree
+    for t in (0, 10, 20, 30, 50, 100):
+        ref = cum[(cum.arm == a) & (cum.threshold == THR)].iloc[0][f"within_{t}ms"]
+        assert abs(curves[a][t] / 100 - ref) < 5e-4, (a, t, curves[a][t], ref)
+W, H, L, R, T, B = 720, 360, 56, 92, 18, 46
+Y0, Y1 = 88.0, 100.0
+x = lambda t: L + (W - L - R) * t / 100
+y = lambda p: T + (H - T - B) * (Y1 - p) / (Y1 - Y0)
+svg = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-labelledby="fig-t fig-d">',
+       '<title id="fig-t">Share of picks reproduced within a timing tolerance</title>',
+       (f'<desc id="fig-d">At threshold {THR:g}: fp32 reaches 100 percent at 10 ms, fp16 starts at '
+        f'{curves["pr_fp16"][0]:.1f} percent, bf16 at {curves["pr_bf16"][0]:.1f} percent.</desc>')]
+for p in range(int(Y0), int(Y1) + 1, 2):
+    svg.append(f'<line x1="{L}" x2="{W - R}" y1="{y(p):.1f}" y2="{y(p):.1f}" class="grid"/>'
+               f'<text x="{L - 8}" y="{y(p) + 4:.1f}" class="tick" text-anchor="end">{p}%</text>')
+for t in range(0, 101, 10):
+    svg.append(f'<text x="{x(t):.1f}" y="{H - B + 18}" class="tick" text-anchor="middle">{t}</text>')
+svg.append(f'<text x="{(L + W - R) / 2:.0f}" y="{H - 6}" class="axis" text-anchor="middle">timing tolerance (ms)</text>')
+refs_v = [(10, "1 sample"), (TOL, "tolerance used here"), (52, "PhaseNet&ndash;analyst P &sigma;, Zhu 2019")]
+for i, (t, lab) in enumerate(refs_v):
+    svg.append(f'<line x1="{x(t):.1f}" x2="{x(t):.1f}" y1="{T}" y2="{H - B}" class="ref"/>'
+               f'<text x="{x(t) + 4:.1f}" y="{y(Y0) - 8 - 15 * i:.1f}" class="reflab">{lab} ({t} ms)</text>')
+for a in PR_ARMS:
+    pts = []
+    for i, t in enumerate(TAUS):  # step: the share holds until the next tolerance adds picks
+        if i:
+            pts.append(f"{x(t):.1f},{y(curves[a][i - 1]):.1f}")
+        pts.append(f"{x(t):.1f},{y(curves[a][i]):.1f}")
+    dash = f' stroke-dasharray="{DASH[a]}"' if DASH[a] else ""
+    svg.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{COLOR[a]}" stroke-width="2"{dash}/>')
+    yl = y(curves[a][-1]) + {"pr_fp32": -8, "pr_fp16": 5, "pr_bf16": 12}[a]
+    svg.append(f'<text x="{x(100) + 6:.1f}" y="{yl:.1f}" class="lab">{ARM[a]} {curves[a][-1]:.1f}%</text>')
+    for t in (0, 10, 20, 30, 50, 100):
+        svg.append(f'<circle cx="{x(t):.1f}" cy="{y(curves[a][t]):.1f}" r="7" fill="transparent">'
+                   f'<title>{ARM[a]}: {curves[a][t]:.2f}% of picks within {t} ms</title></circle>')
+svg.append("</svg>")
+figure = f"""
+<section id="figure">
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>How far do the picks move?</h2>
+  <p class="lede">Share of the current code's picks that each mode reproduces within a given timing tolerance, at
+  threshold {THR:g}. The {TOL}&thinsp;ms line is the tolerance used on this page: analyst P picks scatter by
+  23&thinsp;ms (Ross et al. 2018) and the current code's P picks scatter around the analysts' by
+  {resid.loc['P', 'robust_sigma_ms']:.0f}&thinsp;ms on this benchmark. Curves stop
+  short of 100&thinsp;% because of picks that appear or disappear at the threshold
+  ({pct(lost_new['pr_fp16'], 2)} for fp16, {pct(lost_new['pr_bf16'], 2)} for bf16, none for fp32).</p></div>
+  <figure class="fig">{''.join(svg)}</figure>
+  {table(['mode', 'identical (0 ms)', 'within 10 ms', f'within {TOL} ms', 'largest shift', 'spread of shifts (&sigma;)', 'picks appearing or disappearing'],
+         [[ARM[a], pct(ident[a], 2), pct(within10[a], 2), pct(withinT[a], 2), f"{t2.max_shift_ms.max()[a]:.0f} ms",
+           f"{sd_shift[a]:.1f} ms", f"{cnt[a]['lost']} / {cnt[a]['new']}"] for a in PR_ARMS])}
+  <p class="note">For scale: the current code's own picks scatter around the analysts' with a &sigma; (from the median absolute deviation) of
+  {resid.loc['P', 'robust_sigma_ms']:.0f}&thinsp;ms (P) and {resid.loc['S', 'robust_sigma_ms']:.0f}&thinsp;ms (S) on
+  this benchmark. bf16 adds a {sd_shift['pr_bf16']:.0f}&thinsp;ms scatter on top; fp16 {sd_shift['pr_fp16']:.0f}&thinsp;ms.</p>
+</section>"""
+
+# ---- analyst picks -----------------------------------------------------------------------
 rows = []
-for _, r in vv.sort_values(["threshold", "arm", "track"], ascending=[True, False, True]).iterrows():
-    rows.append([f"{r.threshold:g}", ARM[r.arm], TRACK[r.track], n(r.vanilla), f"{pct(r.identical, 3)} ({n(r.identical_n)})",
-                 n(r.shifted_n), pct(r.shift_ge_5smp, 2), n(r.lost_n), n(r.new_n), f"{r.p99_abs_shift_s * 1e3:.0f} ms",
-                 f"{r.p99_abs_dconf:.3f}"])
-fp_rows = [[e(r.sequence), e(r.station), r.phase, e(r.time)[:23], f"{r.conf_vanilla:.4f}" if pd.notna(r.conf_vanilla) else "&ndash;",
-            f"{r.conf_pr_fp32:.4f}" if pd.notna(r.conf_pr_fp32) else "&ndash;", e(r.side)] for _, r in fp32d.iterrows()]
-vs_vanilla = f"""
-<section id="vanilla">
-  <div class="section-head"><p class="eyebrow">Precision</p><h2>Picks against vanilla</h2>
-  <p class="lede">A pick is identical when station, phase and peak time agree to the millisecond. Lost and new
-  picks are those with no counterpart within 0.5&thinsp;s; shifts are counted in samples at 100&thinsp;Hz.</p></div>
-  {table(['threshold', 'arm', 'track', 'vanilla picks', 'identical', 'shifted &ge; 1 sample', '&ge; 5 samples', 'lost', 'new', 'p99 |shift|', 'p99 |&Delta;conf|'], rows, left=3)}
-  <h3 style="margin-top:22px">Every fp32 difference at the 0.02 floor ({len(fp32d)} of {n(fp_total)}+ picks)</h3>
-  {table(['sequence', 'station', 'phase', 'time', 'conf vanilla', 'conf PR fp32', 'side'], fp_rows, left=3)}
-  <p class="note">Most are the same arrival one to three samples apart with confidences equal to about
-  10<sup>-4</sup>: folding BatchNorm and the polyphase deconvolution change the fp32 summation order, which moves
-  probabilities by about 10<sup>-6</sup> and flips which sample of a flat peak is the maximum.</p>
-</section>"""
-
-rows = []
-for thr in (0.3, 0.2):
-    for trk in ("us_sequences", "swarm_sequences"):
-        for pha in "PS":
-            g = aa[(aa.threshold == thr) & (aa.track == trk) & (aa.phase == pha)].set_index("arm")
-            d = disc[(disc.threshold == thr) & (disc.track == trk) & (disc.phase == pha)].iloc[0]
-            rows.append([f"{thr:g}", TRACK[trk], pha, n(g.loc['vanilla', 'analyst']),
-                         f"{g.loc['vanilla', 'recall']:.3f}", f"{g.loc['pr_fp32', 'recall']:.3f}",
-                         f"{g.loc['pr_fp16', 'recall']:.3f}", f"{g.loc['pr_bf16', 'recall']:.3f}",
-                         f"{g.loc['vanilla', 'within_0_1']:.3f} / {g.loc['pr_bf16', 'within_0_1']:.3f}",
-                         f"{g.loc['vanilla', 'mae_s']:.3f} / {g.loc['pr_bf16', 'mae_s']:.3f}",
-                         f"{g.loc['vanilla', 'bias_s']:.3f} / {g.loc['pr_bf16', 'bias_s']:.3f}",
-                         f"{int(d.fp16_lost)} / {int(d.fp16_gained)}",
-                         f"{int(d.bf16_lost)} / {int(d.bf16_gained)}", str(int(d.fp32_changed))])
-vs_analyst = f"""
+for trk in ("us_sequences", "swarm_sequences"):
+    for pha in "PS":
+        g = a2[(a2.track == trk) & (a2.phase == pha)].set_index("arm")
+        rows.append([TRACK[trk], pha, n(g.loc["vanilla", "analyst"])]
+                    + [f"{g.loc[a, 'recall']:.3f}" for a in ("vanilla",) + PR_ARMS])
+analyst = f"""
 <section id="analyst">
-  <div class="section-head"><p class="eyebrow">Precision</p><h2>Picks against analyst picks</h2>
-  <p class="lede">Recall within 0.5&thinsp;s, residuals matched within 2&thinsp;s, as on the
-  <a href="benchmark_metrics.html">leaderboard</a>. At 0.3, bf16 changes the outcome for
-  {int(d03.bf16_lost.sum() + d03.bf16_gained.sum())} of {n_analyst:,} analyst picks
-  ({int(d03.bf16_lost.sum())} lost, {int(d03.bf16_gained.sum())} gained); at 0.2 for
-  {int(d02.bf16_lost.sum() + d02.bf16_gained.sum())}; fp16 changes {int(d03.fp16_lost.sum() + d03.fp16_gained.sum())}
-  at 0.3 and {int(d02.fp16_lost.sum() + d02.fp16_gained.sum())} at 0.2. fp32 changes none.</p></div>
-  {table(['threshold', 'track', 'phase', 'analyst picks', 'recall vanilla', 'recall PR fp32', 'recall fp16', 'recall PR bf16',
-          'within 0.1 s, vanilla / bf16', 'MAE (s), vanilla / bf16', 'median bias (s), vanilla / bf16',
-          'fp16 lost / gained', 'bf16 lost / gained', 'fp32 changed'], rows, left=3)}
-  <p class="note">The US cached waveforms for Mendocino, Monroe and San Simeon CI are not the streams the leaderboard
-  picked, so absolute US recall here differs from the board. Every arm read the same files.</p>
-</section>"""
-
-trows = []
-for _, r in tol.iterrows():
-    ok = r.within_10ms >= 0.9999 and r.lost_or_new_conf_ge_0p25 == 0
-    trows.append([ARM[r.arm], r.phase, n(r.vanilla), pct(r.within_10ms, 2), pct(r.beyond_50ms, 2), f"{r.max_shift_ms:.0f} ms",
-                  f"{r.std_shift_ms:.2f} ms", f"{int(r.lost)} / {int(r.new)}", str(int(r.lost_or_new_conf_ge_0p25)), pill(ok)])
-bf_sd = tol[tol.arm == "pr_bf16"].std_shift_ms.max()
-lit_table = table(["source", "quantity", "P", "S"], [
-    ['Ross, Meier and Hauksson (2018) <a href="#ref-ross">[1]</a>',
-     "analyst-trained CNN vs SCSN analyst picks, standard deviation; the authors: hand P picks "
-     "&ldquo;probably only accurate to within a few samples&rdquo;", "23 ms", "&ndash;"],
-    ['Zhu and Beroza (2019) <a href="#ref-zhu">[2]</a>',
-     "PhaseNet vs NCEDC analyst picks, standard deviation (residuals under 0.5 s)", "52 ms", "83 ms"],
-    ['Zhu and Beroza (2019) <a href="#ref-zhu">[2]</a>', "analyst uncertainty assumed in the training labels",
-     "100 ms", "100 ms"],
-    ["this benchmark", "vanilla <code>original</code> vs analyst picks at 0.2, MAD-based &sigma; (1.4826 &times; median absolute deviation); "
-     f"n = {n(resid.loc['P', 'matched'])} P, {n(resid.loc['S', 'matched'])} S",
-     f"{resid.loc['P', 'robust_sigma_ms']:.0f} ms", f"{resid.loc['S', 'robust_sigma_ms']:.0f} ms"],
-], left=2)
-tol_table = table(["arm", "phase", "vanilla picks at 0.2", "within 10 ms", "beyond 50 ms", "largest shift",
-                   "shift &sigma;", "lost / new", "lost or new with conf &ge; 0.25", "rule"], trows, left=2)
-tolerance = f"""
-<section id="tolerance">
-  <div class="section-head"><p class="eyebrow">Tolerance</p><h2>A bound for a reasonable error, from analyst picking uncertainty</h2>
-  <p class="lede">The acceptance rule for a picker code change is that picks match vanilla to the millisecond. Where a
-  change cannot meet it, the error it adds should be small against how well analysts themselves pick.</p></div>
-  {lit_table}
-  <div class="callout" style="margin-top:18px"><h3>Proposed rule</h3>
-  <p>Every pick within &plusmn;1 sample (10&thinsp;ms at 100&thinsp;Hz), which is under half the tightest analyst
-  figure above, and no pick lost or gained unless its confidence is within 0.05 of the threshold.</p></div>
-  {tol_table}
-  <p class="note">bf16's shift spread of up to {bf_sd:.0f}&thinsp;ms is a third of this benchmark's MAD-based
-  model&ndash;analyst &sigma; for P, and its tails reach half a second, so it fails any bound set from analyst
-  uncertainty.</p>
+  <div class="section-head"><p class="eyebrow">Precision</p><h2>Against analyst picks</h2>
+  <p class="lede">Recall within 0.5&thinsp;s at threshold {THR:g}, as on the <a href="benchmark_metrics.html">leaderboard</a>.
+  Of the {n_analyst:,} analyst picks, the number whose outcome changes is {changed['pr_fp32']} for fp32,
+  {changed['pr_fp16']} for fp16 and {changed['pr_bf16']} for bf16.</p></div>
+  {table(['track', 'phase', 'analyst picks', 'current code', 'fp32', 'fp16', 'bf16'], rows, left=2)}
 </section>"""
 
 # ---- user-defined tolerance ---------------------------------------------------------------
 SENT = -999999  # no partner within 0.5 s
 data = {}
 for arm in PR_ARMS:
-    er = pd.read_csv(RES / f"errors_{arm}.csv.gz")
+    er = errs[arm]
     er = er[(er.conf_vanilla.fillna(0) >= 0.05) | (er.conf_arm.fillna(0) >= 0.05)]
-    data[arm] = dict(
-        cv=np.floor(er.conf_vanilla.fillna(-0.001) * 10000).astype(int).tolist(),
-        ca=np.floor(er.conf_arm.fillna(-0.001) * 10000).astype(int).tolist(),
-        dt=(er.dt_ms * 10).round().fillna(SENT).astype(int).tolist(),
-        tr=(er.track == "swarm_sequences").astype(int).tolist(),
-        ph=(er.phase == "S").astype(int).tolist())
-taus = [c for c in cum.columns if c.startswith("within_")]
-crow = [[f"{r.threshold:g}", ARM[r.arm], n(r.vanilla)] + [pct(r[c], 2) for c in taus] + [n(r.lost), n(r.new)]
-        for _, r in cum.sort_values(["threshold", "arm"]).iterrows()]
-cum_table = table(["threshold", "arm", "vanilla picks"] + [c.replace("within_", "&le; ").replace("ms", "&thinsp;ms") for c in taus]
-                  + ["lost", "new"], crow, left=2)
+    data[arm] = {
+        "cv": np.floor(er.conf_vanilla.fillna(-0.001) * 10000).astype(int).tolist(),
+        "ca": np.floor(er.conf_arm.fillna(-0.001) * 10000).astype(int).tolist(),
+        "dt": (er.dt_ms * 10).round().fillna(SENT).astype(int).tolist(),
+        "tr": (er.track == "swarm_sequences").astype(int).tolist(),
+        "ph": (er.phase == "S").astype(int).tolist()}
 links = " &middot; ".join(f'<a href="{GH}/raw/main/docs/benchmark/results/vibesys_pr71/errors_{a}.csv.gz"><code>errors_{a}.csv.gz</code></a>'
                           for a in PR_ARMS)
 own = f"""
 <section id="own">
-  <div class="section-head"><p class="eyebrow">Your tolerance</p><h2>Set the bound yourself</h2>
-  <p class="lede">Every pick of each arm and of vanilla at the 0.02 floor, paired once (greedy, nearest first, within
-  0.5&thinsp;s). The table gives the fraction of vanilla picks reproduced within each timing tolerance; lost picks count
-  as not reproduced. The calculator below applies any detection threshold, timing tolerance and confidence margin to
-  the same pairs.</p></div>
-  {cum_table}
-  <div class="card" style="margin-top:18px" id="calc">
-    <h3>Calculator</h3>
+  <div class="section-head"><p class="eyebrow">Your tolerance</p><h2>Choose what counts as the same pick</h2>
+  <p class="lede">Starts at a {TOL}&thinsp;ms tolerance with {ALLOW:g}&thinsp;% of picks allowed to fail; change
+  either. Picks that appear or disappear only because they sit just at the threshold are excused by the
+  confidence margin.</p></div>
+  <div class="card" id="calc">
     <form class="calc-form" onsubmit="return false">
-      <label>detection threshold <input id="c-thr" type="number" min="0.05" max="0.95" step="0.01" value="0.2"></label>
-      <label>timing tolerance (ms) <input id="c-tau" type="number" min="0" max="500" step="1" value="10"></label>
-      <label>confidence margin <input id="c-mar" type="number" min="0" max="0.9" step="0.01" value="0.05"></label>
-      <label>failures allowed (%) <input id="c-all" type="number" min="0" max="100" step="0.01" value="0"></label>
+      <label>detection threshold <input id="c-thr" type="number" min="0.05" max="0.95" step="0.01" value="{THR:g}"></label>
+      <label>timing tolerance (ms) <input id="c-tau" type="number" min="0" max="500" step="1" value="{TOL}"></label>
+      <label>excuse lost/new picks within <input id="c-mar" type="number" min="0" max="0.9" step="0.01" value="0.05"></label>
+      <label>failures allowed (%) <input id="c-all" type="number" min="0" max="100" step="0.01" value="{ALLOW:g}"></label>
       <label>track <select id="c-trk"><option value="-1">both</option><option value="0">US sequences</option><option value="1">swarm sequences</option></select></label>
       <label>phase <select id="c-ph"><option value="-1">both</option><option value="0">P</option><option value="1">S</option></select></label>
     </form>
     <div id="c-out"></div>
-    <p class="note">A vanilla pick above the threshold is <i>within</i> the tolerance when the arm has its partner above
-    the threshold no further away than the tolerance, <i>shifted</i> when the partner is further, and <i>lost</i> when there
-    is no partner above the threshold. A <i>new</i> pick is an arm pick above the threshold with no vanilla partner above
-    it. Lost and new picks count as failures only when their confidence exceeds the threshold by more than the margin;
-    every shifted pick is a failure. The arm passes when failures are at most the allowed fraction of vanilla picks.
-    Files: {links}.</p>
+    <p class="note">A pick fails when it moves by more than the tolerance, or when it is lost or new and its
+    confidence is more than the margin above the threshold. Per-pick data: {links}.</p>
   </div>
 </section>"""
 own_js = """
@@ -337,124 +314,117 @@ function qsCalc() {
       if (aOk && !(paired && vOk)) { nw++; if (d.ca[i] > T + M) newFar++; }
     }
     const fail = shifted + lostFar + newFar, frac = nv ? 100 * fail / nv : 0, ok = frac <= allowed + 1e-12;
-    const f = x => (nv ? (100 * x / nv).toFixed(3) : '0') + '&thinsp;%';
+    const f = x => (nv ? (100 * x / nv).toFixed(2) : '0') + '&thinsp;%';
     rows += `<tr><td class="l">${QS_LABEL[arm]}</td><td>${nv.toLocaleString()}</td><td>${f(ident)}</td><td>${f(within)}</td>` +
-      `<td>${shifted.toLocaleString()}</td><td>${lost.toLocaleString()} (${lostFar.toLocaleString()})</td>` +
-      `<td>${nw.toLocaleString()} (${newFar.toLocaleString()})</td><td>${frac.toFixed(3)}&thinsp;%</td>` +
+      `<td>${shifted.toLocaleString()}</td><td>${lost.toLocaleString()} / ${nw.toLocaleString()}</td>` +
+      `<td>${fail.toLocaleString()} (${frac.toFixed(2)}&thinsp;%)</td>` +
       `<td>${ok ? '<span class="pill met">passes</span>' : '<span class="pill unmet">fails</span>'}</td></tr>`;
   }
   document.getElementById('c-out').innerHTML = '<div class="table-scroll"><table class="data"><thead><tr>' +
-    '<th class="l">arm</th><th>vanilla picks</th><th>identical</th><th>within tolerance</th><th>shifted</th>' +
-    '<th>lost (beyond margin)</th><th>new (beyond margin)</th><th>failures</th><th>verdict</th></tr></thead><tbody>' +
-    rows + '</tbody></table></div>';
+    '<th class="l">mode</th><th>picks</th><th>identical</th><th>within tolerance</th><th>moved further</th>' +
+    '<th>lost / new</th><th>failures</th><th>verdict</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 document.querySelectorAll('#calc input, #calc select').forEach(el => el.addEventListener('input', qsCalc));
 qsCalc();
 </script>"""
 
-amplitudes = f"""
-<section id="amplitudes">
-  <div class="section-head"><p class="eyebrow">Precision</p><h2>Amplitudes</h2>
-  <p class="lede">The same vanilla picks at 0.2, measured by main's extractor and by the PR's fused/slim extractor with
-  the C velocity kernel. Responses from EarthScope FDSN.</p></div>
-  {table(['amplitude', 'picks', 'stations', 'with a value', 'missing-value pattern differs', 'bit-identical', 'max relative difference'],
-         [[a, n(r.picks), n(r.stations), n(r.with_value), n(r.missing_pattern_differs), pct(r.bit_identical), f"{r.max_rel_diff:.1e}"]
-          for a, r in amps.iterrows()])}
-  <p class="note">The {int(amps.stations.max())} stations are in the western US and Oklahoma; EarthScope served no
-  response for the Etna (IV) stations, and the French and most Czech stations were not measured.</p>
-</section>"""
-
+# ---- speed and cost ----------------------------------------------------------------------
 rows = []
 for h in HOSTS:
-    for arm in ("vanilla", "pr"):
-        m = med.loc[(h, arm)]
-        rows.append([HOST_LABEL[h] if arm == "vanilla" else "", ARM[arm], f"<strong>{m.wall_s:.1f} s</strong>",
-                     ", ".join(f"{w:.1f}" for w in walls.loc[(h, arm)]), f"{m.classify_s:.0f} s", f"{m.wa_s:.0f} s", f"{m.vel_s:.1f} s",
-                     f"{speed(h):.2f}&times;" if arm == "pr" else ""])
-crows = []
-for h in ("c6g", "c7g", "c8g"):
-    crows.append([HOST_LABEL[h], hosts.loc[h, "cpu"], f"${hosts.loc[h, 'on_demand_usd_h']:.3f}", f"${hosts.loc[h, 'spot_usd_h']:.4f}",
-                  f"${usd_per_1k(h, 'vanilla', 'on_demand_usd_h'):.3f} / ${usd_per_1k(h, 'pr', 'on_demand_usd_h'):.3f}",
-                  f"<strong>${usd_per_1k(h, 'vanilla', 'spot_usd_h'):.3f} / ${usd_per_1k(h, 'pr', 'spot_usd_h'):.3f}</strong>"])
+    spot = (f"${usd_per_1k(h, 'vanilla'):.2f} &rarr; <strong>${usd_per_1k(h, 'pr'):.2f}</strong>"
+            if h in GRAV else "&ndash;")
+    rows.append([HOST_LABEL[h], f"{med.loc[(h, 'vanilla'), 'wall_s']:.0f} s", f"{med.loc[(h, 'pr'), 'wall_s']:.0f} s",
+                 f"<strong>{speed(h):.1f}&times;</strong>", spot])
 cost = f"""
 <section id="cost">
-  <div class="section-head"><p class="eyebrow">Computational cost</p><h2>Laptop and Graviton, same workload, same layout</h2>
-  <p class="lede">Wall time is the slowest of the four workers, median of four alternating repetitions; stage times
-  are summed over the four workers. Both arms of a host share one Python environment.</p></div>
-  {table(['host', 'arm', 'wall, median', 'wall per rep (s)', 'picking', 'Wood-Anderson', 'velocity', 'speed-up'], rows, left=2)}
+  <div class="section-head"><p class="eyebrow">Speed</p><h2>Six times faster on AWS Graviton, in fp32</h2>
+  <p class="lede">The same {SD} station-days (42 benchmark windows) processed by four workers on an 8-vCPU
+  machine, the shape of a Fargate task. Median of four repetitions; picking and amplitudes included, S3 reads and
+  writes not.</p></div>
+  {table(['machine', 'current code', 'PR, fp32', 'faster', 'Spot $ per 1,000 station-days'], rows)}
   <div class="grid-2" style="margin-top:18px">
-  <div class="card"><h3>Where the time goes</h3><p>Most of the gain is the Wood-Anderson rewrite: vanilla spends
-  {med.loc[('c6g', 'vanilla'), 'wa_s']:.0f}&thinsp;s of worker time on it on Graviton2 against
-  {med.loc[('c6g', 'pr'), 'wa_s']:.0f}&thinsp;s for the PR. Picking gains
-  {med.loc[('c6g', 'vanilla'), 'classify_s'] / med.loc[('c6g', 'pr'), 'classify_s']:.1f}&times; on Graviton2 and
-  {med.loc[('c8g', 'vanilla'), 'classify_s'] / med.loc[('c8g', 'pr'), 'classify_s']:.1f}&times; on Graviton4, and is
-  slightly slower on Graviton3. The C velocity kernel does not build on ARM, so its SciPy fallback ran.</p></div>
-  <div class="card"><h3>Why the laptop gains less</h3><p>No macOS arm64 torch build has oneDNN (checked: conda-forge
-  2.13.0 and the official pip wheel 2.14.1, both <code>USE_MKLDNN=OFF</code>), so the PR's fused kernels cannot run on
-  an Apple M-series CPU, and its picking runs
-  {med.loc[('M1 Max', 'pr'), 'classify_s'] / med.loc[('M1 Max', 'vanilla'), 'classify_s']:.2f}&times; slower there
-  through an equivalent plain-torch path. The laptop's net {speed('M1 Max'):.2f}&times; is the amplitude code alone.
-  aarch64 Linux torch 2.14.1 has oneDNN, which is why Graviton gains six times.</p></div>
+  <div class="card"><h3>Where the time goes</h3><p>Most of the saving is the Wood-Anderson amplitude code:
+  {100 * wa_share['c8g'] / tot_saved['c8g']:.0f}&thinsp;% of the time saved on Graviton4. PhaseNet itself runs
+  {med.loc[('c8g', 'vanilla'), 'classify_s'] / med.loc[('c8g', 'pr'), 'classify_s']:.1f}&times; faster there. These
+  windows are aftershock sequences with many picks; an ordinary station-day has far fewer, so the gain in a
+  campaign will be smaller. Not yet measured.</p></div>
+  <div class="card"><h3>Why the laptop gains little</h3><p>The PR's fast PhaseNet needs a library (oneDNN) that
+  no macOS build of PyTorch includes, so on an Apple laptop only the amplitude code speeds up, and picking runs
+  {med.loc[('M1 Max', 'pr'), 'classify_s'] / med.loc[('M1 Max', 'vanilla'), 'classify_s']:.2f}&times; slower.</p></div>
   </div>
-  <h3 style="margin-top:22px">Cost per 1,000 station-days of compute</h3>
-  {table(['instance', 'CPU', 'on-demand $/h', 'Spot $/h', 'on-demand, vanilla / PR', 'Spot, vanilla / PR'], crows, left=2)}
-  <p class="note">{e(meta['prices'])}. Cost = median wall &times; price / {SD} station-days. For comparison, a
-  Fargate Spot task of the same 8 vCPU shape costs about ${fargate_h:.3f}/h, at the rate measured from CloudBank billing
-  over all attempts, ${meta['fargate_spot_rate_usd_vcpu_h']} per vCPU-hour (docs/rerun_2026/34, PR #66). The PR on Fargate was not timed. These figures exclude S3 reads and Parquet writes, which both arms pay
-  equally in production, so the end-to-end speed-up will be lower.</p>
+  <p class="note">Prices: {e(meta['prices'])}. For comparison, Fargate Spot costs about ${fargate_h:.2f}/h
+  for the same 8 vCPU (CloudBank billing). Fargate itself was not timed.</p>
 </section>"""
 
+# ---- details -----------------------------------------------------------------------------
+rows = []
+for _, r in vv.sort_values(["threshold", "arm", "track"], ascending=[True, False, True]).iterrows():
+    rows.append([f"{r.threshold:g}", ARM[r.arm], TRACK[r.track], n(r.vanilla), pct(r.identical, 3), n(r.shifted_n),
+                 n(r.lost_n), n(r.new_n), f"{r.p99_abs_shift_s * 1e3:.0f} ms", f"{r.p99_abs_dconf:.3f}"])
+detail_vanilla = table(['threshold', 'mode', 'track', 'picks', 'identical', 'moved', 'lost', 'new', 'p99 |shift|',
+                        'p99 |&Delta;confidence|'], rows, left=3)
+fp_rows = [[e(r.sequence), e(r.station), r.phase, e(r.time)[:23], f"{r.conf_vanilla:.4f}" if pd.notna(r.conf_vanilla) else "&ndash;",
+            f"{r.conf_pr_fp32:.4f}" if pd.notna(r.conf_pr_fp32) else "&ndash;", e(r.side)] for _, r in fp32d.iterrows()]
+amp_rows = [[a, n(r.picks), n(r.stations), n(r.with_value), n(r.missing_pattern_differs), f"{r.max_rel_diff:.1e}"]
+            for a, r in amps.iterrows()]
 runs = ["c6g vanilla", "c7g vanilla", "c8g vanilla", "c6g pr", "c7g pr", "c8g pr"]
 same = {(r.a, r.b): int(r.identical) for _, r in exact.iterrows()}
 same.update({(b_, a_): v for (a_, b_), v in list(same.items())})
-label = {r: f"{r.split()[0]} {'vanilla' if r.endswith('vanilla') else 'PR fp32'}" for r in runs}
-xrows = [[label[r]] + [n(g23.n_a) if r == c else n(same[(r, c)]) for c in runs] for r in runs]
-hardware = f"""
-<section id="hardware">
-  <div class="section-head"><p class="eyebrow">Precision</p><h2>Exact agreement across hardware</h2>
-  <p class="lede">Picks at 0.2 from repetition 2 on each instance ({n(g23.n_a)} picks per run). Repetitions on one
-  instance are bit-identical. Vanilla itself loses {n(g23.n_a - g23.identical)} picks between Graviton2 and Graviton3,
-  so a millisecond rule cannot hold across our own hardware even without the PR.</p></div>
-  {table(['picks identical to the ms'] + [label[r] for r in runs], xrows)}
-</section>"""
-
-limits = """
-<section id="limits">
-  <div class="section-head"><p class="eyebrow">Limits and other findings</p><h2>What this does not show</h2></div>
-  <div class="grid-2">
-  <div class="card"><h3>Not covered</h3><ul>
-    <li><code>jma_wc</code>, the global weight and the one the PR's own evaluation used, was not scored here.</li>
-    <li><code>obs</code> (PickBlue) cannot use the optimized path: fast annotate raises
-    <code>does not cover this model setup: ['padding/filter']</code> when the model is built.</li>
-    <li>bf16 was emulated on the laptop, not run on AMX hardware; fp16 was emulated with fp32 accumulation, and its speed was not measured.</li>
-    <li>Fargate was not timed; S3 reads and Parquet writes are outside every timing above.</li>
-    <li>Streams the model resamples (30 of the 130 precision windows) fall back to SeisBench's annotate; the timing
-    workload is 100&thinsp;Hz only.</li>
-    <li>The 707-line <code>s3_helper.py</code> rewrite (overlapped reads, per-station listing) was not reviewed.</li>
-  </ul></div>
-  <div class="card"><h3>Defects found</h3><ul>
-    <li><code>PhaseNetGraph</code> with <code>fused=False</code> and polyphase deconvolution crashes on torch builds
-    without oneDNN (<code>fast_forward.py:220</code>, a <code>view</code> of a tensor that is not channels-last).</li>
-    <li><code>veliir.c</code> calls <code>__builtin_cpu_init</code>, which is x86-only; on ARM the build fails and SciPy
-    runs. Built for arm64 with the probe guarded, it matched SciPy to 10<sup>-11</sup>.</li>
-    <li><code>seisbench==0.12.5</code> has no aarch64 wheel: an ARM image needs <code>python3-devel</code> and
-    <code>gcc</code>. Four workers importing SeisBench for the first time at once can race on its cache config.</li>
-    <li>As merged, nothing selects the optimized settings, so production would run vanilla.</li>
-  </ul></div>
-  </div>
-</section>"""
-
-reproduce = f"""
-<section id="reproduce">
-  <div class="section-head"><p class="eyebrow">Reproduce</p><h2>Code and data</h2></div>
-  <div class="card"><p>Harness in <a href="{GH}/tree/main/scripts/vibesys_pr71"><code>scripts/vibesys_pr71/</code></a>:
-  <code>run_arm.py</code> (the three arms, with the AMX emulation in <code>emu.py</code>), <code>score.py</code> and
-  <code>tolerance.py</code> (scoring), <code>run_amps.py</code> (amplitudes), <code>bench_worker.py</code> with
-  <code>bench_run.sh</code> (laptop timing) and <code>ec2_run.sh</code> (Graviton timing, run from EC2 user-data with
-  presigned URLs; the instances terminated themselves). Shell scripts keep the paths of the 2026-10-26 run.
+lab = {r: f"{r.split()[0]} {'current' if r.endswith('vanilla') else 'PR'}" for r in runs}
+x_rows = [[lab[r]] + [n(g23.n_a) if r == c else n(same[(r, c)]) for c in runs] for r in runs]
+t_rows = [[HOST_LABEL[h], ARM[a], ", ".join(f"{w:.1f}" for w in walls.loc[(h, a)]), f"{med.loc[(h, a), 'classify_s']:.0f} s",
+           f"{med.loc[(h, a), 'wa_s']:.0f} s", f"{med.loc[(h, a), 'vel_s']:.1f} s"] for h in HOSTS for a in ("vanilla", "pr")]
+c_rows = [[HOST_LABEL[h], e(hosts.loc[h, "cpu"]), f"${hosts.loc[h, 'on_demand_usd_h']:.3f}", f"${hosts.loc[h, 'spot_usd_h']:.4f}",
+           f"${usd_per_1k(h, 'vanilla', 'on_demand_usd_h'):.3f} / ${usd_per_1k(h, 'pr', 'on_demand_usd_h'):.3f}"] for h in GRAV]
+details = f"""
+<section id="details">
+  <div class="section-head"><p class="eyebrow">Details</p><h2>Method, full tables, limits</h2></div>
+  <details><summary>What each mode runs</summary>
+  <p><b>Current code</b>: <code>sbm.PhaseNet.from_pretrained("{WEIGHT_ID}").classify</code> and main's
+  <code>AmplitudeExtractor()</code> at <code>{e(meta['vanilla_commit'])}</code>. <b>fp32</b>: PR head
+  <code>{e(meta['pr_head'])}</code> with the settings of its removed runner (<code>vibesys/pick_workload.py</code> at
+  <code>4271d67</code>): BatchNorm folded into the convolutions, polyphase transposed convolutions, fast windowing
+  (<code>glue=fused</code>), amplitudes <code>impl="fused", signal="slim"</code>. <b>bf16</b> and <b>fp16</b>: the same,
+  with weights and inputs in 16 bits, fp32 accumulation, and every layer's output rounded to 16 bits. This
+  emulates Intel AMX for bf16 and is a best case for fp16. Run on the M1 Max laptop.</p>
+  <p>Precision workload: {e(meta['accuracy_workload'])}. Picks at a 0.02 floor, thresholded afterwards, paired with
+  <code>benchmark_metrics.match_picks</code> within 0.5&thinsp;s. The cached waveforms for Mendocino, Monroe and San
+  Simeon CI are not the streams the leaderboard picked, so absolute US recall differs from the board; every mode
+  read the same files.</p></details>
+  <details><summary>Picks against the current code, both thresholds</summary>{detail_vanilla}</details>
+  <details><summary>Every fp32 difference at the 0.02 floor ({len(fp32d)} picks)</summary>
+  {table(['sequence', 'station', 'phase', 'time', 'confidence, current', 'confidence, fp32', 'side'], fp_rows, left=3)}
+  <p class="note">Same arrival one to three samples apart with confidences equal to about 10<sup>-4</sup>. Folding
+  BatchNorm changes the order of the fp32 sums, which moves the probability trace by about 10<sup>-6</sup> and can flip
+  which sample of a flat peak is the maximum.</p></details>
+  <details><summary>Amplitudes</summary>
+  {table(['amplitude', 'picks', 'stations', 'with a value', 'missing-value pattern differs', 'max relative difference'], amp_rows)}
+  <p class="note">Western US and Oklahoma stations only: EarthScope served no response for the Etna (IV) stations, and
+  the French and most Czech stations were not measured.</p></details>
+  <details><summary>Exact agreement across Graviton generations</summary>
+  {table(['picks identical to the ms'] + [lab[r] for r in runs], x_rows)}
+  <p class="note">{n(g23.n_a)} picks per run at threshold {THR:g}. The current code itself differs by
+  {n(g23.n_a - g23.identical)} picks between Graviton2 and Graviton3, so a millisecond rule cannot hold across our own
+  hardware even without the PR.</p></details>
+  <details><summary>Timing per repetition and cost at on-demand prices</summary>
+  {table(['machine', 'code', 'wall per repetition (s)', 'picking', 'Wood-Anderson', 'velocity'], t_rows, left=2)}
+  <p class="note">Stage times summed over the four workers.</p>
+  {table(['instance', 'CPU', 'on-demand $/h', 'Spot $/h', 'on-demand $ per 1,000 station-days, current / PR'], c_rows, left=2)}</details>
+  <details><summary>Limits and defects found in the PR</summary><ul>
+    <li><code>jma_wc</code>, the global weight, was not scored. <code>obs</code> (PickBlue) cannot use the fast path:
+    building it raises <code>does not cover this model setup: ['padding/filter']</code>.</li>
+    <li>bf16 was emulated, not run on AMX hardware. fp16 speed was not measured.</li>
+    <li>Streams the model resamples (30 of 130 windows) fall back to SeisBench's windowing. Timing used 100&thinsp;Hz only.</li>
+    <li>The 707-line <code>s3_helper.py</code> rewrite was not reviewed.</li>
+    <li><code>veliir.c</code> (velocity amplitudes) does not build on ARM, so SciPy ran on Graviton. Built with its
+    x86-only CPU probe guarded, it matched SciPy to 10<sup>-11</sup>.</li>
+    <li>As merged, nothing selects the fast settings, so production would run the current code.</li>
+  </ul></details>
+  <details><summary>Reproduce</summary>
+  <p>Harness in <a href="{GH}/tree/main/scripts/vibesys_pr71"><code>scripts/vibesys_pr71/</code></a>;
   <code>export_results.py</code> writes the tables in
   <a href="{GH}/tree/main/docs/benchmark/results/vibesys_pr71"><code>docs/benchmark/results/vibesys_pr71/</code></a>,
-  and this page is built from them by <code>scripts/build_vibesys_report.py</code>.</p></div>
+  and <code>scripts/build_vibesys_report.py</code> builds this page from them.</p></details>
 </section>"""
 
 refs = """
@@ -463,23 +433,37 @@ refs = """
   <li id="ref-zhu">Zhu, W. and Beroza, G. C. (2019). PhaseNet: a deep-neural-network-based seismic arrival-time picking method. <i>Geophysical Journal International</i> 216, 261-273. <a href="https://doi.org/10.1093/gji/ggy423">doi:10.1093/gji/ggy423</a></li>
 </ol></section>"""
 
-commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
 built = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 page = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Pick precision and computational cost of the VibeSys CPU optimizations proposed for the QuakeScope picker in PR #71, measured on the picker benchmark, an M1 Max laptop and three AWS Graviton instances.">
+<meta name="description" content="Do PhaseNet picks change under the CPU optimizations proposed in QuakeScope PR #71, and how much faster are they? Tested on the picker benchmark, an M1 Max laptop and three AWS Graviton instances.">
 <title>VibeSys Optimizations Evaluation</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="quakescope-board.css">
-<style>.card ul {{ padding-left: 1.1em; }} .card li {{ margin: 4px 0; }}
-.calc-form {{ display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 14px; }}
+<style>
+.verdict {{ border-top: 4px solid var(--line); }}
+.verdict.ok {{ border-top-color: var(--good); }} .verdict.mid {{ border-top-color: var(--warn); }} .verdict.bad {{ border-top-color: var(--bad); }}
+.verdict .tag {{ font-size: 0.8rem; color: var(--stone); margin: 0 0 8px; }}
+.verdict .big {{ font-size: 1.6rem; font-weight: 800; color: var(--ink); }}
+.verdict .k {{ font-size: 0.85rem; color: var(--stone); margin: 2px 0 10px; }}
+.fig svg {{ font-family: Manrope, sans-serif; }}
+.fig .grid {{ stroke: var(--line); }} .fig .ref {{ stroke: var(--stone); stroke-dasharray: 3 3; opacity: .6; }}
+.fig .tick {{ font-size: 12px; fill: var(--stone); }} .fig .axis {{ font-size: 13px; fill: var(--ink); }}
+.fig .reflab {{ font-size: 11px; fill: var(--stone); }} .fig .lab {{ font-size: 13px; font-weight: 700; fill: var(--ink); }}
+details {{ border-top: 1px solid var(--line); padding: 10px 0; }}
+details summary {{ cursor: pointer; font-weight: 700; color: var(--purple-deep); }}
+details[open] summary {{ margin-bottom: 10px; }}
+details ul {{ padding-left: 1.1em; }} details li {{ margin: 4px 0; }}
+.calc-form {{ display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 0 0 14px; }}
 .calc-form label {{ display: flex; flex-direction: column; font-size: 0.85rem; color: var(--stone); gap: 4px; }}
-.calc-form input, .calc-form select {{ font: inherit; color: var(--ink); padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 9.5em; }}</style>
+.calc-form input, .calc-form select {{ font: inherit; color: var(--ink); padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 9.5em; }}
+</style>
 </head>
 <body>
 <header class="hero">
@@ -488,20 +472,17 @@ page = f"""<!doctype html>
       <a class="brand" href="./"><span class="brand-mark">QS</span>
         <span>QuakeScope <span style="opacity:.7;font-weight:600">code evaluation</span></span></a>
       <div class="nav-links">
-        <a href="#verdict">Verdict</a><a href="#vanilla">vs vanilla</a><a href="#analyst">vs analysts</a>
-        <a href="#tolerance">Tolerance</a><a href="#own">Your tolerance</a><a href="#amplitudes">Amplitudes</a><a href="#cost">Cost</a>
-        <a href="#hardware">Hardware</a><a href="#limits">Limits</a><a href="#reproduce">Reproduce</a>
+        <a href="#answer">Answer</a><a href="#figure">Pick shifts</a><a href="#analyst">Analysts</a>
+        <a href="#own">Your tolerance</a><a href="#cost">Speed</a><a href="#details">Details</a>
       </div>
     </nav>
     <div class="hero-inner">
-      <p class="eyebrow">QuakeScope &middot; PR #71 &middot; VibeSys CPU optimizations &middot; {e(meta['run_date'])}</p>
-      <h1>VibeSys optimizations: pick precision and computational cost</h1>
-      <p>PR #71 proposes CPU optimizations for the QuakeScope picker, found by an automated optimization campaign
-      and reported at 8.5&times; on an Intel AMX host. This page tests whether the picks survive and what the speed is
-      on the hardware we would use: the leaderboard's own waveforms and analyst picks for precision, and an M1 Max
-      laptop and three AWS Graviton generations for cost.</p>
+      <p class="eyebrow">QuakeScope &middot; PR #71 &middot; {e(meta['run_date'])}</p>
+      <h1>Faster PhaseNet: do the picks change?</h1>
+      <p>PR #71 proposes a faster way to run the QuakeScope picker on CPUs, found by an automated optimization
+      tool (VibeSys). We re-picked the leaderboard's waveforms with it and compared every pick.</p>
       <div class="hero-actions">
-        <a class="button primary" href="#verdict">Verdict</a>
+        <a class="button primary" href="#answer">Answer</a>
         <a class="button secondary" href="{meta['pr']}">PR #71</a>
         <a class="button secondary" href="benchmark_metrics.html">Picker leaderboard</a>
       </div>
@@ -509,18 +490,13 @@ page = f"""<!doctype html>
   </div>
 </header>
 <main class="shell">
-{stats}
-{verdict}
-{what}
-{vs_vanilla}
-{vs_analyst}
-{tolerance}
+{answer}
+{figure}
+{formats}
+{analyst}
 {own}
-{amplitudes}
 {cost}
-{hardware}
-{limits}
-{reproduce}
+{details}
 {refs}
 </main>
 {own_js}
