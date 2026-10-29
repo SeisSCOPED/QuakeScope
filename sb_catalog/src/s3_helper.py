@@ -8,19 +8,19 @@ import logging
 import os
 import random
 import re
+import threading
 import time
 from abc import abstractmethod
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 import numpy as np
 import obspy
-from botocore.exceptions import ClientError
 from obspy.clients.fdsn.header import (FDSNException,
                                        FDSNNoDataException)
-from s3fs import S3FileSystem
 
 from .constants import NETWORK_MAPPING, channel_priority, select_channel
-from .profiling import stage
+from .profiling import stage, timeline
 if TYPE_CHECKING:                     # pymongo is a 2025 DocumentDB
     from .utils import SeisBenchDatabase   # dependency; v3 writes Parquet
     # and never touches Mongo, so importing it eagerly made the path
@@ -74,6 +74,20 @@ ES_REFRESH_WINDOW = float(os.environ.get("ES_REFRESH_WINDOW", "300"))
 # FDSN reserves codes beginning with a digit or X/Y/Z for temporary deployments,
 # and reassigns them, so a credential for one is additionally scoped by year.
 ES_TEMPORARY_NETWORK_PREFIXES = frozenset("0123456789XYZ")
+#: How a station-day's objects are found (`S3DataSource(list_mode=...)`):
+#: "day" LISTs each network's whole day prefix once (~4,000 keys on SCEDC);
+#: "station" LISTs only the station's key stem under it, where the archive puts
+#: every object of the day directly under the day prefix (SCEDC, NCEDC). Both
+#: decide existence from the archive's answer, never from the key alone.
+LIST_MODES = ("day", "station")
+#: How a SCEDC station-day is LISTed and read (`S3DataSource(early=...)`, pick_workload
+#: QS_EARLY): "off" through s3fs; "stdlib" through parent_fetch's anonymous HTTPS client, the
+#: first station-day handed over in memory by the worker's early-io thread, every other one
+#: fetched here, each request falling back to s3fs (counted, with its reason) if it fails.
+EARLY_ARMS = ("off", "stdlib")
+#: Keys per ListObjectsV2 page; `fs.ls` hides its pages, so the day listing's
+#: request count is derived from its key count.
+S3_LIST_PAGE = 1000
 
 
 class EarthScopeNoAccess(RuntimeError):
@@ -265,6 +279,12 @@ S3_BUSY_ATTEMPTS = int(os.environ.get("S3_BUSY_ATTEMPTS", "6"))
 # Hard ceiling on one station-day. A worker that blocks past this loses one
 # station-day; a worker with no ceiling loses the whole shard and its lease.
 STATION_DAY_TIMEOUT = float(os.environ.get("STATION_DAY_TIMEOUT", "900"))
+#: How long a worker's startup waits for the parent's first station-day fetch
+#: (pick_workload QS_STARTUP2=v2, parent_fetch.py) before it LISTs and GETs it itself.
+#: The wait starts ~0.4 s after the parent's fetch does, and the 4 groups' first
+#: station-days (~25-30 MB each, fetched together) were on disk 1.2-1.9 s after it
+#: started (round-16 stage 1); a timeout restarts that GET from nothing.
+PARENT_FIRST_WAIT = 2.5
 
 # Socket-level timeouts. Without these a stalled connection never raises: a
 # profiling shard held a single GET open for 447 minutes and logged nothing
@@ -278,6 +298,49 @@ S3_CONFIG = {
 }
 
 logger = logging.getLogger("picker")
+
+
+def S3FileSystem(*args, **kwargs):
+    """s3fs.S3FileSystem, imported on first use: s3fs, aiobotocore, botocore and aiohttp
+    (~0.6 s of a worker's startup) load only once a filesystem is built, which on the
+    QS_EARLY=stdlib arm is never before the first classify (`CompositeS3ObjectHelper(lazy_fs=True)`)."""
+    from s3fs import S3FileSystem as cls
+
+    return cls(*args, **kwargs)
+
+
+def _client_error() -> type:
+    """botocore's ClientError, for an `except` clause reached only after an s3fs call raised
+    (so botocore is already loaded)."""
+    from botocore.exceptions import ClientError
+
+    return ClientError
+
+
+class _LazyFilesystems(dict):
+    """name -> S3FileSystem for `CompositeS3ObjectHelper(lazy_fs=True)`: the keys are there
+    from the start, each filesystem is built (and s3fs imported) on its first lookup."""
+
+    def __init__(self, factories: dict):
+        super().__init__(factories)
+        self._built: set = set()
+        self._lock = threading.Lock()
+
+    def __getitem__(self, name):
+        with self._lock:
+            if name not in self._built:
+                super().__setitem__(name, super().__getitem__(name)())
+                self._built.add(name)
+        return super().__getitem__(name)
+
+    def __setitem__(self, name, fs):
+        """A filesystem set directly is used as it is."""
+        with self._lock:
+            super().__setitem__(name, fs)
+            self._built.add(name)
+
+    def get(self, name, default=None):
+        return self[name] if name in self else default
 
 # earthscope_sdk logs credentials at DEBUG:
 #
@@ -348,8 +411,6 @@ def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
     inflate the queue for no benefit, and `annotate` will do it anyway on its
     own copy, where the memory is short-lived.
     """
-    from seisbench.models import WaveformModel
-
     # Zero-length traces reach here from truncated or empty records and blow up
     # later inside the model as "cannot reshape array of size 0 into shape (0)",
     # which names nothing useful. Drop them at the boundary instead.
@@ -361,6 +422,10 @@ def downsample_to_target(stream, target: float = TARGET_SAMPLING_RATE):
                          if tr.stats.sampling_rate > target])
     if not len(fast):
         return stream
+    # Imported only when a trace needs it, so a worker on the lean imports
+    # (pick_workload QS_IMPORTS) does not load seisbench.models for a no-op.
+    from seisbench.models import WaveformModel
+
     WaveformModel.resample(fast, target, zerophase=True)
 
     # Resampling returns float64. Traces ALREADY at or below the target are not
@@ -418,6 +483,40 @@ class S3ObjectHelper:
         """
         return fs.ls(prefix)
 
+    #: Whether every object of a day sits directly under the day prefix behind
+    #: a per-station key stem (`station_stem`), so one station-day can be
+    #: listed on its own. EarthScope keys one object per station-day under a
+    #: versioned name and GeoNet adds a station directory; both keep `list_day`.
+    lists_stations = False
+
+    def station_stem(self, net, sta) -> str:
+        """The key stem every object of one station shares under a day prefix.
+
+        It must end where the station code does: SCEDC pads the code to five
+        characters and NCEDC follows it with ".", so CLC never matches CLCX.
+        """
+        raise NotImplementedError(f"{type(self).__name__} lists whole days")
+
+    def list_station_day(self, fs, prefix, stem) -> tuple[list, int]:
+        """Objects under `prefix` whose names start with `stem`, and the number
+        of LIST requests it took.
+
+        A real LIST with the stem as the server-side Prefix, so a station-day
+        exists only if the archive says it does. One level, as `list_day`: the
+        "/" delimiter keeps anything below the day prefix out, and the names
+        are the `bucket/key` strings `fs.ls` returns.
+        """
+        bucket, _, key = prefix.partition("/")
+        kwargs = dict(Bucket=bucket, Prefix=f"{key}{stem}", Delimiter="/")
+        names, requests = [], 0
+        while True:
+            page = fs.call_s3("list_objects_v2", **kwargs)
+            requests += 1
+            names += [f"{bucket}/{obj['Key']}" for obj in page.get("Contents", [])]
+            if not page.get("IsTruncated"):
+                return sorted(names), requests
+            kwargs["ContinuationToken"] = page["NextContinuationToken"]
+
 
 class SCEDCS3ObjectHelper(S3ObjectHelper):
     def get_prefix(self, net, year, day) -> str:
@@ -426,6 +525,11 @@ class SCEDCS3ObjectHelper(S3ObjectHelper):
     def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
         return f"{net}{sta.ljust(5, '_')}{cha}{comp}{loc.ljust(3, '_')}{year}{day}.ms"
 
+    lists_stations = True
+
+    def station_stem(self, net, sta) -> str:
+        return f"{net}{sta.ljust(5, '_')}"
+
 
 class NCEDCS3ObjectHelper(S3ObjectHelper):
     def get_prefix(self, net, year, day) -> str:
@@ -433,6 +537,11 @@ class NCEDCS3ObjectHelper(S3ObjectHelper):
 
     def get_basename(self, net, sta, loc, cha, year, day, comp) -> str:
         return f"{sta}.{net}.{cha}{comp}.{loc}.D.{year}.{day}"
+
+    lists_stations = True
+
+    def station_stem(self, net, sta) -> str:
+        return f"{sta}.{net}."
 
 
 class EarthScopeS3ObjectHelper(S3ObjectHelper):
@@ -502,7 +611,7 @@ class GeoNetS3ObjectHelper(S3ObjectHelper):
 
 
 class CompositeS3ObjectHelper(S3ObjectHelper):
-    def __init__(self):
+    def __init__(self, lazy_fs: bool = False):
         self.helpers = {
             "scedc": SCEDCS3ObjectHelper(),
             "ncedc": NCEDCS3ObjectHelper(),
@@ -518,19 +627,22 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
         }
 
         self.ttl_threshold = datetime.timedelta(minutes=5)
-        self.fs = {
-            "scedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
-            "ncedc": S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+        factories = {
+            "scedc": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
+            "ncedc": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
             # Pinned to its own region: without client_kwargs s3fs signs for
             # us-east-2 and the request 301s to a redirect it does not follow.
-            "geonet": S3FileSystem(anon=True, config_kwargs=S3_CONFIG,
-                                   client_kwargs={"region_name": GEONET_REGION}),
+            "geonet": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG,
+                                           client_kwargs={"region_name": GEONET_REGION}),
+            # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
+            # credential exchange entirely when the campaign has not been configured
+            # for EarthScope, so a public-bucket run neither stalls nor fails on it.
+            # Open Data needs nothing, so it is always available.
+            "earthscope_open": lambda: S3FileSystem(anon=True, config_kwargs=S3_CONFIG),
         }
-        # EarthScope needs credentials; SCEDC and NCEDC are anonymous. Skip the
-        # credential exchange entirely when the campaign has not been configured
-        # for EarthScope, so a public-bucket run neither stalls nor fails on it.
-        # Open Data needs nothing, so it is always available.
-        self.fs["earthscope_open"] = S3FileSystem(anon=True, config_kwargs=S3_CONFIG)
+        # Built now (the default), or each on its first use (QS_EARLY=stdlib).
+        self.fs = (_LazyFilesystems(factories) if lazy_fs
+                   else {name: build() for name, build in factories.items()})
 
         # Restricted EarthScope credentials are scoped per network (and per year
         # for temporary networks), so there is no single "the" credential: both
@@ -698,6 +810,16 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
 
     def list_day(self, net, fs, prefix) -> list:
         return self.helpers[self.get_data_center(net)].list_day(fs, prefix)
+
+    def lists_stations_of(self, net) -> bool:
+        return self.helpers[self.get_data_center(net)].lists_stations
+
+    def station_stem(self, net, sta) -> str:
+        return self.helpers[self.get_data_center(net)].station_stem(net, sta)
+
+    def list_station_day(self, net, fs, prefix, stem) -> tuple[list, int]:
+        return self.helpers[self.get_data_center(net)].list_station_day(
+            fs, prefix, stem)
 
     def get_filesystem(self, net, year=None):
         dc = self.get_data_center(net)
@@ -1138,9 +1260,42 @@ class CompositeS3ObjectHelper(S3ObjectHelper):
             self.es_denials.pop(self.es_scope_key(net, year), None)
 
 
+def in_background(name: str, fn, *args) -> Future:
+    """Run `fn(*args)` on a daemon thread; the Future carries its result or
+    re-raises its exception, class and all, in whoever asks for it.
+
+    Daemon, not a pool thread: a shard that fails its metadata checks while a
+    startup fetch is still in flight must be able to exit without waiting on
+    the fetch. The thread inherits the process's CPU affinity.
+    """
+    future = Future()
+
+    def run():
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    threading.Thread(target=run, name=name, daemon=True).start()
+    return future
+
+
 class S3DataSource:
     """
     This class provides functionality to load waveform data from an S3 bucket.
+
+    Two startups (`QS_STARTUP` in pick_workload.py):
+
+    * serial - the constructor checks access and metadata, then fetches the
+      inventory, and the first LIST and GETs wait for `load_waveforms`.
+    * overlap - construct with `db=None` and `early_channels`, which checks
+      access and starts, on background threads, the same inventory request and
+      the first day's LIST plus the first station-day's reads; then
+      `attach_db` runs the metadata checks. Everything fetched early is held in
+      this object, used once and dropped: nothing outlives the run. Component
+      reads of one station-day are then issued concurrently.
     """
 
     def __init__(
@@ -1151,8 +1306,18 @@ class S3DataSource:
         components: str = "ZNE12",
         db: SeisBenchDatabase = None,
         limit_mb: Optional[int] = 200,
+        early_channels: Optional[dict[str, str]] = None,
+        list_mode: str = "day",
+        parent_first: Optional[tuple] = None,
+        early: str = "off",
         weight: Optional[str] = None,
     ):
+        if list_mode not in LIST_MODES:
+            raise ValueError(f"unknown list_mode {list_mode!r}; expected one of {list(LIST_MODES)}")
+        if early not in EARLY_ARMS:
+            raise ValueError(f"unknown early {early!r}; expected one of {list(EARLY_ARMS)}")
+        self.list_mode = list_mode
+        self.early = early
         self.start = start
         self.end = end
         self.components = components
@@ -1170,7 +1335,52 @@ class S3DataSource:
         self.db = db
         self._logged = set()                  # see `_log_once`
         self.outcomes: list[dict] = []        # see `_outcome`
-        self.s3helper = CompositeS3ObjectHelper()
+        # Overlap startup state. Empty on the serial path, which never reads it
+        # beyond a truth test.
+        self.concurrent_reads = early_channels is not None
+        self._inventory_future: Optional[Future] = None
+        self._inventory_lock = threading.Lock()
+        self._inventory_request_early = None
+        # (net, prefix) for a day listing, (net, prefix, stem) for a station
+        # listing -> Future[list]
+        self._early_listing: dict = {}
+        self._station_listings: dict = {}     # (net, prefix, stem) -> list, this run only
+        self._prefetched: dict = {}           # (uri, net, sourcename, year) -> Future
+        self._prefetch_targets: set = set()
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
+        self.startup_counters = {
+            "inventory_early": 0, "inventory_request_mismatch": 0,
+            "listing_early": 0, "listing_consumed": 0,
+            "prefetched": 0, "prefetch_consumed": 0, "prefetch_fallbacks": 0,
+            "prefetch_unused": 0, "max_reads_in_flight": 0,
+        }
+        # The parent's first station-day fetch: (directory, event) from
+        # pick_workload, or None; on the stdlib arm (parent_fetch.EarlyFetch,
+        # event), the worker's own in-memory fetch. `first_sd_source` says who
+        # read the first station-day's objects: "parent" (all of them local),
+        # "worker", or "-" when there was no parent fetch to take; on the
+        # stdlib arm "stdlib" (all of them from the early fetch) or "s3fs".
+        self._parent_first = parent_first
+        self.first_sd_source = "-"
+        self.parent_counters = {"waited_ms": 0, "listing": 0, "objects": 0,
+                                "fallbacks": 0, "object_fallbacks": 0}
+        # The stdlib arm's own requests (the early fetch's are parent_counters)
+        # and every fallback to s3fs, with its reason (the first few).
+        self._stdlib = None
+        if early == "stdlib":
+            from . import parent_fetch
+
+            self._stdlib = parent_fetch
+        self.stdlib_counters = {"lists": 0, "gets": 0, "bytes": 0,
+                                "list_fallbacks": 0, "get_fallbacks": 0}
+        self.fallback_reasons: list[str] = []
+        # Every LIST this source issued, either mode. `requests` is counted on
+        # the station path; on the day path it is the page count implied by
+        # the keys (S3_LIST_PAGE), since `fs.ls` pages internally.
+        self.list_counters = {"calls": 0, "requests": 0, "keys": 0, "max_keys": 0}
+        self.s3helper = (CompositeS3ObjectHelper(lazy_fs=True) if early == "stdlib"
+                         else CompositeS3ObjectHelper())
         logger.info(f"Done preparing s3 access to {', '.join(self.s3helper.fs.keys())}")
 
         # Fail before reading anything if this shard needs an archive the job
@@ -1178,6 +1388,248 @@ class S3DataSource:
         # is 87% EarthScope fails 87% of its work one station at a time.
         self._check_archives_reachable()
 
+        if db is None and early_channels is not None:
+            self._start_early(early_channels)
+            return
+        self._prepare_metadata()
+        self.inventory = self._get_inventory()
+        logger.info(f"Done preparing inventory for the assigned stations")
+
+    @property
+    def inventory(self):
+        """The station inventory. On the overlap path, the first access joins
+        the startup fetch and re-raises whatever it raised."""
+        if self._inventory_future is not None:
+            # Both amplitude passes ask at once on the fused arm.
+            with self._inventory_lock:
+                if self._inventory_future is not None:
+                    self._inventory = self._inventory_future.result()
+                    self._inventory_future = None
+                    timeline.mark("inventory_joined")
+                    logger.info(f"Done preparing inventory for the assigned stations")
+        return self._inventory
+
+    @inventory.setter
+    def inventory(self, value):
+        self._inventory_future = None
+        self._inventory = value
+
+    def _start_early(self, early_channels: dict[str, str]) -> None:
+        """Overlap startup: begin the inventory fetch, then the first day's
+        LIST and the first station-day's reads, in the background.
+
+        `early_channels` is the station table's `channels` per station id - the
+        column `_get_inventory` reads from the metadata. `attach_db` rebuilds
+        the request from the real metadata and discards this fetch if the two
+        differ.
+        """
+        if not self.stations or any(s not in early_channels for s in self.stations):
+            # Nothing to start from; `attach_db` fails the shard or fetches.
+            return
+        request = self._inventory_request(
+            [early_channels[s] for s in self.stations])
+        self._inventory_request_early = request
+        self._inventory_future = in_background(
+            "qs-inventory", self._fetch_inventory, *request)
+        self.startup_counters["inventory_early"] = 1
+        # The listing futures exist before the loader can look for them, and
+        # are resolved only after the first station-day's reads are
+        # registered: a loader holding the listing therefore always finds
+        # those reads, and never issues a second GET for one of them.
+        day = datetime.datetime.combine(self.start, datetime.time())
+        for net in self.networks:
+            prefix = self.s3helper.get_prefix(
+                net, day.strftime("%Y"), day.strftime("%j"))
+            if not self._lists_stations(net):
+                self._early_listing[(net, prefix)] = Future()
+        # Station listings: only the first station's, the one whose reads
+        # start here; every later station-day lists itself in the loader.
+        first_net, first_sta, _ = self.stations[0].split(".")
+        if self._lists_stations(first_net):
+            stem = self.s3helper.station_stem(first_net, first_sta)
+            prefix = self.s3helper.get_prefix(
+                first_net, day.strftime("%Y"), day.strftime("%j"))
+            self._early_listing[(first_net, prefix, stem)] = Future()
+        # The thread gets its own view: the loader pops from `_early_listing`.
+        in_background("qs-prefetch", self._prefetch_first, early_channels, day,
+                      dict(self._early_listing))
+        timeline.mark("early_started")
+
+    def attach_db(self, db: SeisBenchDatabase) -> None:
+        """Overlap startup, second half: the metadata checks the serial
+        constructor runs, before any picking. The inventory stays in flight."""
+        self.db = db
+        self._prepare_metadata()
+        request = self._inventory_request(self.meta.channels)
+        if self._inventory_request_early is None:
+            self.inventory = self._fetch_inventory(*request)
+        elif request != self._inventory_request_early:
+            # Never expected; if it happens the early answer is for a different
+            # question, so ask the right one, serially, as the serial path does.
+            self.startup_counters["inventory_request_mismatch"] = 1
+            logger.warning(f"Startup inventory request {self._inventory_request_early} "
+                           f"differs from the metadata's {request}; refetching")
+            self.inventory = self._fetch_inventory(*request)
+
+    def _prefetch_first(self, early_channels: dict[str, str],
+                        day: datetime.datetime, listings: dict) -> None:
+        """The first day's LIST for every network, then the first station-day's
+        component reads, each on its own thread. Results and exceptions are
+        both kept for `load_waveforms`, which consumes each once."""
+        outcomes = {}
+        parent = None
+        if self._parent_first is not None and self.stations:
+            first_net, first_sta, _ = self.stations[0].split(".")
+            if self._lists_stations(first_net):
+                parent = self._await_parent_first(
+                    (first_net,
+                     self.s3helper.get_prefix(first_net, day.strftime("%Y"), day.strftime("%j")),
+                     self.s3helper.station_stem(first_net, first_sta)))
+        try:
+            for key in listings:
+                net, prefix = key[:2]
+                try:
+                    if parent is not None and len(key) == 3 and list(key) == parent["key"]:
+                        listing = list(parent["listing"])
+                        self.parent_counters["listing"] += 1
+                    else:
+                        # Without the early fetch's answer the stdlib arm lists
+                        # through s3fs (the counted fallback).
+                        listing = (self._list_network_day(net, day, prefix) if len(key) == 2
+                                   else self._list_station_day(net, day, prefix, key[2],
+                                                               via_stdlib=False))
+                    outcomes[key] = (listing, None)
+                except BaseException as exc:
+                    outcomes[key] = (None, exc)
+                self.startup_counters["listing_early"] += 1
+            station = self.stations[0] if self.stations else None
+            if station is not None:
+                net, sta, loc = station.split(".")
+                channel = select_channel(early_channels[station].split(","))
+                listing = next((outcome[0] for key, outcome in outcomes.items()
+                                if key[0] == net), None)
+                if (self.s3helper.get_data_center(net) in ["scedc", "ncedc", "geonet"]
+                        and channel is not None and listing is not None):
+                    local = parent["objects"] if parent is not None else {}
+                    sources = set()
+                    for uri in self._generate_waveform_uris(net, sta, loc, channel, day):
+                        if uri in listing:
+                            key = (uri, net, None, day.year)
+                            self._prefetch_targets.add(key)
+                            if uri in local:
+                                # A file name under the parent's directory, or
+                                # the early fetch's bytes (stdlib arm).
+                                self._prefetched[key] = in_background(
+                                    "qs-prefetch-local", self._read_parent_object,
+                                    local[uri] if parent["dir"] is None
+                                    else os.path.join(parent["dir"], local[uri]),
+                                    uri, net, day.year)
+                                self.parent_counters["objects"] += 1
+                                sources.add("parent")
+                            else:
+                                if parent is not None:
+                                    self.parent_counters["object_fallbacks"] += 1
+                                    self._note_fallback(f"first_sd {uri.rsplit('/', 1)[1]}: not fetched early")
+                                self._prefetched[key] = in_background(
+                                    "qs-prefetch-get", self._read_waveform_from_s3,
+                                    uri, net, None, day.year, False)
+                                sources.add("worker")
+                            self.startup_counters["prefetched"] += 1
+                    if self._parent_first is not None and sources:
+                        local_name, own_name = (("stdlib", "s3fs") if self.early == "stdlib"
+                                                else ("parent", "worker"))
+                        self.first_sd_source = (local_name if sources == {"parent"}
+                                                else own_name)
+        finally:
+            # A listing this thread never reached resolves to None, which the
+            # loader answers with its own LIST.
+            for key, future in listings.items():
+                listing, exc = outcomes.get(key, (None, None))
+                if exc is not None:
+                    future.set_exception(exc)
+                else:
+                    future.set_result(listing)
+
+    def _await_parent_first(self, key: tuple) -> Optional[dict]:
+        """The parent's fetch of this source's first station-day: wait for its
+        event (at most PARENT_FIRST_WAIT) and return its manifest plus the
+        directory, or None - late, failed, or not this station-day - in which
+        case the caller LISTs and GETs it itself, counted as a fallback."""
+        directory, event = self._parent_first
+        timeline.mark("parent_wait")
+        t0 = time.perf_counter()
+        ready = event.wait(PARENT_FIRST_WAIT)
+        self.parent_counters["waited_ms"] = round(1000 * (time.perf_counter() - t0))
+        timeline.mark("parent_ready")
+        manifest = None
+        if ready and not isinstance(directory, str):
+            manifest = directory.take()        # the stdlib arm's in-memory fetch
+        elif ready:
+            try:
+                with open(os.path.join(directory, "manifest.json")) as fmanifest:
+                    manifest = json.load(fmanifest)
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Parent first station-day manifest unreadable: {exc}")
+        if (manifest is None or manifest.get("listing") is None
+                or manifest.get("key") != list(key)):
+            self.parent_counters["fallbacks"] += 1
+            reason = "late" if not ready else "failed or other key"
+            self._note_fallback(f"first_sd {reason}: "
+                                f"{(manifest or {}).get('errors', ['-'])[0]}")
+            logger.info(f"Parent first station-day fetch not used "
+                        f"({reason}); reading it here")
+            return None
+        for error in manifest.get("errors", []):
+            logger.info(f"Parent first station-day fetch: {error}")
+        manifest["dir"] = directory if isinstance(directory, str) else None
+        return manifest
+
+    def _read_parent_object(self, path, uri, net, year) -> obspy.Stream:
+        """One object the parent fetched: `_read_waveform_attempts` on the local
+        bytes (the size limit, obspy.read, downsample_to_target), the file
+        removed once read. Anything that goes wrong reads it from S3 instead."""
+        with self._inflight_lock:
+            self._inflight += 1
+            counters = self.startup_counters
+            counters["max_reads_in_flight"] = max(
+                counters["max_reads_in_flight"], self._inflight)
+        timeline.mark("read_start")
+        try:
+            in_memory = isinstance(path, bytes)    # the stdlib arm's early fetch
+            size = len(path) if in_memory else os.path.getsize(path)
+            if self.limit_mb is not None and size / 1024**2 > self.limit_mb:
+                logger.warning(f"mSEED is too big (%.3f MB): %s" % (size / 1024**2, uri))
+                return obspy.Stream()
+            if in_memory:
+                raw = path
+            else:
+                with open(path, "rb") as fobj:
+                    raw = fobj.read()
+                os.unlink(path)
+            buff = io.BytesIO(raw)
+            with stage("mseed.parse", unit=size, unit_name="bytes"):
+                st = obspy.read(buff)
+            self.s3helper.clear_access_denied(net, year)
+            with stage("resample"):
+                return downsample_to_target(st)
+        except Exception as exc:
+            self.parent_counters["object_fallbacks"] += 1
+            self._note_fallback(f"first_sd {uri.rsplit('/', 1)[1]}: {type(exc).__name__}")
+            logger.warning(f"Parent-fetched {uri} unusable ({type(exc).__name__}: {exc}); "
+                           f"reading it from S3")
+            return self._read_waveform_attempts(uri, net, None, year)
+        finally:
+            timeline.mark("read_end")
+            with self._inflight_lock:
+                self._inflight -= 1
+
+    def release_prefetch(self) -> None:
+        """Drop whatever the startup fetched and nobody used."""
+        self.startup_counters["prefetch_unused"] += len(self._prefetched)
+        self._prefetched.clear()
+        self._early_listing.clear()
+
+    def _prepare_metadata(self) -> None:
         self.meta = self.db.get_station_metadata(
             self.stations, {"_id": 0, "id": 1, "channels": 1}
         ).set_index("id")
@@ -1195,9 +1647,6 @@ class S3DataSource:
                 scope={"stations": missing[:20]},
             )
         logger.info(f"Done preparing metadata for the assigned stations")
-
-        self.inventory = self._get_inventory()
-        logger.info(f"Done preparing inventory for the assigned stations")
 
     def _check_archives_reachable(self) -> None:
         """Fail before reading anything if this shard needs an archive the job
@@ -1302,6 +1751,9 @@ class S3DataSource:
             list_fault = {}
             for net in self.networks:
                 avail_uri[net] = []
+                if self._lists_stations(net):
+                    # Listed per station-day below, just before its reads.
+                    continue
                 prefix = self.s3helper.get_prefix(
                     net, day.strftime("%Y"), day.strftime("%j")
                 )
@@ -1313,12 +1765,15 @@ class S3DataSource:
                     # and failed the whole shard - 16 of 48 in the 2026-09-02
                     # dry run, every one of them 5A/2018, which simply does not
                     # exist. A network-year with no data is a day with no data.
-                    fs = self.s3helper.get_filesystem(net, day.year)
-                    # One LIST per day per network. A SCEDC day prefix holds
-                    # ~4,000 objects, so this is not free and is paid again for
-                    # every day in the shard.
-                    with stage("s3.list"):
-                        listing = self.s3helper.list_day(net, fs, prefix)
+                    early = (self._early_listing.pop((net, prefix), None)
+                             if self._early_listing else None)
+                    # The overlap startup already ran this day's LIST; take its
+                    # answer, or its exception, into the same handlers below.
+                    listing = early.result() if early is not None else None
+                    if listing is not None:
+                        self.startup_counters["listing_consumed"] += 1
+                    else:
+                        listing = self._list_network_day(net, day, prefix)
                     avail_uri[net] += listing
                 except EarthScopeNoAccess as exc:
                     # 403 is a fact about access, not a transient fault.
@@ -1405,22 +1860,42 @@ class S3DataSource:
 
                 dc = self.s3helper.get_data_center(net)
                 stream, used, fault, detail = obspy.Stream(), None, None, None
+                found = False
+                # The objects this station-day can read: listed per station-day
+                # on the station path, otherwise the day's network listing.
+                avail = (self._station_listing(net, sta, day)
+                         if self._lists_stations(net) else avail_uri[net])
 
                 if dc in ["scedc", "ncedc", "geonet"]:
                     # One object per channel: the listing says which bands
                     # exist today, so the first one present is the band.
                     for channel in bands:
                         uris = [u for u in self._generate_waveform_uris(
-                            net, sta, loc, channel, day) if u in avail_uri[net]]
+                            net, sta, loc, channel, day) if u in avail]
                         if not uris:
                             continue
                         logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} {channel} @ {dc}")
-                        for uri in uris:
-                            s = await self._read_with_timeout(uri, net, station, day)
-                            fault = fault or getattr(s, "fault", None)
-                            if getattr(s, "size_mb", None) is not None:
-                                detail = f"{s.size_mb:.0f} MB"
-                            stream += s
+                        if self.concurrent_reads:
+                            # Overlap arm: the band's component reads in flight
+                            # together, joined in URI order - the order, and so
+                            # the stream, the serial loop builds. The first
+                            # exception in that order is the one raised.
+                            parts = await asyncio.gather(
+                                *(self._read_with_timeout(uri, net, station, day)
+                                  for uri in uris),
+                                return_exceptions=True,
+                            )
+                            for part in parts:
+                                if isinstance(part, BaseException):
+                                    raise part
+                        else:
+                            parts = [await self._read_with_timeout(uri, net, station, day)
+                                     for uri in uris]
+                        for s_ in parts:
+                            fault = fault or getattr(s_, "fault", None)
+                            if getattr(s_, "size_mb", None) is not None:
+                                detail = f"{s_.size_mb:.0f} MB"
+                            stream += s_
                         used = channel
                         break
                     found = used is not None
@@ -1428,7 +1903,7 @@ class S3DataSource:
                     # use the first one: they should be all same
                     r = self._generate_waveform_uris(net, sta, loc, "NA", day)[0]
                     # earthscope object name has version number
-                    uri = list(filter(lambda v: re.match(r, v), avail_uri[net]))
+                    uri = list(filter(lambda v: re.match(r, v), avail))
                     found = len(uri) > 0
                     if found:
                         logger.info(f"Load {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc}")
@@ -1440,19 +1915,19 @@ class S3DataSource:
                         # downloaded once; `_read_first_matching` tries each
                         # band's selector against those bytes, so a fallback
                         # band costs another parse, never another GET.
-                        s = await self._read_with_timeout(
+                        s_ = await self._read_with_timeout(
                             uri[0], net, station, day,
                             sourcename=[f"{net}.{sta}.{loc}.{b}?" for b in bands])
-                        fault = getattr(s, "fault", None)
-                        band = getattr(s, "band", None)
-                        if getattr(s, "size_mb", None) is not None:
-                            detail = f"{s.size_mb:.0f} MB"
+                        fault = getattr(s_, "fault", None)
+                        band = getattr(s_, "band", None)
+                        if getattr(s_, "size_mb", None) is not None:
+                            detail = f"{s_.size_mb:.0f} MB"
                         if band:
-                            s = s.select(channel=f"{band}?", location=loc)
-                            if len(s) > 0:
-                                stream, used = s, band
-                        elif getattr(s, "present", None) is not None:
-                            detail = f"object holds {','.join(s.present) or 'nothing'}"
+                            s_ = s_.select(channel=f"{band}?", location=loc)
+                            if len(s_) > 0:
+                                stream, used = s_, band
+                        elif getattr(s_, "present", None) is not None:
+                            detail = f"object holds {','.join(s_.present) or 'nothing'}"
                 else:
                     raise NotImplemented(f"Data center not supported: {dc}")
 
@@ -1461,6 +1936,7 @@ class S3DataSource:
                         logger.info(f"{station} {day:%Y.%j}: picking {used}; "
                                     f"{bands[0]} absent that day")
                     self._outcome(station, day, "loaded", used)
+                    timeline.mark("sd_loaded")
                     # yield stream with all candidate channels for one station, day long stream, with metadata
                     yield [stream, station, day]
                 else:
@@ -1469,6 +1945,138 @@ class S3DataSource:
                     logger.info(
                         f"Skip {station.ljust(14)} {day.strftime('%Y.%j')} @ {dc} < {status}"
                     )
+        self.release_prefetch()
+
+    def _list_network_day(self, net, day, prefix) -> list:
+        """One network's LIST for one day; the caller handles what it raises."""
+        # INSIDE the caller's try: acquiring the filesystem can itself raise
+        # FileNotFoundError (see `load_waveforms`).
+        fs = self.s3helper.get_filesystem(net, day.year)
+        # One LIST per day per network. A SCEDC day prefix holds
+        # ~4,000 objects, so this is not free and is paid again for
+        # every day in the shard.
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                listing = self.s3helper.list_day(net, fs, prefix)
+        finally:
+            timeline.mark("list_end")
+        self._count_list(len(listing), max(1, -(-len(listing) // S3_LIST_PAGE)))
+        return listing
+
+    def _lists_stations(self, net) -> bool:
+        """Whether this network's station-days are listed one station at a time."""
+        return self.list_mode == "station" and self.s3helper.lists_stations_of(net)
+
+    def _list_station_day(self, net, day, prefix, stem, via_stdlib=True) -> list:
+        """One station's LIST for one day (`list_mode="station"`); the caller
+        handles what it raises, as for `_list_network_day`. The stdlib arm
+        LISTs SCEDC over HTTPS first (`via_stdlib`), then through s3fs."""
+        if via_stdlib and self._uses_stdlib(net):
+            listing = self._stdlib_list(prefix, stem)
+            if listing is not None:
+                return listing
+        fs = self.s3helper.get_filesystem(net, day.year)
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                listing, requests = self.s3helper.list_station_day(net, fs, prefix, stem)
+        finally:
+            timeline.mark("list_end")
+        self._count_list(len(listing), requests)
+        return listing
+
+    def _uses_stdlib(self, net) -> bool:
+        """Whether this network's LISTs and GETs go through the stdlib client first."""
+        return self._stdlib is not None and self.s3helper.get_data_center(net) == "scedc"
+
+    def _note_fallback(self, reason: str) -> None:
+        if len(self.fallback_reasons) < 5:
+            self.fallback_reasons.append(reason.replace(" ", "_").replace(",", ";")[:96])
+
+    def _stdlib_list(self, prefix, stem) -> Optional[list]:
+        """`list_station_day` over the stdlib client: the same `bucket/key`
+        names, sorted; None (counted, logged) if it raised."""
+        timeline.mark("list_start")
+        try:
+            with stage("s3.list"):
+                listing, requests = self._stdlib.list_station_day(prefix, stem)
+        except Exception as exc:
+            self.stdlib_counters["list_fallbacks"] += 1
+            self._note_fallback(f"list {stem}: {type(exc).__name__}")
+            logger.warning(f"stdlib LIST {prefix}{stem} failed ({type(exc).__name__}: "
+                           f"{exc}); listing it through s3fs")
+            return None
+        finally:
+            timeline.mark("list_end")
+        self.stdlib_counters["lists"] += 1
+        self._count_list(len(listing), requests)
+        return listing
+
+    def _stdlib_read(self, uri, net, sourcename, year) -> Optional[obspy.Stream]:
+        """`_read_waveform_attempts` over the stdlib client, without the HEAD:
+        the size limit from the GET's Content-Length, then the same parse and
+        downsample. None (counted, logged) if anything raised, and the caller
+        reads it through s3fs, whose handlers then decide."""
+        try:
+            limit = None if self.limit_mb is None else self.limit_mb * 1024**2
+            with stage("s3.get"):
+                raw = self._stdlib.get_bytes(uri, limit=limit)
+            if raw is None:
+                logger.warning(f"mSEED is too big (over %.3f MB): %s" % (self.limit_mb, uri))
+                return obspy.Stream()
+            buff = io.BytesIO(raw)
+            with stage("mseed.parse", unit=len(raw), unit_name="bytes"):
+                if sourcename:
+                    st = self._read_first_matching(raw, sourcename)
+                else:
+                    st = obspy.read(buff)
+            if getattr(st, "fault", None):
+                return st
+            self.s3helper.clear_access_denied(net, year)
+            with stage("resample"):
+                st = downsample_to_target(st)
+        except Exception as exc:
+            self.stdlib_counters["get_fallbacks"] += 1
+            self._note_fallback(f"get {uri.rsplit('/', 1)[1]}: {type(exc).__name__}")
+            logger.warning(f"stdlib GET {uri} failed ({type(exc).__name__}: {exc}); "
+                           f"reading it through s3fs")
+            return None
+        self.stdlib_counters["gets"] += 1
+        self.stdlib_counters["bytes"] += len(raw)
+        return st
+
+    def _station_listing(self, net, sta, day) -> list:
+        """The objects of one station-day: the startup's LIST if it ran this
+        one, else a LIST now. Kept for the rest of the run, never beyond it.
+
+        A missing day prefix is a day with no data, as on the day path; a
+        LIST that fails any other way fails the shard, as it does there.
+        """
+        prefix = self.s3helper.get_prefix(net, day.strftime("%Y"), day.strftime("%j"))
+        key = (net, prefix, self.s3helper.station_stem(net, sta))
+        if key in self._station_listings:
+            return self._station_listings[key]
+        try:
+            early = (self._early_listing.pop(key, None)
+                     if self._early_listing else None)
+            listing = early.result() if early is not None else None
+            if listing is not None:
+                self.startup_counters["listing_consumed"] += 1
+            else:
+                listing = self._list_station_day(net, day, prefix, key[2])
+        except FileNotFoundError:
+            logger.debug(f"Path does not exist {prefix}{key[2]}")
+            listing = []
+        self._station_listings[key] = listing
+        return listing
+
+    def _count_list(self, keys: int, requests: int) -> None:
+        counters = self.list_counters
+        counters["calls"] += 1
+        counters["requests"] += requests
+        counters["keys"] += keys
+        counters["max_keys"] = max(counters["max_keys"], keys)
 
     def _log_once(self, key: str, message: str) -> None:
         """Say it at ERROR the first time and at DEBUG after.
@@ -1505,12 +2113,22 @@ class S3DataSource:
         (447 minutes on one GET, no log line, killed by Spot) got past having
         neither.
         """
+        # A list of band selectors (EarthScope) is not hashable; the prefetch
+        # keys are built from a single selector or None, so the tuple form
+        # matches those and never raises.
+        key = (uri, net, tuple(sourcename) if isinstance(sourcename, list) else sourcename, day.year)
+        pending = self._prefetched.pop(key, None) if self._prefetched else None
+        if pending is not None:
+            # Started at worker startup; wait for it under the same bound.
+            self.startup_counters["prefetch_consumed"] += 1
+            read = asyncio.to_thread(pending.result)
+        else:
+            if key in self._prefetch_targets:
+                self.startup_counters["prefetch_fallbacks"] += 1
+            read = asyncio.to_thread(self._read_waveform_from_s3, uri, net,
+                                     sourcename, day.year)
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self._read_waveform_from_s3, uri, net,
-                                  sourcename, day.year),
-                timeout=STATION_DAY_TIMEOUT,
-            )
+            return await asyncio.wait_for(read, timeout=STATION_DAY_TIMEOUT)
         except asyncio.TimeoutError:
             logger.error(
                 f"Timeout after {STATION_DAY_TIMEOUT:.0f}s reading {uri} for "
@@ -1520,9 +2138,13 @@ class S3DataSource:
             return _empty("timeout")
 
     def _read_waveform_from_s3(self, uri, net, sourcename=None,
-                               year=None) -> obspy.Stream:
+                               year=None, via_stdlib=True) -> obspy.Stream:
         """
         Failure tolerant method for reading data from S3.
+
+        Keep this entry point for waveform reads. It owns concurrent-read
+        accounting and optional transport selection; `_read_waveform_attempts`
+        retains the s3fs retry and credential-handling logic.
 
         `sourcename` is a libmseed record selector, e.g. "AK.PS09..HH?". Records
         that do not match are skipped **before** being decoded, which matters on
@@ -1544,6 +2166,25 @@ class S3DataSource:
         TypeError: certain types of empty mSEED files, i.e. in NCEDC
 
         """
+        with self._inflight_lock:
+            self._inflight += 1
+            counters = self.startup_counters
+            counters["max_reads_in_flight"] = max(
+                counters["max_reads_in_flight"], self._inflight)
+        timeline.mark("read_start")
+        try:
+            if via_stdlib and self._uses_stdlib(net):
+                st = self._stdlib_read(uri, net, sourcename, year)
+                if st is not None:
+                    return st
+            return self._read_waveform_attempts(uri, net, sourcename, year)
+        finally:
+            timeline.mark("read_end")
+            with self._inflight_lock:
+                self._inflight -= 1
+
+    def _read_waveform_attempts(self, uri, net, sourcename, year) -> obspy.Stream:
+        """The s3fs retry loop used by `_read_waveform_from_s3` and prefetch fallback."""
         # A refresh fixes an *expired* credential. It cannot fix a credential
         # that was never allowed to read the object, and retrying one forever is
         # indistinguishable from a hang: a profiling shard sat on a single
@@ -1681,7 +2322,7 @@ class S3DataSource:
                     )
                     return _empty("read_error")
                 time.sleep(self._backoff(busy))
-            except ClientError:
+            except _client_error():
                 busy += 1
                 if busy > S3_BUSY_ATTEMPTS:
                     logger.error(
@@ -1755,6 +2396,11 @@ class S3DataSource:
         return uris
 
     def _get_inventory(self):
+        return self._fetch_inventory(*self._inventory_request(self.meta.channels))
+
+    def _inventory_request(self, channels) -> tuple[str, str, str]:
+        """(network, station, channel) codes for the shard's FDSN request;
+        `channels` is the station table's `channels` column."""
         sta_code = ",".join([i.split(".")[1] for i in self.stations])
         net_code = ",".join(self.networks)
         # Take the band code and add the component wildcard. The metadata may
@@ -1764,10 +2410,19 @@ class S3DataSource:
         # below used to treat that permanent error as a busy server and spin on
         # it forever, so a whole campaign burned vCPU without picking anything.
         cha_code = ",".join(sorted(
-            {f"{str(j).strip()[:2]}?" for i in self.meta.channels
+            {f"{str(j).strip()[:2]}?" for i in channels
              for j in str(i).split(",") if str(j).strip()}
         ))
+        return net_code, sta_code, cha_code
 
+    def _fetch_inventory(self, net_code, sta_code, cha_code):
+        timeline.mark("inventory_start")
+        try:
+            return self._fetch_inventory_attempts(net_code, sta_code, cha_code)
+        finally:
+            timeline.mark("inventory_ready")
+
+    def _fetch_inventory_attempts(self, net_code, sta_code, cha_code):
         for attempt in range(1, FDSN_ATTEMPTS + 1):
             try:
                 client = obspy.clients.fdsn.Client("EARTHSCOPE")
