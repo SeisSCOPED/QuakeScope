@@ -1,7 +1,7 @@
 # 35. wc2025 station-days missing from western: causes and the `western-gaps` queue
 
 2026-11-10. Junhao Song compared the 2025 West Coast picks (wc2025) with
-`western/` + `obs/` (wc2026), over -134 to -108 E, 22 to 53 N, 2002-01-01 to
+`western/` + `obs/` (wc2026), over 134 to 108 W, 22 to 53 N, 2002-01-01 to
 2025-03-31. He sent `stations_compared.csv` (16,953 stations) and
 `missing_station_days.parquet`: 553,672 station-days with picks in wc2025 and
 none in wc2026, each with a reason. This document traces each reason to its

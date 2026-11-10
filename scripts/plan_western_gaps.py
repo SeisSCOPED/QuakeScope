@@ -2,7 +2,7 @@
 """Plan `western-gaps`: the wc2025 station-days the western catalogue lacks and can read.
 
 Input is the comparison Junhao Song made on 2026-11-10 between the 2025 West
-Coast picks (wc2025) and western/ + obs/ (wc2026), over -134..-108 E, 22..53 N,
+Coast picks (wc2025) and western/ + obs/ (wc2026), over 134..108 W, 22..53 N,
 2002-01-01..2025-03-31: `missing_station_days.parquet`, one row per station-day
 with picks in wc2025 and none in wc2026, and the reason he assigned.
 
@@ -96,7 +96,9 @@ def absent_stations(missing: pd.DataFrame, wc_list: str, western: pd.DataFrame) 
                          "elevation": meta[sid]["elev"],
                          "start_date": w[0][0], "end_date": w[-1][1],
                          "epochs": ";".join(f"{a}/{b}" for a, b in w)})
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=["id", "network_code", "station_code", "location_code", "channels",
+                                     "latitude", "longitude", "elevation", "start_date", "end_date",
+                                     "epochs"])
     got = set(zip(df.network_code, df.station_code))
     unknown = [(n, s) for n, ss in by_net.items() for s in ss if (n, s) not in got]
     if unknown:
@@ -177,7 +179,7 @@ def main() -> None:
     missing = pd.read_parquet(a.missing)
     western = pd.read_parquet(f"s3://{BUCKET}/{CATALOGUE}/stations.parquet")
     absent = absent_stations(missing, a.list, western)
-    holes, h_shards = hole_shards(missing, western, set(a.skip_networks.split(",")))
+    holes, h_shards = hole_shards(missing, western, {n.strip() for n in a.skip_networks.split(",") if n.strip()})
 
     a_shards = plan(absent, parse_year_day(START), parse_year_day(END))
     print(f"absent: {len(a_shards):,} shards, {sum(s['n_station_days'] for s in a_shards):,} "
