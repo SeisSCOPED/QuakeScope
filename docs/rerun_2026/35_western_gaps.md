@@ -89,3 +89,102 @@ After the run: the absent stations will have picks under `western/` that
 `western/stations.parquet` does not list. Merge the queue table into it with
 `scripts/merge_station_tables.py --campaign western` (issue #46), then rebuild
 `western/availability/`.
+
+## Result (read 2026-11-12)
+
+The queue ran from 2026-11-11 13:29 to 2026-11-12 02:36 UTC, on 300 Fargate
+Spot workers dispatched through Fleet. Every number below comes from the
+queue's `complete/` and `blocked/` objects, the shards' manifests under
+`western/manifests/`, and Batch's job attempts (boto3), all read on
+2026-11-12.
+
+| | value |
+|---|--:|
+| shards complete | 8,504 of 8,549 |
+| shards blocked: EO 2020, 2021, 2022 (EarthScope 403, embargo) | 45, 741 planned station-days |
+| station-days with an outcome | 324,964 |
+| loaded and picked | 188,600 |
+| `no_data` (no day object in EarthScope S3) | 114,007 |
+| `done` (already picked by an earlier attempt of the same shard) | 21,600 |
+| `empty_read` | 1,438 |
+| `too_big` (over the default 200 MB) | 439 |
+| picks written | 62,952,133 |
+| Batch: jobs, attempts, Spot interruptions | 600, 817, 217 |
+| vCPU-hours, summed over attempts | 2,509 |
+| cost at $0.0213 per vCPU-hour | about $53 |
+
+The `done` days are not double work: a shard that loses its worker to a Spot
+interruption returns to the queue, and the next worker skips the station-days
+the first one already wrote (`s3_helper.py`, the resume check).
+
+### Stations added to the western catalogue
+
+All 78 absent stations (84 station-locations) now have picks: 58,458,219
+picks over 165,415 station-days read. Two station-locations have none:
+NC.KTD.20 (HN only, 2,461 days with no object) and OW.PRAL.W2 (HN, 298
+`empty_read`); their other locations have picks.
+
+| region (nearest admin-1 polygon) | stations | station-locations | station-days read | picks |
+|---|--:|--:|--:|--:|
+| British Columbia | 46 | 47 | 82,809 | 29,336,217 |
+| Oregon | 4 | 4 | 11,006 | 14,727,040 |
+| Washington | 19 | 22 | 33,879 | 8,429,134 |
+| California | 9 | 11 | 37,721 | 5,965,828 |
+| total | 78 | 84 | 165,415 | 58,458,219 |
+
+BK.MCCM, C8.BCOV, C8.PA01, C8.PA02, C8.PA05, C8.PA12, C8.TLCB, C8.TOFB,
+CI.SBI, CN.BBB, CN.BCBC, CN.BFSB, CN.BIB, CN.BMSB, CN.ETB, CN.HG3B, CN.NTKA,
+CN.PABB, CN.PACB, CN.PGC, CN.TKWB, CN.TOFB, NC.CAG, NC.CAI, NC.CYB, NC.KTD,
+NP.7040, OW.BAMF, OW.BCOV, OW.GLDR, OW.KYUQ, OW.PALI, OW.PGC5, OW.PRAL,
+OW.QISL, OW.SAYW, OW.SC04, OW.TFNO, OW.UCLU, PB.B009, PB.B010, PB.B011,
+PB.B012, PB.B927, PB.B928, PO.VI50, UW.ALKI, UW.BAYC, UW.BES5, UW.BOOK,
+UW.BRPT, UW.BST19, UW.BST22, UW.CABL, UW.CHZZ, UW.CNNB, UW.GUEM, UW.HART,
+UW.LOPEZ, UW.MAPLE, UW.MEW, UW.MNWA, UW.NEWO, UW.OLGA, UW.QOUT, UW.QPRK,
+UW.QTNB, UW.SMOO, XH.SOOK0, XY.BS01, XY.BS02, XY.BS03, XY.BS04, XY.BS04M,
+XY.BS06, ZY.B508, ZY.B509, ZY.B510.
+
+The hole windows read 23,185 station-days on 2,236 station-locations already
+in the table, 2,118 of which produced picks (4,493,914).
+
+### `too_big` repair
+
+The 439 `too_big` station-days (23 stations: UW 12, RE 4, PB 3, OW 2, PY 1,
+UU 1) were taken from the manifests' outcomes and appended on 2026-11-12 as 64
+shards to the existing `western-toobig` queue, which already runs with
+`limit_mb` 4096 and 2 processes on `quakescope_2026_western:30`. The previous
+`shards.jsonl`, `stations.parquet` and `plan.json` are kept beside them as
+`*.before-2026-11-12`; `plan.json` lists the addition under `appended`.
+
+### The station slate, from now on
+
+The selection bug is fixed in `scripts/plan_western_fill.py:where()`: a
+station outside every admin-1 polygon is offshore only at or below -10 m, the
+obs floor, and otherwise takes the nearest polygon. The two selections are now
+complementary by construction, and `tests/test_western_region.py` holds the
+cases (shoreline, the -7.7 m BK.MCCM, deep, unknown elevation). On the
+stakeholder list the fix moves 110 stations from "offshore" to a land region
+(59 British Columbia, 31 Washington, 14 California, 4 Oregon, 1 Baja
+California, 1 Sonora), and covers all 78 added here.
+
+`scripts/merge_station_tables.py` now merges `_queues/western-gaps/` into
+`western/stations.parquet`, so the 84 new station-locations are in the public
+table with their region in `state`. That table is the western station slate:
+a future western campaign plans from it, not by re-running a polygon
+selection. A copy as merged is committed as
+`sb_catalog/configs/networks/western_stations_2026-11-12.csv`, with its
+SHA-256 in the section below.
+
+### The committed slate
+
+| | |
+|---|---|
+| file | `sb_catalog/configs/networks/western_stations_2026-11-12.csv` |
+| rows | 26,461 station-locations (26,377 published before, plus 84) |
+| SHA-256 | `6322015524c769c4e6d51635d044ac6e7f379d9356d46b7e059daa10a06053f3` |
+| made by | `python scripts/merge_station_tables.py --campaign western --dry-run --snapshot <file>`, 2026-11-12, against 170,503 manifests: no duplicate id, every station with picks covered |
+
+The same command with `--write` publishes this table to
+`western/stations.parquet`, after backing up the current one to
+`western/.backup/`. Rerun with `--snapshot` to a scratch file afterwards and
+compare the SHA-256: equal means the bucket and the repository hold the same
+slate.

@@ -12,6 +12,8 @@ way.
 
     python scripts/merge_station_tables.py --campaign western --dry-run
     python scripts/merge_station_tables.py --campaign western --write
+    python scripts/merge_station_tables.py --campaign western --dry-run \
+        --snapshot sb_catalog/configs/networks/western_stations_<date>.csv
 
 The write backs the current table up first, because bucket versioning is off
 and an overwrite cannot be undone. It refuses to write a table with a repeated
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import io
 import json
 import sys
@@ -49,7 +52,11 @@ _s3 = boto3.client("s3", config=Config(region_name=REGION, max_pool_connections=
 # campaign's prefix contributes its stations to that prefix's table.
 CONTRIBUTORS = {
     "western": ["_queues/western-fill/stations.parquet",
-                "_queues/western-fill2/stations.parquet"],
+                "_queues/western-fill2/stations.parquet",
+                # 84 shoreline, island and BC station-locations the region
+                # bug left out of every catalogue (docs/rerun_2026/35); the
+                # queue's 2,236 hole rows are already in the table.
+                "_queues/western-gaps/stations.parquet"],
     # obs-fill adds offshore stations found in the global table and in no
     # table at all (docs/rerun_2026/31); obs-el and obs-2026 re-plan stations
     # the obs table already lists.
@@ -138,7 +145,7 @@ def check(campaign: str) -> dict:
     return out | {"orphan_ids": sorted(orphan)}
 
 
-def merge(campaign: str, write: bool) -> None:
+def merge(campaign: str, write: bool, snapshot: str | None = None) -> None:
     inv = read_parquet(f"{campaign}/stations.parquet")
     print(f"  published table: {len(inv):,} rows, {inv.id.nunique():,} unique ids")
     parts = [inv]
@@ -168,8 +175,23 @@ def merge(campaign: str, write: bool) -> None:
         raise ValueError(f"the merge does not cover {len(orphan)} station(s) that have "
                          f"picks, e.g. {sorted(orphan)[:5]}")
 
+    from sb_catalog.src.s3_state import prepare_station_dates
+    from sb_catalog.src.utils import normalize_station_codes
+    # The contributor tables under _queues/ carry the CSV-parse damage in their
+    # code columns ("0.0" for "00"); rebuild them from `id` so a merge cannot
+    # copy it back into the published table.
+    merged = prepare_station_dates(normalize_station_codes(merged))
+
+    if snapshot:
+        # The committed copy of the slate (docs/rerun_2026/35): sorted by id so
+        # the same table always gives the same file and the same SHA-256.
+        snap = merged.sort_values("id").reset_index(drop=True)
+        snap.to_csv(snapshot, index=False)
+        digest = hashlib.sha256(Path(snapshot).read_bytes()).hexdigest()
+        print(f"\n  snapshot: {len(snap):,} rows to {snapshot}, sha256 {digest}")
+
     if not write:
-        print("\n  dry run, nothing written. Pass --write to publish.")
+        print("\n  dry run, nothing written to S3. Pass --write to publish.")
         return
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -178,12 +200,6 @@ def merge(campaign: str, write: bool) -> None:
     _s3.put_object(Bucket=BUCKET, Key=backup, Body=body)
     print(f"\n  backed up the current table to s3://{BUCKET}/{backup} ({len(body) / 1e6:.2f} MB)")
 
-    from sb_catalog.src.s3_state import prepare_station_dates
-    from sb_catalog.src.utils import normalize_station_codes
-    # The contributor tables under _queues/ carry the CSV-parse damage in their
-    # code columns ("0.0" for "00"); rebuild them from `id` so a merge cannot
-    # copy it back into the published table.
-    merged = prepare_station_dates(normalize_station_codes(merged))
     buf = io.BytesIO()
     merged.to_parquet(buf, index=False)
     _s3.put_object(Bucket=BUCKET, Key=f"{campaign}/stations.parquet", Body=buf.getvalue())
@@ -204,8 +220,9 @@ if __name__ == "__main__":
     ap.add_argument("--check", action="store_true", help="report the invariant, write nothing")
     ap.add_argument("--dry-run", action="store_true", help="build the merge, write nothing")
     ap.add_argument("--write", action="store_true", help="publish, after backing up")
+    ap.add_argument("--snapshot", help="also write the merged table, sorted by id, to this CSV")
     a = ap.parse_args()
     if a.check:
         check(a.campaign)
     else:
-        merge(a.campaign, write=a.write)
+        merge(a.campaign, write=a.write, snapshot=a.snapshot)

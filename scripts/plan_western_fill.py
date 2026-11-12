@@ -48,17 +48,35 @@ def regions():
         adm = r.attributes["admin"]
         if adm in ("United States of America", "Canada", "Mexico"):
             name = r.attributes["name"] + ("" if adm == "United States of America" else f" ({adm[:2]})")
-            out.append((name, prep(r.geometry)))
+            out.append((name, prep(r.geometry), r.geometry))
     return out
 
 
-def where(polys, lat, lon):
+# The obs selection (scripts/select_offshore_stations.py) takes a station only
+# when it is off the land mask AND at or below this depth. Western must take
+# everything obs refuses, or a station lands in neither catalogue.
+OFFSHORE_DEPTH = -10.0      # metres, = select_offshore_stations.DEPTH_FLOOR
+
+
+def where(polys, lat, lon, elevation=None):
+    """Admin-1 region of a station, or "offshore" if it belongs to obs.
+
+    Until 2026-11-12 a point outside every polygon was "offshore". Natural
+    Earth's generalised coastline leaves islands and shoreline stations outside
+    every polygon, obs then rejected them as land (above -10 m), and 156
+    stakeholder stations (NC.CYB, CI.SBI, UW.ALKI, the BC coast...) were in no
+    catalogue: docs/rerun_2026/35. Now a point outside every polygon is
+    offshore only when it is at or below OFFSHORE_DEPTH; otherwise it takes
+    the nearest polygon. An unknown elevation keeps the old behaviour.
+    """
     from shapely.geometry import Point
     p = Point(lon, lat)
-    for name, g in polys:
-        if g.contains(p):
+    for name, prepared, _ in polys:
+        if prepared.contains(p):
             return name
-    return "offshore"
+    if elevation is None or pd.isna(elevation) or float(elevation) <= OFFSHORE_DEPTH:
+        return "offshore"
+    return min(polys, key=lambda t: t[2].distance(p))[0]
 
 
 def yd(t):
@@ -147,7 +165,8 @@ def main() -> None:
     have = set(zip(western.network_code, western.station_code))
     absent = wc[[(n, s) not in have for n, s in zip(wc.net, wc.sta)]].copy()
     polys = regions()
-    absent["region"] = [where(polys, la, lo) for la, lo in zip(absent.Lat, absent.Lon)]
+    absent["region"] = [where(polys, la, lo, el)
+                        for la, lo, el in zip(absent.Lat, absent.Lon, absent.Elevation)]
     land = absent[absent.region != "offshore"]
     print(f"list {len(wc):,} stations; in western {len(wc) - len(absent):,}; absent {len(absent):,}, "
           f"of which offshore (obs) {int((absent.region == 'offshore').sum()):,}, land {len(land):,}")
