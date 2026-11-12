@@ -373,6 +373,18 @@ QuakeScope/
 - ObsPy, SeisBench, PyOcto (see [INSTALL.md](INSTALL.md) or [INSTALL_TUTORIALS.md](INSTALL_TUTORIALS.md))
 - AWS account (for cloud deployment)
 
+## Acknowledgments
+
+QuakeScope was developed as part of the Seismic COmputational Platform for
+Empowering Discovery (SCOPED) project. This material is based upon work
+supported by the U.S. National Science Foundation under Award No. OAC-2103701
+(University of Washington), part of the collaborative SCOPED awards
+OAC-2104052, OAC-2103621, OAC-2103741 and OAC-2103494.
+
+Any opinions, findings, and conclusions or recommendations expressed in this
+material are those of the author(s) and do not necessarily reflect the views
+of the National Science Foundation.
+
 ## License
 
 [See LICENSE file](LICENSE)
