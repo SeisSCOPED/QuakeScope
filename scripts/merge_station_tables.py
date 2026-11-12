@@ -217,12 +217,18 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--campaign", default="western")
-    ap.add_argument("--check", action="store_true", help="report the invariant, write nothing")
-    ap.add_argument("--dry-run", action="store_true", help="build the merge, write nothing")
-    ap.add_argument("--write", action="store_true", help="publish, after backing up")
+    # One mode at a time: `--dry-run --write` used to publish, because only
+    # `--write` was read. With no mode the merge is built and nothing is written.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="report the invariant, write nothing")
+    mode.add_argument("--dry-run", action="store_true",
+                      help="build the merge, write nothing to S3 (the default)")
+    mode.add_argument("--write", action="store_true", help="publish, after backing up")
     ap.add_argument("--snapshot", help="also write the merged table, sorted by id, to this CSV")
     a = ap.parse_args()
+    if a.check and a.snapshot:
+        ap.error("--snapshot needs a merge: use it with --dry-run or --write")
     if a.check:
         check(a.campaign)
     else:
-        merge(a.campaign, write=a.write, snapshot=a.snapshot)
+        merge(a.campaign, write=a.write and not a.dry_run, snapshot=a.snapshot)
