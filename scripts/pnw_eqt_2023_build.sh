@@ -5,6 +5,8 @@
 #
 #   bash scripts/pnw_eqt_2023_build.sh WORKDIR [EXPECT_PICKS EXPECT_FILES]
 #
+# PARALLEL (default 2) sets how many years download and convert at once; each
+# conversion buffers up to 1.5 M picks, so allow ~1.5 GB of memory per year.
 # Uploads only if scripts/pnw_eqt_2023_finalize.py passes. Progress goes to
 # WORKDIR/log.txt and, when LOG_S3 is set, is copied there every few minutes.
 set -uo pipefail
@@ -42,7 +44,7 @@ export W REPO DASWAY
 
 log "start, repo $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
 push_log
-seq 2002 2023 | xargs -P 4 -I{} bash -c 'year {}'
+seq 2002 2023 | xargs -P "${PARALLEL:-2}" -I{} bash -c 'year {}'
 n_ok=$(grep -c " ok {" "$W/log.txt")
 [ "$n_ok" = 22 ] || { log "only $n_ok of 22 years converted, not uploading"; push_log; exit 1; }
 
