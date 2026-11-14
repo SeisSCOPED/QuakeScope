@@ -49,11 +49,11 @@ import uuid
 from collections import defaultdict
 from typing import Any, Optional
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 import fsspec
-import s3fs
 
 from .profiling import stage
 
@@ -94,6 +94,50 @@ CLASSIFY_SCHEMA = pa.schema(
 def _network_of(station_id: str) -> str:
     """Network code from a NET.STA.LOC id."""
     return station_id.split(".")[0] if "." in station_id else "unknown"
+
+
+_EPOCH = datetime.datetime(1970, 1, 1)
+_MS = datetime.timedelta(milliseconds=1)
+
+
+def table_from_buffers(rows: list[dict], schema: pa.Schema) -> Optional[pa.Table]:
+    """`pa.Table.from_pylist(rows, schema=schema)` built from Arrow buffers that numpy fills, for
+    rows that hold exactly the schema's keys with a `str` for every string field, a naive
+    `datetime.datetime` from 1970 on for every timestamp[ms] field (pyarrow's conversion: whole
+    milliseconds since the epoch, microseconds truncated) and a `float` for every float32 field
+    (cast to float32, NaN kept as a value); None for any other row set. pyarrow's own conversion of
+    Python objects imports pandas on its first call (pyarrow's pandas shim); this does not."""
+    names = set(schema.names)
+    if not rows or any(row.keys() != names for row in rows):
+        return None
+    n = len(rows)
+    arrays = []
+    for field in schema:
+        values = [row[field.name] for row in rows]
+        if field.type == pa.string():
+            if any(type(v) is not str for v in values):
+                return None
+            encoded = [v.encode("utf-8") for v in values]
+            offsets = np.zeros(n + 1, dtype=np.int64)
+            np.cumsum([len(b) for b in encoded], out=offsets[1:])
+            if offsets[-1] >= 2**31:
+                return None
+            buffers = [None, pa.py_buffer(offsets.astype(np.int32)), pa.py_buffer(b"".join(encoded))]
+        elif field.type == pa.timestamp("ms"):
+            if any(type(v) is not datetime.datetime or v.tzinfo is not None or v < _EPOCH
+                   for v in values):
+                return None
+            buffers = [None, pa.py_buffer(np.array([(v - _EPOCH) // _MS for v in values],
+                                                   dtype=np.int64))]
+        elif field.type == pa.float32():
+            if any(type(v) is not float for v in values):
+                return None
+            with np.errstate(over="ignore"):            # +-inf past float32's range, as pyarrow
+                buffers = [None, pa.py_buffer(np.array(values, dtype=np.float64).astype(np.float32))]
+        else:
+            return None
+        arrays.append(pa.Array.from_buffers(field.type, n, buffers, null_count=0))
+    return pa.Table.from_arrays(arrays, schema=schema)
 
 
 class ParquetPickWriter:
@@ -139,6 +183,10 @@ class ParquetPickWriter:
         # local root works for tests and dry runs - which _ensure_parent already
         # claimed to support, but could not, because this was hardcoded.
         if self.root.startswith("s3://"):
+            # Keep S3 output on s3fs with the caller's storage options. Defer
+            # the import so local output does not load the S3 client stack.
+            import s3fs
+
             self.fs = s3fs.S3FileSystem(**(storage_options or {}))
         else:
             self.fs = fsspec.filesystem(
@@ -162,6 +210,11 @@ class ParquetPickWriter:
         # checkpointed, as (tid, yr, doy, cha). Their files are already in
         # the bucket; close() finds them and puts them in the manifest.
         self._prior_done: set[tuple] = {tuple(e) for e in (prior_done or ())}
+        #: QS_SBLITE=on (sb_catalog.src.sb_lite; pick_workload exports the arm to its workers): encode
+        #: through `table_from_buffers`, so the worker never imports pandas; a row set it does not
+        #: cover goes through from_pylist, counted. Partitions encoded each way:
+        self.lite_encode = os.environ.get("QS_SBLITE") == "on"
+        self.encode_counters = {"buffers": 0, "pylist": 0}
 
     @staticmethod
     def _infer_job_id() -> str:
@@ -333,7 +386,10 @@ class ParquetPickWriter:
         # is network to S3, and they scale with different things. The comparison
         # against DocumentDB's per-station-day insert_many needs both.
         with stage("parquet.encode", unit=len(rows), unit_name="row"):
-            table = pa.Table.from_pylist(rows, schema=schema)
+            table = table_from_buffers(rows, schema) if self.lite_encode else None
+            self.encode_counters["buffers" if table is not None else "pylist"] += 1
+            if table is None:
+                table = pa.Table.from_pylist(rows, schema=schema)
         self._ensure_parent(path)
         with stage("parquet.put", unit=len(rows), unit_name="row"):
             with self.fs.open(path, "wb") as fh:

@@ -7,12 +7,15 @@ client lives in `mongo_db` and is re-exported lazily below, so existing
 picking job depend on a database driver it never opens.
 """
 
+from __future__ import annotations
+
 import datetime
 import math
 import re
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import pandas as pd
+if TYPE_CHECKING:               # pandas is imported where it is used, so the
+    import pandas as pd         # module stays cheap to import on every shard
 
 
 def __getattr__(name: str) -> Any:
@@ -51,6 +54,8 @@ _NUMBER_LIKE_RE = re.compile(r"^\d+\.\d*$")
 
 def read_station_csv(path, **kwargs) -> pd.DataFrame:
     """A station CSV with every identifier kept as the text it was written as."""
+    import pandas as pd
+
     return pd.read_csv(path, dtype={c: str for c in STATION_TEXT_COLUMNS},
                        keep_default_na=False, na_values={"latitude": [""],
                        "longitude": [""], "elevation": [""]}, **kwargs)

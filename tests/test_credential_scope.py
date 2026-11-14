@@ -26,6 +26,8 @@ import datetime
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sb_catalog.src.s3_helper import CompositeS3ObjectHelper
@@ -490,6 +492,13 @@ def _denying_source(heads, cap=60):
     src = object.__new__(S3DataSource)
     src.s3helper = helper
     src.limit_mb = None
+    # This fixture bypasses __init__; include the read wrapper's bookkeeping.
+    import threading
+
+    src._inflight_lock = threading.Lock()
+    src._inflight = 0
+    src._stdlib = None
+    src.startup_counters = {"max_reads_in_flight": 0}
     return src, refreshes
 
 
@@ -522,6 +531,43 @@ def test_a_denied_object_gives_up_instead_of_spinning():
     # And the branch really ran - a refresh was attempted, escalating only on
     # the second denial, never dropping scope.
     assert refreshes == [False, True][:len(refreshes)] and refreshes, refreshes
+    assert st.fault == "denied"
+    assert src._inflight == 0
+
+
+def test_waveform_entry_point_preserves_missing_object_outcome():
+    src, refreshes = _denying_source([])
+    requests = []
+
+    class MissingFS:
+        def info(self, uri):
+            requests.append(uri)
+            raise FileNotFoundError(uri)
+
+    src.s3helper.get_filesystem = lambda net, year=None: MissingFS()
+    uri = "s3://es/AV.X.2019.001"
+    stream = src._read_waveform_from_s3(uri, "AV", year=2019)
+
+    assert len(stream) == 0 and stream.fault == "not_found"
+    assert requests == [uri]
+    assert refreshes == []
+    assert src._inflight == 0
+
+
+def test_waveform_entry_point_propagates_auth_failure_and_releases_read():
+    from sb_catalog.src.s3_helper import EarthScopeAuthFailed
+
+    src, refreshes = _denying_source([])
+
+    def invalid_token(net, year=None):
+        raise EarthScopeAuthFailed("invalid token")
+
+    src.s3helper.get_filesystem = invalid_token
+    with pytest.raises(EarthScopeAuthFailed, match="invalid token"):
+        src._read_waveform_from_s3("s3://es/AV.X.2019.001", "AV", year=2019)
+
+    assert refreshes == []
+    assert src._inflight == 0
 
 
 def test_the_denial_budget_is_spent_per_scope_not_per_object():
@@ -652,7 +698,9 @@ def test_a_missing_network_year_does_not_fail_the_shard():
         calls_get_fs = any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Attribute)
-            and c.func.attr == "get_filesystem"
+            # The optimized reader acquires the filesystem in its listing
+            # helper; that call must remain inside this same handler.
+            and c.func.attr in ("get_filesystem", "_list_network_day")
             for stmt in node.body for c in ast.walk(stmt)
         )
         if catches_fnf and calls_get_fs:
@@ -951,9 +999,11 @@ def test_permission_and_filenotfound_are_handled_before_oserror():
 
     src = pathlib.Path(__file__).parent.parent / "sb_catalog/src/s3_helper.py"
     tree = ast.parse(src.read_text())
+    # Retry handlers live in the helper; behavioral tests above still enter
+    # through _read_waveform_from_s3 so the wrapper remains covered.
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef)
-              and n.name == "_read_waveform_from_s3")
+              and n.name == "_read_waveform_attempts")
     order = []
     for node in ast.walk(fn):
         if isinstance(node, ast.Try):
