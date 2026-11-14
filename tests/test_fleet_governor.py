@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
+import spot_governor
 from spot_governor import alive_count
 
 
@@ -94,3 +95,44 @@ def test_unblocking_reopens_the_campaign():
     before = {"total": 10, "complete": 8, "blocked": 2}
     after = {"total": 10, "complete": 8, "blocked": 0}
     assert finished(before) and not finished(after)
+
+
+class _SubmitBatch:
+    def __init__(self):
+        self.cmds = []
+
+    def submit_job(self, **kw):
+        self.cmds.append(kw["containerOverrides"]["command"])
+        return {"jobId": "j"}
+
+
+def _args(argv):
+    import argparse
+    ap = argparse.ArgumentParser()
+    for flag, kw in [("--campaign", {}), ("--weight", {"default": "jma_wc"}),
+                     ("--model", {"default": ""}),
+                     ("--p-threshold", {"type": float, "default": None}),
+                     ("--s-threshold", {"type": float, "default": None})]:
+        ap.add_argument(flag, **kw)
+    a = ap.parse_args(argv)
+    a.procs, a.threads, a.checkpoint_every, a.lease_hours = 4, 2, 40, 1.0
+    a.max_hours, a.limit_mb, a.parquet_uri = 0, 0, ""
+    a.name_prefix, a.queue, a.job_definition = "t", "q", "jd"
+    return a
+
+
+def test_model_and_thresholds_are_omitted_by_default():
+    b = _SubmitBatch()
+    spot_governor.submit(b, _args(["--campaign", "s3://b/c"]), 1)
+    assert not {"--model", "--p_threshold", "--s_threshold"} & set(b.cmds[0])
+
+
+def test_model_and_thresholds_are_forwarded_when_set():
+    b = _SubmitBatch()
+    spot_governor.submit(b, _args(["--campaign", "s3://b/c", "--weight", "pnw",
+                                   "--model", "EQTransformer",
+                                   "--p-threshold", "0.1", "--s-threshold", "0.1"]), 1)
+    c = b.cmds[0]
+    assert c[c.index("--model") + 1] == "EQTransformer"
+    assert c[c.index("--p_threshold") + 1] == "0.1"
+    assert c[c.index("--s_threshold") + 1] == "0.1"

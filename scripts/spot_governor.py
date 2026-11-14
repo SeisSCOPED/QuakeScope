@@ -160,6 +160,15 @@ def submit(batch, args, n: int) -> list[str]:
     # on accept it, and only the too_big repair queues set it.
     if getattr(args, "limit_mb", 0):
         cmd += ["--limit-mb", str(args.limit_mb)]
+    # Model class and thresholds: the worker has accepted these since v3.0.0,
+    # but every campaign so far ran PhaseNet at 0.2, so they stay out of the
+    # command unless a campaign sets them (pnw-eqt-fill: EQTransformer, 0.1).
+    if getattr(args, "model", ""):
+        cmd += ["--model", args.model]
+    if getattr(args, "p_threshold", None) is not None:
+        cmd += ["--p_threshold", str(args.p_threshold)]
+    if getattr(args, "s_threshold", None) is not None:
+        cmd += ["--s_threshold", str(args.s_threshold)]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")]
@@ -188,6 +197,12 @@ def main(argv=None) -> int:
     ap.add_argument("--target", type=int, default=10,
                     help="workers to keep alive")
     ap.add_argument("--weight", default="jma_wc")
+    ap.add_argument("--model", default="",
+                    help="SeisBench model class (omitted = worker default PhaseNet)")
+    ap.add_argument("--p-threshold", type=float, default=None,
+                    help="P threshold (omitted = worker default 0.2)")
+    ap.add_argument("--s-threshold", type=float, default=None,
+                    help="S threshold (omitted = worker default 0.2)")
     ap.add_argument("--procs", type=int, default=4)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--lease-hours", type=float, default=1.0)

@@ -632,6 +632,12 @@ jobs:
                     if c.get("checkpoint_every") else []),
                   *(["--limit-mb", str(c["limit_mb"])]
                     if c.get("limit_mb") else []),
+                  # Model class and thresholds, absent unless set (PhaseNet, 0.2).
+                  *(["--model", c["model"]] if c.get("model") else []),
+                  *(["--p-threshold", str(c["p_threshold"])]
+                    if c.get("p_threshold") is not None else []),
+                  *(["--s-threshold", str(c["s_threshold"])]
+                    if c.get("s_threshold") is not None else []),
                   "--max-submissions", str(c["target"]),   # per run, not per life
                   "--once",
               ])
