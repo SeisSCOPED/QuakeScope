@@ -30,6 +30,7 @@ import collections
 import ctypes
 import datetime
 import gc
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -376,6 +377,8 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         weight=args.weight,
         p_threshold=args.p_threshold,
         s_threshold=args.s_threshold,
+        preprocess=args.preprocess or None,
+        classify_args=json.loads(args.classify_args) if args.classify_args else None,
         data_queue_size=_resolve_queue_size(args.data_queue_size, args.procs),
         pick_queue_size=args.pick_queue_size,
         extent=None,
@@ -704,6 +707,13 @@ def main(argv=None):
     ap.add_argument("--components", default="ZNE12")
     ap.add_argument("--p_threshold", default=0.2, type=float)
     ap.add_argument("--s_threshold", default=0.2, type=float)
+    # Opt-in, for reproducing an earlier catalogue's procedure (pnw-eqt-fill).
+    ap.add_argument("--preprocess", default="", choices=["", "ni2022"],
+                    help="ni2022: hourly streams, resample/detrend/normalize "
+                         "(picker.classify_ni2022)")
+    ap.add_argument("--classify-args", default="",
+                    help="JSON dict passed to SeisBench classify(), e.g. "
+                         "'{\"overlap\": 5400}'")
     # 0 means "size it from --procs" - see _resolve_queue_size. An explicit
     # value is always honoured.
     ap.add_argument("--data_queue_size", default=0, type=int)
