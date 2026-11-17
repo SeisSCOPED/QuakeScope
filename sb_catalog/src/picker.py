@@ -355,6 +355,11 @@ def classify_ni2022(model, stream, day, classify_args=None, hourly=True, max_gap
     (`hourly_detection`), each is resampled to 100 Hz, detrended and
     normalized with ObsPy, then classified with `strict=False` and the config's
     `detection_args`. A stream with more than `max_gap` gaps is skipped.
+    `hourly_detection` and `max_gap` may also arrive inside `classify_args`
+    (the 2022 config's names); the rest of `classify_args` goes to classify().
+
+    Yiyu's config (myconfig.json): overlap 5500, blinding [1000, 1000],
+    P/S threshold 0.1, hourly_detection true, max_gap 20.
 
     Works on copies: the caller's stream is untouched, so amplitudes are still
     measured on the real data. `normalize()` matters for the result, not just
@@ -363,6 +368,9 @@ def classify_ni2022(model, stream, day, classify_args=None, hourly=True, max_gap
     """
     import obspy
     classify_args = dict(classify_args or {})
+    # The 2022 config's own keys, not SeisBench's: taken out before classify().
+    hourly = bool(classify_args.pop("hourly_detection", hourly))
+    max_gap = classify_args.pop("max_gap", max_gap)
     t0 = obspy.UTCDateTime(day.year, day.month, day.day)
     if hourly:
         parts = [stream.slice(t0 + 3600 * h, t0 + 3600 * h + 3599.999999).copy()

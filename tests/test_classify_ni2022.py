@@ -59,3 +59,12 @@ def test_daily_mode_is_one_call():
     m = _Model()
     classify_ni2022(m, _day(), datetime.date(2023, 3, 2), hourly=False)
     assert len(m.calls) == 1
+
+
+def test_config_keys_are_consumed_not_passed_to_seisbench():
+    m = _Model()
+    classify_ni2022(m, _day(), datetime.date(2023, 3, 2),
+                    {"overlap": 5500, "blinding": [1000, 1000],
+                     "hourly_detection": False, "max_gap": 20})
+    assert len(m.calls) == 1
+    assert m.calls[0][1] == {"strict": False, "overlap": 5500, "blinding": [1000, 1000]}
