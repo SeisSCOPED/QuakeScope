@@ -378,7 +378,7 @@ def _run_shard(shard: dict, args, state: S3CampaignState, stations: pd.DataFrame
         p_threshold=args.p_threshold,
         s_threshold=args.s_threshold,
         preprocess=args.preprocess or None,
-        classify_args=json.loads(args.classify_args) if args.classify_args else None,
+        classify_args=args.classify_args,
         data_queue_size=_resolve_queue_size(args.data_queue_size, args.procs),
         pick_queue_size=args.pick_queue_size,
         extent=None,
@@ -697,6 +697,18 @@ def loop(args, proc_index: int = 0) -> None:
         sys.exit(1)
 
 
+def _json_object(text: str) -> dict:
+    """argparse type for --classify-args: a JSON object, or a clear CLI error."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"not valid JSON: {exc}") from None
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError(
+            f"must be a JSON object, got {type(value).__name__}")
+    return value
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--campaign", required=True, help="s3://bucket/campaign")
@@ -711,7 +723,7 @@ def main(argv=None):
     ap.add_argument("--preprocess", default="", choices=["", "ni2022"],
                     help="ni2022: hourly streams, resample/detrend/normalize "
                          "(picker.classify_ni2022)")
-    ap.add_argument("--classify-args", default="",
+    ap.add_argument("--classify-args", default=None, type=_json_object,
                     help="JSON dict passed to SeisBench classify(), e.g. "
                          "'{\"overlap\": 5400}'")
     # 0 means "size it from --procs" - see _resolve_queue_size. An explicit

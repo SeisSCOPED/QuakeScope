@@ -29,12 +29,15 @@ class _Model:
 
 def _day():
     t0 = obspy.UTCDateTime(2023, 3, 2)
+    # 10 Hz float32 (~10 MB): the procedure resamples to 100 Hz one hour at a
+    # time. A day at 100 Hz float64 left ~1 GB of freed-but-resident heap that
+    # hid test_memory_headroom's 256 MB allocation on Linux CI.
     rng = np.random.default_rng(0)
-    n = 86400 * 100
+    n = 86400 * 10
     trend = np.linspace(0, 5000, n)
-    return obspy.Stream([obspy.Trace((rng.standard_normal(n) * (10 ** k) + trend).astype("float64"),
+    return obspy.Stream([obspy.Trace((rng.standard_normal(n) * (10 ** k) + trend).astype("float32"),
                                      header=dict(network="UW", station="TEST", channel=f"HH{c}",
-                                                 sampling_rate=100, starttime=t0))
+                                                 sampling_rate=10, starttime=t0))
                          for k, c in enumerate("ZNE")])
 
 
@@ -46,10 +49,10 @@ def test_hourly_detrend_normalize_and_args():
     assert len(m.calls) == 24
     for s, kw in m.calls:
         assert kw == {"strict": False, "overlap": 5400}
-        assert s[0].stats.endtime - s[0].stats.starttime <= 3600
+        assert s[0].stats.endtime - s[0].stats.starttime <= 3600.1   # one 10 Hz sample, resampled
         for tr in s:
             assert np.isclose(np.abs(tr.data).max(), 1.0)      # normalize()
-            assert abs(tr.data[0]) < 1e-9 and abs(tr.data[-1]) < 1e-9         # detrend('simple'), ObsPy default
+            assert abs(tr.data[0]) < 1e-5 and abs(tr.data[-1]) < 1e-5         # detrend('simple'), ObsPy default
     assert len(out.picks) == 24
     for tr, b in zip(st, before):                               # caller's data untouched
         assert np.array_equal(tr.data, b)
@@ -68,3 +71,13 @@ def test_config_keys_are_consumed_not_passed_to_seisbench():
                      "hourly_detection": False, "max_gap": 20})
     assert len(m.calls) == 1
     assert m.calls[0][1] == {"strict": False, "overlap": 5500, "blinding": [1000, 1000]}
+
+
+def test_classify_args_is_validated_at_parse_time():
+    import argparse
+    import pytest
+    from sb_catalog.src.worker import _json_object
+    assert _json_object('{"overlap": 5500}') == {"overlap": 5500}
+    for bad in ('{"overlap": ', '[1, 2]', '5500'):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _json_object(bad)
