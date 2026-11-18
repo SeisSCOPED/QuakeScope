@@ -169,6 +169,12 @@ def submit(batch, args, n: int) -> list[str]:
         cmd += ["--p_threshold", str(args.p_threshold)]
     if getattr(args, "s_threshold", None) is not None:
         cmd += ["--s_threshold", str(args.s_threshold)]
+    # Opt-in pick procedure (picker.classify_ni2022) and classify() arguments;
+    # images from 596a324 and earlier do not accept them.
+    if getattr(args, "preprocess", ""):
+        cmd += ["--preprocess", args.preprocess]
+    if getattr(args, "classify_args", ""):
+        cmd += ["--classify-args", args.classify_args]
     env = [{"name": k, "value": str(args.threads)} for k in (
         "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
         "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")]
@@ -203,6 +209,10 @@ def main(argv=None) -> int:
                     help="P threshold (omitted = worker default 0.2)")
     ap.add_argument("--s-threshold", type=float, default=None,
                     help="S threshold (omitted = worker default 0.2)")
+    ap.add_argument("--preprocess", default="",
+                    help="worker pick procedure, e.g. ni2022 (omitted = 2026 default)")
+    ap.add_argument("--classify-args", default="",
+                    help="JSON dict for SeisBench classify(), passed through verbatim")
     ap.add_argument("--procs", type=int, default=4)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--lease-hours", type=float, default=1.0)

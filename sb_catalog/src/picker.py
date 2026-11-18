@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import datetime
 import functools
 import logging
@@ -346,6 +347,49 @@ def main() -> None:
         raise ValueError(f"Unknown command '{args.command}'")
 
 
+def classify_ni2022(model, stream, day, classify_args=None, hourly=True, max_gap=None):
+    """Pick one station-day exactly as Ni et al.'s 2022 PNW run did.
+
+    Mirrors `single_station_detection.py` (Yiyu Ni, 2022-10-05), which made the
+    2002-2023 picks in pnw-eqt-2023/: the day is cut into 24 one-hour streams
+    (`hourly_detection`), each is resampled to 100 Hz, detrended and
+    normalized with ObsPy, then classified with `strict=False` and the config's
+    `detection_args`. A stream with more than `max_gap` gaps is skipped.
+    `hourly_detection` and `max_gap` may also arrive inside `classify_args`
+    (the 2022 config's names); the rest of `classify_args` goes to classify().
+
+    Yiyu's config (myconfig.json): overlap 5500, blinding [1000, 1000],
+    P/S threshold 0.1, hourly_detection true, max_gap 20.
+
+    Works on copies: the caller's stream is untouched, so amplitudes are still
+    measured on the real data. `normalize()` matters for the result, not just
+    the scale: the pnw model normalizes the three components jointly, and
+    ObsPy scales each trace to its own maximum.
+    """
+    import obspy
+    classify_args = dict(classify_args or {})
+    # The 2022 config's own keys, not SeisBench's: taken out before classify().
+    hourly = bool(classify_args.pop("hourly_detection", hourly))
+    max_gap = classify_args.pop("max_gap", max_gap)
+    t0 = obspy.UTCDateTime(day.year, day.month, day.day)
+    if hourly:
+        parts = [stream.slice(t0 + 3600 * h, t0 + 3600 * h + 3599.999999).copy()
+                 for h in range(24)]
+    else:
+        parts = [stream.copy()]
+    picks = []
+    for s in parts:
+        if len(s) == 0:
+            continue
+        if max_gap is not None and len(s.get_gaps()) > max_gap:
+            continue
+        s.resample(100)
+        s.detrend()
+        s.normalize()
+        picks += list(model.classify(s, strict=False, **classify_args).picks)
+    return sbu.ClassifyOutput(getattr(model, "name", "model"), picks=sbu.PickList(picks))
+
+
 class S3MongoSBBridge:
     """
     This bridge connects an S3DataSource, a MongoDB database (represented by the SeisBenchDatabase) and
@@ -372,8 +416,17 @@ class S3MongoSBBridge:
         prior_done: Optional[Any] = None,
         checkpoint_every: int = 0,
         on_checkpoint: Optional[Any] = None,
+        preprocess: Optional[str] = None,
+        classify_args: Optional[dict] = None,
     ):
         self.extent = extent
+        # Opt-in pick procedures. None/"" is the 2026 campaign path: one
+        # classify() per station-day with SeisBench defaults. "ni2022"
+        # reproduces the 2022 PNW EQTransformer run (classify_ni2022).
+        if preprocess not in (None, "", "ni2022"):
+            raise ValueError(f"unknown preprocess {preprocess!r}")
+        self.preprocess = preprocess or None
+        self.classify_args = dict(classify_args or {})
         # When set, bulk picks go to Parquet on S3 instead of into the
         # database. Station metadata and picks_record stay in the database:
         # they are small and want point lookups. See
@@ -443,6 +496,9 @@ class S3MongoSBBridge:
                 components_loaded=self.s3.components,
                 seisbench_version=seisbench.__version__,
                 weight_version=self.model.weights_version,
+                **({"preprocess": self.preprocess} if self.preprocess else {}),
+                **({"classify_args": json.dumps(self.classify_args, sort_keys=True)}
+                   if self.classify_args else {}),
             )
         return self._run_id
 
@@ -709,7 +765,10 @@ class S3MongoSBBridge:
         # do picking
         def _classify():
             with stage("model.classify"):
-                return self.model.classify(stream)
+                if self.preprocess == "ni2022":
+                    return classify_ni2022(self.model, stream, day,
+                                           self.classify_args)
+                return self.model.classify(stream, **self.classify_args)
 
         stream_annotations = await asyncio.to_thread(_classify)
         n_picks = len(stream_annotations.picks)

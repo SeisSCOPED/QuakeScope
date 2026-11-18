@@ -638,6 +638,9 @@ jobs:
                     if c.get("p_threshold") is not None else []),
                   *(["--s-threshold", str(c["s_threshold"])]
                     if c.get("s_threshold") is not None else []),
+                  *(["--preprocess", c["preprocess"]] if c.get("preprocess") else []),
+                  *(["--classify-args", json.dumps(c["classify_args"])]
+                    if c.get("classify_args") else []),
                   "--max-submissions", str(c["target"]),   # per run, not per life
                   "--once",
               ])

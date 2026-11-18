@@ -136,3 +136,13 @@ def test_model_and_thresholds_are_forwarded_when_set():
     assert c[c.index("--model") + 1] == "EQTransformer"
     assert c[c.index("--p_threshold") + 1] == "0.1"
     assert c[c.index("--s_threshold") + 1] == "0.1"
+
+
+def test_preprocess_and_classify_args_are_forwarded_when_set():
+    b = _SubmitBatch()
+    a = _args(["--campaign", "s3://b/c"])
+    a.preprocess, a.classify_args = "ni2022", '{"overlap": 5400}'
+    spot_governor.submit(b, a, 1)
+    c = b.cmds[0]
+    assert c[c.index("--preprocess") + 1] == "ni2022"
+    assert c[c.index("--classify-args") + 1] == '{"overlap": 5400}'
