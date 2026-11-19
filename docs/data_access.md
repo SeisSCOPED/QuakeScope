@@ -1,8 +1,9 @@
 # Accessing the QuakeScope pick catalogue
 
 Machine-learning phase picks for the western United States (`western`), for
-ocean-bottom seismometers (`obs`), and the 2025 global catalogue of Ni et al.
-(2025) (`quakescope-2025`), published as Parquet on S3. **Anonymous read, no
+ocean-bottom seismometers (`obs`), the 2025 global catalogue of Ni et al.
+(2025) (`quakescope-2025`), and the Pacific Northwest EQTransformer catalogue of
+Ni et al. (2023) (`pnw-eqt-2023`), published as Parquet on S3. **Anonymous read, no
 account, no database.** Read-path timings were measured on 2026-09-16; the
 catalogue table in section 2 names the source and date of each number.
 
@@ -53,6 +54,7 @@ and test runs. Every public object is also reachable over plain HTTPS at
 | `obs` | `obs` (PickBlue) | 1993 to 2026 | 16,934 | 2.9 GB | 104.4 M rows, ~103.6 M unique | complete, offshore stations only; last write 2026-10-09 |
 | `global` | `jma_wc` | 2010 to 2026 | 22,460 | 15.8 GB | 583 M | paused at a few percent (2026-10-08 figures) |
 | `quakescope-2025` | `instance` | 2002 to 2025-03 | 42,570 | 88.3 GB | 4.38 B | the 2025 catalogue, converted; see below |
+| `pnw-eqt-2023` | EQTransformer `pnw` | 2002 to 2023 | 5,410 | 5.2 GB | 276.4 M | Pacific Northwest, Ni et al. (2023) weights, converted; see below |
 
 Rows: the exact sum of `num_rows` over every Parquet footer, read on
 2026-10-13 (`_archive/inventory-20261013/`: western 2,130,446,013, obs
@@ -128,6 +130,35 @@ in July 2019, matched `original` picks are later than `instance` picks by a
 median of about 50 ms (P) and 100 ms (S), consistent with their median
 residuals against analyst picks ([benchmark/results/timing_full.csv](benchmark/results/timing_full.csv)).
 Do not mix the two catalogues in one location without a per-phase correction.
+
+### The Pacific Northwest EQTransformer catalogue, `pnw-eqt-2023/` (published 2026-11-14)
+
+Phase picks for the Pacific Northwest from EQTransformer with the `pnw`
+weights, transfer-learned on the curated PNW-ML dataset (Ni et al., 2023,
+*Seismica*, doi:10.26443/seismica.v2i1.368). The run was made in 2022 on UW
+hardware and written as one SeisBench pickle per station-band-day; in
+November 2026 it was converted into the same layout and schema as the other
+catalogues. The originals are at
+`https://dasway.ess.washington.edu/shared/niyiyu/PNW-all-picks/ml_picks_pnw_<YYYY>.tar`.
+
+| | |
+|---|---|
+| picks | 276,367,619 (P 188,066,247, S 88,301,372), 2002-01-01 to 2023-12-31, read from every Parquet footer after conversion |
+| station-days | 2,915,483 on 2,207 station-locations in 44 networks |
+| stored | 5.2 GB in 5,410 objects at `pnw-eqt-2023/picks/network=<NET>/year=<YYYY>/month=<MM>/` |
+| model | EQTransformer, `pnw` weights, 1-45 Hz band-pass, ZNE; P and S threshold 0.1, inferred from the lowest `conf` in the picks (run record in `pnw-eqt-2023/runs/`) |
+| station table | `pnw-eqt-2023/stations.parquet`, the `western` columns plus `metadata_source`: 12,720 rows from the run's `PNWStationXML.tar` (January 2022) and 42 stations installed after it (2021 to 2023, 8,384 station-days) from the IRIS/EarthScope FDSN station service |
+| description | `pnw-eqt-2023/README.json` |
+
+How it differs from the PhaseNet catalogues: `amp` and `amp_vel` are empty (no
+amplitudes were measured); `cha` is the band only (EH, HH, BH); `rid` is
+`pnw-eqt-ni2023` on every row; the 0.1 threshold keeps more low-confidence
+picks than the 0.2 used elsewhere (median `conf` 0.15 in a 2021 sample); a
+station-day is listed in the manifests only if the run wrote a pick file, so a
+missing day can mean no data or no picks. EQTransformer and PhaseNet place
+arrivals differently; do not mix catalogues in one location without a
+per-phase correction. Converted with `scripts/convert_pnw_eqt_picks.py`,
+`scripts/build_pnw_stations.py` and `scripts/fill_pnw_missing_stations.py`.
 
 ## 3. Layout and schema
 
