@@ -289,6 +289,9 @@ Recorded because they are the argument for the smoke-test discipline above.
 | | |
 |---|---|
 | [24_cost_model.md](24_cost_model.md) | **cost, rebuilt per campaign — supersedes every earlier figure** |
+| [34_campaign_playbook.md](34_campaign_playbook.md) | **start here for the next campaign**: twelve corrective queues and why, the guard each defect now has, high-volume channels, credentials, and the gated procedure (`scripts/campaign_workflow.py`) |
+| [33_storage_and_egress.md](33_storage_and_egress.md) | storage ~$2/month; egress ~$4.9 per full western download; compaction and lifecycle |
+| [32_outcomes_and_band_fallback.md](32_outcomes_and_band_fallback.md) | one band per station and the libmseed selector raise skipped ~2.3 M western station-days; outcomes per station-day; the re-read |
 | [31_obs_station_selection.md](31_obs_station_selection.md) | **plan**: the obs campaign was selected by reused temporary network codes and 1,993 of its 3,389 stations are on land; select offshore per station (land mask + depth, cabled observatories always OBS), archive the land picks under `_archive/obs-land/`, return those stations to the next global onshore plan, fill 1,398 offshore stations from `global` plus ~203 in no table, same `obs/` prefix; the OBS track picks `EL` (767 kept and 846 fill stations are short-period OBS that completed empty) |
 | [30_station_dates.md](30_station_dates.md) | station dates are Parquet dates now; the `YYYY.DDD` float read ten times small through `str()` and cost 121,692 unplanned station-days |
 | [29_one_prefix_per_catalogue.md](29_one_prefix_per_catalogue.md) | **plan**: fold the era prefixes into `western/`, `obs/`, `global/`; queues to `_queues/`, clutter to `_archive/` |
